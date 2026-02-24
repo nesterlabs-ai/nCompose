@@ -1,0 +1,17 @@
+/**
+ * Common interface for all LLM providers.
+ * Each provider wraps a different API (DeepSeek, Claude, OpenAI)
+ * behind this single contract.
+ */
+export interface LLMProvider {
+  /** Provider name for display purposes */
+  name: string;
+
+  /**
+   * Send a prompt to the LLM and get back a raw string response.
+   * @param userPrompt - The user message (simplified Figma YAML + instructions)
+   * @param systemPrompt - The system message (Mitosis rules + examples)
+   * @returns The raw LLM text output (expected to be .lite.tsx code)
+   */
+  generate(userPrompt: string, systemPrompt: string): Promise<string>;
+}

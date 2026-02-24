@@ -717,7 +717,8 @@ function resolveNodeCSS(
   // Strokes (border)
   const strokes = globalStyles[node.strokes] || extractStrokesFromNode(node);
   if (strokes?.colors?.[0] && strokes?.strokeWeight) {
-    css['border'] = `${strokes.strokeWeight} solid ${strokes.colors[0]}`;
+    // Add !important to override base border: none !important
+    css['border'] = `${strokes.strokeWeight} solid ${strokes.colors[0]} !important`;
   }
 
   // Border radius

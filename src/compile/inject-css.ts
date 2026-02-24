@@ -37,16 +37,6 @@ export function injectCSS(
 const STYLE_TAG = (css: string) => `<style>{\`\n${css}\n\`}</style>`;
 
 function injectReactCSS(code: string, css: string): string {
-  // If already has a fragment (<> ... </>), inject before the LAST </>
-  if (code.includes('</>')) {
-    const lastClose = code.lastIndexOf('</>');
-    return (
-      code.substring(0, lastClose) +
-      `  ${STYLE_TAG(css)}\n    ` +
-      code.substring(lastClose)
-    );
-  }
-
   // Find the component's JSX return — the LAST return statement that contains JSX
   // (inner getters also have return but they return strings, not JSX)
   const returnPattern = /return\s*\(/g;
@@ -75,13 +65,30 @@ function injectReactCSS(code: string, css: string): string {
     const before = code.substring(0, afterReturn);
     const after = code.substring(closeIndex);
 
-    return (
-      before +
-      '\n    <>\n      ' +
-      jsxContent +
-      `\n      ${STYLE_TAG(css)}\n    </>\n  ` +
-      after
-    );
+    // Check if the JSX is already wrapped in a fragment
+    if (jsxContent.startsWith('<>') && jsxContent.endsWith('</>')) {
+      // Already has fragment, inject style tag before the closing </>
+      // Find the LAST </> within this JSX content
+      const lastFragmentClose = jsxContent.lastIndexOf('</>');
+      return (
+        before +
+        '\n    ' +
+        jsxContent.substring(0, lastFragmentClose) +
+        `\n      ${STYLE_TAG(css)}\n    ` +
+        jsxContent.substring(lastFragmentClose) +
+        '\n  ' +
+        after
+      );
+    } else {
+      // No fragment, wrap it
+      return (
+        before +
+        '\n    <>\n      ' +
+        jsxContent +
+        `\n      ${STYLE_TAG(css)}\n    </>\n  ` +
+        after
+      );
+    }
   }
 
   // Fallback: append style tag after export

@@ -1205,7 +1205,9 @@ function diffStyles(
   }
   for (const key of Object.keys(baseStyles)) {
     if (!(key in variantStyles)) {
-      diff[key] = 'unset';
+      // Use 'none !important' for border to override base class !important
+      // Use 'unset' for other properties
+      diff[key] = key === 'border' ? 'none !important' : 'unset';
     }
   }
   return diff;
@@ -1214,6 +1216,7 @@ function diffStyles(
 export function toKebabCase(str: string): string {
   return str
     .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .replace(/[()]/g, '')  // Remove parentheses to avoid CSS selector issues
     .replace(/\s+/g, '-')
     .toLowerCase();
 }

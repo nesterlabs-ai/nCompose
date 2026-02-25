@@ -453,6 +453,18 @@ export function buildComponentSetUserPrompt(
       lines.push(`- ${axis.name}: [${axis.values.join(', ')}] (default: ${axis.default})`);
     }
     lines.push('');
+    lines.push('**CRITICAL:** When building class names, use the default values shown above.');
+    // Find the variant/style axis and size axis
+    const variantAxis = promptData.axes.find(a => a.name.toLowerCase().includes('variant') || a.name.toLowerCase() === 'style');
+    const sizeAxis = promptData.axes.find(a => a.name.toLowerCase() === 'size');
+
+    if (variantAxis) {
+      lines.push(`- For variant/style prop: (props.variant || "${variantAxis.default}")`);
+    }
+    if (sizeAxis) {
+      lines.push(`- For size prop: (props.size || "${sizeAxis.default}")`);
+    }
+    lines.push('');
   }
 
   // State info — from actual data, not hardcoded
@@ -599,8 +611,10 @@ export function buildComponentSetSystemPrompt(): string {
 11. Map boolean props to appropriate HTML attributes AND CSS class/data-attribute modifiers
 12. For boolean props like "error", "filled", etc., add data-{name} attribute to root element
 13. CRITICAL - SVG INLINING: When SVG assets are provided in the prompt with their markup, you MUST copy the <svg>...</svg> element directly into the JSX. DO NOT use <img> tags. SVGs with currentColor can be styled via CSS when inlined. For conditional icons (like loading spinners), wrap the inlined SVG in conditionals.
-14. CRITICAL: For BOOLEAN visibility props with default=true, use {props.name !== false ? ... : null} NOT {props.name ? ... : null}
-15. CRITICAL: For BOOLEAN visibility props with default=false, use {props.name ? ... : null}
+14. CRITICAL - LOADING SPINNERS: If loading state has a spinner SVG, show it in BOTH left AND right icon slots (if they exist) using {props.loading ? <spinner> : ...}. NEVER show spinner in only one icon slot.
+15. CRITICAL - CHILD CLASS NAMES: Use the EXACT child node names from the Structure section for CSS classes. Convert to kebab-case and use pattern "component-name__child-name". Example: if Structure shows child named "Button" (TEXT), use class="button__button" NOT class="button__label".
+16. CRITICAL: For BOOLEAN visibility props with default=true, use {props.name !== false ? ... : null} NOT {props.name ? ... : null}
+17. CRITICAL: For BOOLEAN visibility props with default=false, use {props.name ? ... : null}
 
 ## Example Pattern
 \`\`\`tsx

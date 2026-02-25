@@ -116,13 +116,14 @@ export interface PreviewSetupOptions {
   assetsDir?: string;      // Path to assets directory
   previewAppDir: string;   // Path to preview-app
   componentPropertyDefinitions?: Record<string, any>;  // Figma component properties
+  metadataPath?: string;   // Path to .meta.json file
 }
 
 /**
  * Set up preview app to display generated component
  */
 export async function setupPreview(options: PreviewSetupOptions): Promise<void> {
-  const { componentName, componentPath, assetsDir, previewAppDir } = options;
+  const { componentName, componentPath, assetsDir, previewAppDir, metadataPath } = options;
 
   // 1. Create necessary directories
   const componentsDir = join(previewAppDir, 'src', 'components');
@@ -140,7 +141,18 @@ export async function setupPreview(options: PreviewSetupOptions): Promise<void> 
   copyFileSync(componentPath, destComponentPath);
   console.log(`✓ Copied component to ${destComponentPath}`);
 
-  // 3. Copy assets if they exist
+  // 3. Copy metadata if it exists
+  let metadata: any = null;
+  if (metadataPath && existsSync(metadataPath)) {
+    const destMetadataPath = join(componentsDir, `${componentName}.meta.json`);
+    copyFileSync(metadataPath, destMetadataPath);
+    console.log(`✓ Copied metadata to ${destMetadataPath}`);
+
+    // Read metadata for App.jsx generation
+    metadata = JSON.parse(readFileSync(metadataPath, 'utf-8'));
+  }
+
+  // 4. Copy assets if they exist
   let assetFiles: string[] = [];
   if (assetsDir && existsSync(assetsDir)) {
     const fs = await import('fs/promises');
@@ -157,8 +169,8 @@ export async function setupPreview(options: PreviewSetupOptions): Promise<void> 
     }
   }
 
-  // 4. Generate App.jsx to display the component
-  const appContent = generateAppContent(componentName, options.componentPropertyDefinitions, assetFiles);
+  // 5. Generate App.jsx to display the component
+  const appContent = generateAppContent(componentName, metadata, assetFiles);
   const appPath = join(previewAppDir, 'src', 'App.jsx');
   writeFileSync(appPath, appContent);
   console.log(`✓ Updated ${appPath}`);
@@ -178,36 +190,163 @@ function toCamelCase(str: string): string {
 
 /**
  * Generate App.jsx content to display the component
+ * Uses metadata.axes to dynamically generate all variant combinations
  */
-function generateAppContent(componentName: string, componentPropertyDefinitions?: Record<string, any>, assetFiles: string[] = []): string {
-  // Build base props that should always be passed (from component properties)
-  const basePropsLines: string[] = [];
-
-  if (componentPropertyDefinitions) {
-    for (const [propName, propDef] of Object.entries(componentPropertyDefinitions)) {
-      // Skip VARIANT properties (they're handled separately via variant combinations)
-      if (propDef.type === 'VARIANT') continue;
-
-      const camelName = toCamelCase(propName);
-
-      if (propDef.type === 'BOOLEAN' && propDef.defaultValue === true) {
-        // BOOLEAN props with default=true should be passed as true
-        basePropsLines.push(`  ${camelName}={true}`);
-      } else if (propDef.type === 'INSTANCE_SWAP') {
-        // Skip INSTANCE_SWAP props in preview - let component use its own defaults
-        // The component already has correct conditional icon rendering baked in
-        // (e.g., props.loading ? spinner : star)
-        // If we override with static icons, we break the conditional logic
-        continue;
-      } else if (propDef.type === 'TEXT' && propDef.defaultValue) {
-        // TEXT props with defaults (usually handled via children, but can be explicit)
-        // Skip for now as they're typically passed via children
-      }
-    }
+function generateAppContent(componentName: string, metadata: any, assetFiles: string[] = []): string {
+  // If no metadata, generate a simple preview
+  if (!metadata || !metadata.axes || metadata.axes.length === 0) {
+    return generateSimplePreview(componentName);
   }
 
-  const basePropsString = basePropsLines.length > 0 ? '\n' + basePropsLines.join('\n') + '\n        ' : '';
+  // Extract axes from metadata
+  const axes = metadata.axes || [];
 
+  // Find specific axes
+  const styleAxis = axes.find((a: any) => a.name.toLowerCase().includes('style') || a.name.toLowerCase().includes('variant'));
+  const sizeAxis = axes.find((a: any) => a.name.toLowerCase() === 'size');
+  const stateAxis = axes.find((a: any) => a.name.toLowerCase() === 'state');
+
+  // Build arrays for each axis
+  const styles = styleAxis ? styleAxis.values : ['default'];
+  const sizes = sizeAxis ? sizeAxis.values : ['medium'];
+  const states = stateAxis ? stateAxis.values : ['default'];
+
+  console.log(`Generating preview for ${componentName}:`);
+  console.log(`  Styles: ${styles.join(', ')}`);
+  console.log(`  Sizes: ${sizes.join(', ')}`);
+  console.log(`  States: ${states.join(', ')}`);
+  console.log(`  Total: ${styles.length} × ${sizes.length} × ${states.length} = ${styles.length * sizes.length * states.length} variants`);
+
+  return `import ${componentName} from './components/${componentName}'
+import metadata from './components/${componentName}.meta.json'
+
+// Dynamically generate all variant combinations from metadata
+const axes = metadata.axes || []
+const styleAxis = axes.find(a => a.name.toLowerCase().includes('style') || a.name.toLowerCase().includes('variant'))
+const sizeAxis = axes.find(a => a.name === 'Size')
+const stateAxis = axes.find(a => a.name === 'State')
+
+const styles = styleAxis ? styleAxis.values : ['default']
+const sizes = sizeAxis ? sizeAxis.values : ['medium']
+const states = stateAxis ? stateAxis.values : ['default']
+
+// Normalize variant names to match CSS class naming convention
+function normalizeVariantName(name) {
+  return name
+    .replace(/[()]/g, '')  // Remove parentheses
+    .replace(/\\s+/g, '-')   // Replace spaces with dashes
+    .toLowerCase()
+}
+
+// Map state names to prop names
+function mapStateToProps(state) {
+  const stateLower = state.toLowerCase()
+  if (stateLower === 'default') return {}
+  if (stateLower === 'hover') return { hover: true }
+  if (stateLower === 'focus') return { focus: true }
+  if (stateLower === 'disabled') return { disabled: true }
+  if (stateLower === 'loading') return { loading: true }
+  if (stateLower.includes('error')) return { error: true }
+  if (stateLower.includes('filled')) return { filled: true }
+  return {}
+}
+
+// Generate all variant combinations
+const allVariants = styles.flatMap(style =>
+  sizes.flatMap(size =>
+    states.map(state => ({
+      label: \`\${style} / \${size} / \${state}\`,
+      props: {
+        variant: normalizeVariantName(style),
+        size: normalizeVariantName(size),
+        ...mapStateToProps(state)
+      }
+    }))
+  )
+)
+
+console.log('Generated variants:', allVariants.length)
+console.log('Sample:', allVariants.slice(0, 3))
+
+const labelStyle = {
+  fontSize: '11px',
+  fontWeight: 600,
+  color: '#888',
+  textTransform: 'uppercase',
+  marginBottom: '8px',
+  letterSpacing: '0.05em',
+}
+
+function App() {
+  return (
+    <div style={{ padding: '40px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
+      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
+
+        {/* Header */}
+        <div style={{ marginBottom: '40px' }}>
+          <h1 style={{ margin: '0 0 8px', fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>
+            ${componentName}
+          </h1>
+          <p style={{ margin: '0 0 16px', color: '#666', fontSize: '16px', lineHeight: '1.5' }}>
+            Generated from Figma using figma-to-mitosis
+          </p>
+          <div style={{
+            display: 'inline-flex',
+            gap: '12px',
+            padding: '8px 12px',
+            background: '#e8f5e9',
+            borderRadius: '6px',
+            fontSize: '13px',
+            color: '#2e7d32',
+            fontWeight: 500
+          }}>
+            ✅ {allVariants.length} variants rendered dynamically from metadata
+          </div>
+        </div>
+
+        {/* All Variants Grid */}
+        <div style={{
+          background: 'white',
+          borderRadius: '12px',
+          padding: '32px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        }}>
+          <h2 style={{ margin: '0 0 24px', fontSize: '18px', fontWeight: 600, color: '#333' }}>
+            All Variants
+          </h2>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+            gap: '24px'
+          }}>
+            {allVariants.map((v) => (
+              <div key={v.label} style={{
+                padding: '16px',
+                background: '#f8f9fa',
+                borderRadius: '8px',
+                border: '1px solid #e0e0e0'
+              }}>
+                <div style={labelStyle}>{v.label}</div>
+                <${componentName} {...v.props}>{v.props.label || 'Button'}</${componentName}>
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  )
+}
+
+export default App
+`;
+}
+
+/**
+ * Generate simple preview for components without variant metadata
+ */
+function generateSimplePreview(componentName: string): string {
   return `import ${componentName} from './components/${componentName}'
 
 // Generate all variant combinations for preview

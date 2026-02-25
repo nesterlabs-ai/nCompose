@@ -110,6 +110,8 @@ program
         mitosisSource: result.mitosisSource,
         frameworkOutputs: result.frameworkOutputs,
         assets: result.assets,
+        componentPropertyDefinitions: result.componentPropertyDefinitions,
+        variantMetadata: result.variantMetadata,
       });
 
       // Print summary
@@ -139,6 +141,7 @@ program
           // Set up preview
           const reactOutputPath = join(componentOutputDir, `${result.componentName}.jsx`);
           const assetsDir = join(componentOutputDir, 'assets');
+          const metadataPath = join(componentOutputDir, `${result.componentName}.meta.json`);
 
           await setupPreview({
             componentName: result.componentName,
@@ -146,6 +149,7 @@ program
             assetsDir: existsSync(assetsDir) ? assetsDir : undefined,
             previewAppDir,
             componentPropertyDefinitions: result.componentPropertyDefinitions,
+            metadataPath: existsSync(metadataPath) ? metadataPath : undefined,
           });
 
           // Check if dev server is running

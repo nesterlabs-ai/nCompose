@@ -50,6 +50,11 @@ export interface ConversionResult {
   assets: AssetEntry[];
   /** Component property definitions from Figma (for preview app) */
   componentPropertyDefinitions?: Record<string, any>;
+  /** Variant axes metadata (for preview app) */
+  variantMetadata?: {
+    axes: Array<{ name: string; values: string[]; default: string }>;
+    variants: Array<{ name: string; props: Record<string, string> }>;
+  };
 }
 
 /**

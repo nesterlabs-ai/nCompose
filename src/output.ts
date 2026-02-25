@@ -10,6 +10,13 @@ export interface WriteOutputOptions {
   frameworkOutputs: Record<string, string>;
   /** SVG/image assets to write into outputDir/assets/ */
   assets?: AssetEntry[];
+  /** Component property definitions from Figma */
+  componentPropertyDefinitions?: Record<string, any>;
+  /** Variant axes metadata */
+  variantMetadata?: {
+    axes: Array<{ name: string; values: string[]; default: string }>;
+    variants: Array<{ name: string; props: Record<string, string> }>;
+  };
 }
 
 /**
@@ -18,12 +25,13 @@ export interface WriteOutputOptions {
  * Creates:
  * - <componentName>.lite.tsx (Mitosis source)
  * - <componentName>.<ext> for each framework
+ * - <componentName>.meta.json (variant metadata for preview app)
  * - assets/<filename>.svg for each exported SVG asset
  *
  * @returns List of file paths written
  */
 export function writeOutputFiles(options: WriteOutputOptions): string[] {
-  const { outputDir, componentName, mitosisSource, frameworkOutputs, assets } = options;
+  const { outputDir, componentName, mitosisSource, frameworkOutputs, assets, componentPropertyDefinitions, variantMetadata } = options;
   const writtenPaths: string[] = [];
 
   // Ensure output directory exists
@@ -43,6 +51,19 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     const filePath = join(outputDir, `${componentName}${ext}`);
     writeFileSync(filePath, code, 'utf-8');
     writtenPaths.push(filePath);
+  }
+
+  // Write variant metadata for preview app
+  if (variantMetadata || componentPropertyDefinitions) {
+    const metadataPath = join(outputDir, `${componentName}.meta.json`);
+    const metadata = {
+      componentName,
+      axes: variantMetadata?.axes || [],
+      variants: variantMetadata?.variants || [],
+      componentPropertyDefinitions: componentPropertyDefinitions || {},
+    };
+    writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+    writtenPaths.push(metadataPath);
   }
 
   // Write SVG assets to assets/ subdirectory

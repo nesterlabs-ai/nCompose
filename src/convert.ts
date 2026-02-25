@@ -249,12 +249,35 @@ async function convertComponentSet(
     }
   }
 
+  // Build variant metadata for preview app
+  const variantMetadata = {
+    axes: [
+      // Include prop axes (Style, Size, etc.)
+      ...componentSetData.propAxes.map((axis) => ({
+        name: axis.name,
+        values: axis.values,
+        default: componentSetData.defaultVariant.props[axis.name] ?? axis.values[0],
+      })),
+      // Include state axis if it exists
+      ...(componentSetData.stateAxis ? [{
+        name: componentSetData.stateAxis.name,
+        values: componentSetData.stateAxis.values,
+        default: componentSetData.defaultVariant.props[componentSetData.stateAxis.name] ?? componentSetData.stateAxis.values[0],
+      }] : [])
+    ],
+    variants: componentSetData.variants.map((v) => ({
+      name: v.name,
+      props: v.props,
+    })),
+  };
+
   return {
     componentName,
     mitosisSource: parseResult.rawCode,
     frameworkOutputs: frameworkOutputs as Record<Framework, string>,
     assets,
     componentPropertyDefinitions: componentSetData.componentPropertyDefinitions,
+    variantMetadata,
   };
 }
 

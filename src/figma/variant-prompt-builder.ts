@@ -165,10 +165,11 @@ function describeNodeRecursive(
     const content = node.text ?? '';
     lines.push(`${indent}- "${name}" (TEXT, content: "${content}")`);
   } else if (nodeType === 'IMAGE-SVG' || nodeType === 'IMAGE') {
-    // Explicit asset type — always emit an img hint
+    // Explicit asset type — always emit an SVG inline hint
     const assetPath = node.id ? assetMap?.get(node.id) : undefined;
     if (assetPath) {
-      lines.push(`${indent}- "${name}" (icon/image) → render as: <img src="${assetPath}" alt="" />`);
+      lines.push(`${indent}- "${name}" (icon/SVG) → INLINE SVG from: ${assetPath}`);
+      lines.push(`${indent}  ⚠️ DO NOT use <img> tags for SVGs - inline the SVG content directly`);
     } else {
       lines.push(`${indent}- "${name}" (${nodeType}, icon/image)`);
     }
@@ -185,10 +186,11 @@ function describeNodeRecursive(
     const assetPath = node.id ? assetMap?.get(node.id) : undefined;
 
     if (assetPath) {
-      // We have a downloaded SVG — tell the LLM exactly how to render it
+      // We have a downloaded SVG — tell the LLM to inline it
       lines.push(
-        `${indent}- "${name}" (icon slot) → render as: <img src="${assetPath}" alt="" />`,
+        `${indent}- "${name}" (icon slot) → INLINE SVG from: ${assetPath}`,
       );
+      lines.push(`${indent}  ⚠️ DO NOT use <img> - inline the SVG markup directly in JSX`);
     } else if (isIconSlot) {
       lines.push(`${indent}- "${name}" (icon slot, optional)`);
     } else {
@@ -402,46 +404,45 @@ export function buildComponentSetUserPrompt(
 
   // Asset variant tracking - show which icons appear in which states/variants
   if (promptData.assets && promptData.assets.length > 0) {
-    const conditionalAssets = promptData.assets.filter(a => a.variants && a.variants.length > 0);
+    lines.push('### SVG Assets (Inline These in JSX)');
+    lines.push('The following SVG icons must be inlined directly in the component:');
+    lines.push('');
 
-    if (conditionalAssets.length > 0) {
-      lines.push('### Icon/Asset Conditional Rendering');
-      lines.push('Some icons only appear in specific variants or states:');
-      lines.push('');
+    for (const asset of promptData.assets) {
+      const assetName = asset.filename.replace('.svg', '').replace(/-/g, ' ');
+      lines.push(`**${assetName}** (${asset.filename}):`);
 
-      for (const asset of conditionalAssets) {
-        const totalVariants = componentSetData?.variants.length || 0;
-        const appearsIn = asset.variants?.length || 0;
+      // Show SVG content for inlining
+      if (asset.content) {
+        lines.push('```svg');
+        lines.push(asset.content);
+        lines.push('```');
+      }
 
-        // Only document if the asset doesn't appear in ALL variants
-        if (appearsIn > 0 && appearsIn < totalVariants) {
-          const assetName = asset.filename.replace('.svg', '').replace(/-/g, ' ');
-          lines.push(`**${assetName}** (${asset.filename}):`);
+      // Variant tracking
+      const totalVariants = componentSetData?.variants.length || 0;
+      const appearsIn = asset.variants?.length || 0;
 
-          // Try to detect patterns in variant names
-          const variantNames = asset.variants || [];
-          const hasLoadingState = variantNames.some(v => v.toLowerCase().includes('loading'));
-          const hasHoverState = variantNames.some(v => v.toLowerCase().includes('hover'));
-          const hasDisabledState = variantNames.some(v => v.toLowerCase().includes('disabled'));
-          const hasErrorState = variantNames.some(v => v.toLowerCase().includes('error'));
+      if (appearsIn > 0 && appearsIn < totalVariants) {
+        const variantNames = asset.variants || [];
+        const hasLoadingState = variantNames.some(v => v.toLowerCase().includes('loading'));
+        const hasHoverState = variantNames.some(v => v.toLowerCase().includes('hover'));
+        const hasDisabledState = variantNames.some(v => v.toLowerCase().includes('disabled'));
 
-          if (hasLoadingState && !hasHoverState && !hasDisabledState) {
-            lines.push(`  - Only appears in LOADING state`);
-            lines.push(`  - Use conditional rendering: {props.loading && <img src="./assets/${asset.filename}" />}`);
-          } else if (variantNames.length <= 5) {
-            lines.push(`  - Only appears in: ${variantNames.join(', ')}`);
-            lines.push(`  - Appears in ${appearsIn}/${totalVariants} variants`);
-          } else {
-            lines.push(`  - Appears in ${appearsIn}/${totalVariants} variants`);
-          }
-
-          if (asset.isColorVariant) {
-            lines.push(`  - ✓ This SVG uses \`currentColor\` and can be recolored via CSS`);
-          }
-
-          lines.push('');
+        if (hasLoadingState && !hasHoverState && !hasDisabledState) {
+          lines.push(`  - Only appears in LOADING state → use conditional: {props.loading && <svg>...</svg>}`);
+        } else if (variantNames.length <= 5) {
+          lines.push(`  - Appears in: ${variantNames.join(', ')}`);
+        } else {
+          lines.push(`  - Appears in ${appearsIn}/${totalVariants} variants`);
         }
       }
+
+      if (asset.isColorVariant || (asset.content && asset.content.includes('currentColor'))) {
+        lines.push(`  - ✓ Uses \`currentColor\` - can be styled via CSS color property`);
+      }
+
+      lines.push('');
     }
   }
 
@@ -597,7 +598,7 @@ export function buildComponentSetSystemPrompt(): string {
 10. For text content children, use {props.children || '<actual text from YAML>'}
 11. Map boolean props to appropriate HTML attributes AND CSS class/data-attribute modifiers
 12. For boolean props like "error", "filled", etc., add data-{name} attribute to root element
-13. CRITICAL: When the structure description says "render as: <img src='...'>" for an icon/image node, you MUST use an <img> tag with that exact src path. Do NOT use div, svg, or any other element.
+13. CRITICAL - SVG INLINING: When SVG assets are provided in the prompt with their markup, you MUST copy the <svg>...</svg> element directly into the JSX. DO NOT use <img> tags. SVGs with currentColor can be styled via CSS when inlined. For conditional icons (like loading spinners), wrap the inlined SVG in conditionals.
 14. CRITICAL: For BOOLEAN visibility props with default=true, use {props.name !== false ? ... : null} NOT {props.name ? ... : null}
 15. CRITICAL: For BOOLEAN visibility props with default=false, use {props.name ? ... : null}
 

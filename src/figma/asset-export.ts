@@ -37,6 +37,13 @@ export interface AssetEntry {
   isColorVariant?: boolean;
   /** SVG path signature for deduplication (hash of path data) */
   pathSignature?: string;
+  /** Original Figma styling data */
+  figmaStyles?: {
+    fills?: any[];
+    strokes?: any[];
+    strokeWeight?: number;
+    opacity?: number;
+  };
 }
 
 export interface IconCollectionContext {
@@ -49,6 +56,12 @@ export interface IconCollectionContext {
     dimensions?: { width: number; height: number };
     parentName?: string;
     variantName: string;
+    figmaStyles?: {
+      fills?: any[];
+      strokes?: any[];
+      strokeWeight?: number;
+      opacity?: number;
+    };
   }>;
 }
 
@@ -140,10 +153,10 @@ export function isAssetNode(node: any): boolean {
  */
 export function collectAssetNodes(
   node: any,
-  result: { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string }[] = [],
+  result: { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] = [],
   parentDimensions?: { width: number; height: number },
   parentName?: string,
-): { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string }[] {
+): { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] {
   if (!node) return result;
 
   // Extract dimensions from this node (could be in layout.dimensions or node.dimensions)
@@ -170,11 +183,19 @@ export function collectAssetNodes(
       iconName = node.children[0].name;
     }
 
+    // Extract Figma styling data for this icon
+    const figmaStyles: any = {};
+    if (node.fills && node.fills.length > 0) figmaStyles.fills = node.fills;
+    if (node.strokes && node.strokes.length > 0) figmaStyles.strokes = node.strokes;
+    if (node.strokeWeight !== undefined) figmaStyles.strokeWeight = node.strokeWeight;
+    if (node.opacity !== undefined && node.opacity !== 1) figmaStyles.opacity = node.opacity;
+
     result.push({
       id: node.id,
       name: iconName, // Use inner child name (Star, Spinner) instead of frame name (Left Icon)
       dimensions: nodeDimensions,
       parentName: useParentName || (node.name ?? 'vector'), // Keep frame name as parent (Left Icon, Right Icon)
+      figmaStyles: Object.keys(figmaStyles).length > 0 ? figmaStyles : undefined,
     });
     return result; // do not recurse into the asset node itself
   }
@@ -205,7 +226,11 @@ export function collectAssetNodesFromAllVariants(
     if (nodes.length > 0) {
       allContexts.push({
         variantName,
-        allNodes: nodes.map(n => ({ ...n, variantName })),
+        allNodes: nodes.map(n => ({
+          ...n,
+          variantName,
+          figmaStyles: n.figmaStyles
+        })),
       });
     }
   }
@@ -465,6 +490,7 @@ export async function exportAssetsFromAllVariants(
     dimensions?: { width: number; height: number };
     parentName?: string;
     variants: string[];  // Track which variants this node appears in
+    figmaStyles?: any;   // Figma styling data (fills, strokes, etc.)
   }>();
 
   for (const context of contexts) {
@@ -476,6 +502,7 @@ export async function exportAssetsFromAllVariants(
           dimensions: node.dimensions,
           parentName: node.parentName,
           variants: [],
+          figmaStyles: node.figmaStyles,
         });
       }
 
@@ -530,6 +557,7 @@ export async function exportAssetsFromAllVariants(
       dimensions: node.dimensions,
       parentName: node.parentName,
       variants: [...node.variants],  // Copy variant list
+      figmaStyles: node.figmaStyles,  // Preserve Figma styling data
     });
   }
 

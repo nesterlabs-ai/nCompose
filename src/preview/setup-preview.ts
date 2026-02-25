@@ -8,7 +8,7 @@
  * - Updates App.jsx to render the component
  */
 
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync, unlinkSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync, unlinkSync, rmSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -16,33 +16,96 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Clean preview app before setting up new component
- * Removes old components and assets to prevent interference
+ * Archive old components and assets before cleaning
+ * Creates a timestamped backup in preview-app/_archive/
  */
-export function cleanPreviewApp(previewAppDir: string): void {
-  // Clean components directory
+function archiveOldComponents(previewAppDir: string): void {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+  const archiveDir = join(previewAppDir, '_archive', `backup-${timestamp}`);
+
   const componentsDir = join(previewAppDir, 'src', 'components');
+  const assetsDir = join(previewAppDir, 'public', 'assets');
+
+  let hasContent = false;
+
+  // Archive components if they exist
   if (existsSync(componentsDir)) {
-    const files = readdirSync(componentsDir);
-    for (const file of files) {
-      if (file.endsWith('.jsx') || file.endsWith('.tsx')) {
-        unlinkSync(join(componentsDir, file));
+    const items = readdirSync(componentsDir);
+    if (items.length > 0) {
+      const archiveComponentsDir = join(archiveDir, 'components');
+      mkdirSync(archiveComponentsDir, { recursive: true });
+      for (const item of items) {
+        cpSync(join(componentsDir, item), join(archiveComponentsDir, item), { recursive: true });
       }
+      hasContent = true;
     }
-    console.log(`✓ Cleaned ${files.length} old component(s)`);
   }
 
-  // Clean assets directory
+  // Archive assets if they exist
+  if (existsSync(assetsDir)) {
+    const items = readdirSync(assetsDir);
+    if (items.length > 0) {
+      const archiveAssetsDir = join(archiveDir, 'assets');
+      mkdirSync(archiveAssetsDir, { recursive: true });
+      for (const item of items) {
+        cpSync(join(assetsDir, item), join(archiveAssetsDir, item), { recursive: true });
+      }
+      hasContent = true;
+    }
+  }
+
+  if (hasContent) {
+    console.log(`✓ Archived old components to ${archiveDir}`);
+  }
+}
+
+/**
+ * Clean preview app before setting up new component
+ * Removes ALL old components and assets to prevent interference
+ * Optionally archives old content before cleaning
+ */
+export function cleanPreviewApp(previewAppDir: string, options?: { archive?: boolean }): void {
+  // Archive old components before cleaning (if requested)
+  if (options?.archive) {
+    archiveOldComponents(previewAppDir);
+  }
+
+  let cleanedItems = 0;
+
+  // Clean components directory - remove ALL files and directories
+  const componentsDir = join(previewAppDir, 'src', 'components');
+  if (existsSync(componentsDir)) {
+    const items = readdirSync(componentsDir);
+    for (const item of items) {
+      const itemPath = join(componentsDir, item);
+      try {
+        rmSync(itemPath, { recursive: true, force: true });
+        cleanedItems++;
+      } catch (err) {
+        console.warn(`Warning: Failed to remove ${itemPath}:`, err);
+      }
+    }
+    if (cleanedItems > 0) {
+      console.log(`✓ Cleaned ${cleanedItems} old component(s) and directories`);
+    }
+  }
+
+  // Clean assets directory - remove ALL files
   const assetsDir = join(previewAppDir, 'public', 'assets');
+  let cleanedAssets = 0;
   if (existsSync(assetsDir)) {
     const files = readdirSync(assetsDir);
     for (const file of files) {
-      if (file.endsWith('.svg') || file.endsWith('.png') || file.endsWith('.jpg')) {
-        unlinkSync(join(assetsDir, file));
+      const filePath = join(assetsDir, file);
+      try {
+        rmSync(filePath, { recursive: true, force: true });
+        cleanedAssets++;
+      } catch (err) {
+        console.warn(`Warning: Failed to remove ${filePath}:`, err);
       }
     }
-    if (files.length > 0) {
-      console.log(`✓ Cleaned ${files.length} old asset(s)`);
+    if (cleanedAssets > 0) {
+      console.log(`✓ Cleaned ${cleanedAssets} old asset(s)`);
     }
   }
 }
@@ -131,21 +194,11 @@ function generateAppContent(componentName: string, componentPropertyDefinitions?
         // BOOLEAN props with default=true should be passed as true
         basePropsLines.push(`  ${camelName}={true}`);
       } else if (propDef.type === 'INSTANCE_SWAP') {
-        // INSTANCE_SWAP props get a matching icon asset if available
-        // Try to find a matching asset file based on property name
-        const propNameLower = propName.toLowerCase();
-        let iconPath = '/assets/star.svg'; // fallback
-
-        // Look for matching asset file (e.g., "Choose Left Icon" -> "left-icon.svg")
-        for (const assetFile of assetFiles) {
-          const fileNameLower = assetFile.toLowerCase().replace('.svg', '');
-          if (propNameLower.includes(fileNameLower) || fileNameLower.includes('left') && propNameLower.includes('left') || fileNameLower.includes('right') && propNameLower.includes('right')) {
-            iconPath = `/assets/${assetFile}`;
-            break;
-          }
-        }
-
-        basePropsLines.push(`  ${camelName}={<img src="${iconPath}" alt="icon" />}`);
+        // Skip INSTANCE_SWAP props in preview - let component use its own defaults
+        // The component already has correct conditional icon rendering baked in
+        // (e.g., props.loading ? spinner : star)
+        // If we override with static icons, we break the conditional logic
+        continue;
       } else if (propDef.type === 'TEXT' && propDef.defaultValue) {
         // TEXT props with defaults (usually handled via children, but can be explicit)
         // Skip for now as they're typically passed via children

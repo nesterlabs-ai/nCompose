@@ -181,6 +181,7 @@ async function convertComponentSet(
     onStep?.(`  Found ${totalNodes} icon node(s) across ${variantContexts.length} variant(s)`);
   }
 
+
   // Export all unique SVGs with deduplication and variant tracking
   onStep?.('Exporting and deduplicating SVG assets...');
   const assets = variantContexts.length > 0

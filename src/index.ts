@@ -133,7 +133,8 @@ program
           console.log(chalk.dim(`  Expected: ${previewAppDir}\n`));
         } else {
           // Clean preview app first to avoid old CSS/script interference
-          cleanPreviewApp(previewAppDir);
+          // Archive old components before cleaning for backup/comparison
+          cleanPreviewApp(previewAppDir, { archive: true });
 
           // Set up preview
           const reactOutputPath = join(componentOutputDir, `${result.componentName}.jsx`);

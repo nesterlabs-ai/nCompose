@@ -158,7 +158,7 @@ function buildSimplifiedLayout(node: any): any {
   // Display mode
   if (node.layoutMode === 'HORIZONTAL' || node.layoutMode === 'VERTICAL') {
     layout.display = 'flex';
-    layout.flexDirection = node.layoutMode === 'HORIZONTAL' ? 'row' : 'column';
+    layout['flex-direction'] = node.layoutMode === 'HORIZONTAL' ? 'row' : 'column';
 
     // Alignment
     if (node.primaryAxisAlignItems) {
@@ -168,7 +168,7 @@ function buildSimplifiedLayout(node: any): any {
         MAX: 'flex-end',
         SPACE_BETWEEN: 'space-between',
       };
-      layout.justifyContent = alignMap[node.primaryAxisAlignItems] || 'flex-start';
+      layout['justify-content'] = alignMap[node.primaryAxisAlignItems] || 'flex-start';
     }
 
     if (node.counterAxisAlignItems) {
@@ -177,7 +177,7 @@ function buildSimplifiedLayout(node: any): any {
         CENTER: 'center',
         MAX: 'flex-end',
       };
-      layout.alignItems = alignMap[node.counterAxisAlignItems] || 'stretch';
+      layout['align-items'] = alignMap[node.counterAxisAlignItems] || 'stretch';
     }
 
     // Gap
@@ -206,6 +206,25 @@ function buildSimplifiedLayout(node: any): any {
     }
   }
 
+  // Align self - child alignment in parent flex container
+  if (node.layoutAlign) {
+    const alignMap: Record<string, string> = {
+      INHERIT: 'auto',
+      STRETCH: 'stretch',
+      MIN: 'flex-start',
+      CENTER: 'center',
+      MAX: 'flex-end',
+    };
+    layout['align-self'] = alignMap[node.layoutAlign];
+  }
+
+  // Flex grow/shrink - for flexible sizing in flex containers
+  if (node.layoutGrow !== undefined && node.layoutGrow !== 0) {
+    // Build flex shorthand: flex-grow flex-shrink flex-basis
+    // Default: "1 0 0" when layoutGrow is set
+    layout.flex = `${node.layoutGrow} 0 0`;
+  }
+
   // Sizing
   if (node.absoluteBoundingBox) {
     layout.width = `${node.absoluteBoundingBox.width}px`;
@@ -219,6 +238,22 @@ function buildSimplifiedLayout(node: any): any {
     if (node.relativeTransform) {
       layout.left = `${node.relativeTransform[0][2]}px`;
       layout.top = `${node.relativeTransform[1][2]}px`;
+    }
+  }
+
+  // Overflow - controls content clipping
+  if (node.clipsContent === true) {
+    layout.overflow = 'hidden';
+  }
+
+  // Aspect ratio - maintains width/height ratio
+  if (node.preserveRatio === true && node.absoluteBoundingBox) {
+    const width = node.absoluteBoundingBox.width;
+    const height = node.absoluteBoundingBox.height;
+    if (width > 0 && height > 0) {
+      // Use decimal format for better precision
+      const ratio = (width / height).toFixed(3);
+      layout['aspect-ratio'] = ratio;
     }
   }
 

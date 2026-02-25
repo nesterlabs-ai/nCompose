@@ -506,10 +506,16 @@ function resolveVariantStyles(
     // Try globalStyles first, then direct node properties
     const textStyle = globalStyles[textChild.textStyle];
     if (textStyle) {
-      if (textStyle.fontFamily) text['font-family'] = textStyle.fontFamily;
-      if (textStyle.fontWeight) text['font-weight'] = String(textStyle.fontWeight);
-      if (textStyle.fontSize) text['font-size'] = addUnit(textStyle.fontSize, 'px');
-      if (textStyle.lineHeight) text['line-height'] = textStyle.lineHeight;
+      // Universal converter format: merge all CSS properties directly
+      if (typeof textStyle === 'object') {
+        Object.assign(text, textStyle);
+      } else {
+        // Old format: specific properties only
+        if (textStyle.fontFamily) text['font-family'] = textStyle.fontFamily;
+        if (textStyle.fontWeight) text['font-weight'] = String(textStyle.fontWeight);
+        if (textStyle.fontSize) text['font-size'] = addUnit(textStyle.fontSize, 'px');
+        if (textStyle.lineHeight) text['line-height'] = textStyle.lineHeight;
+      }
     } else if (textChild.style) {
       // Direct from node (complete extraction)
       if (textChild.style.fontFamily) text['font-family'] = textChild.style.fontFamily;
@@ -521,9 +527,16 @@ function resolveVariantStyles(
       }
     }
 
-    const textFills = globalStyles[textChild.fills] || extractFillsFromNode(textChild);
+    const textFills = globalStyles[textChild.fillsRef] || globalStyles[textChild.fills] || extractFillsFromNode(textChild);
     if (textFills && Array.isArray(textFills) && textFills.length > 0) {
-      text['color'] = textFills[0];
+      // Handle both simplified format (array of objects with color property) and old format (array of color strings)
+      const firstFill = textFills[0];
+      if (typeof firstFill === 'string') {
+        text['color'] = firstFill;
+      } else if (firstFill?.color) {
+        // Apply opacity to color if present
+        text['color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
+      }
     }
   }
 
@@ -557,10 +570,16 @@ function resolveVariantStyles(
         // Try globalStyles first, then direct node properties
         const ts = globalStyles[child.textStyle];
         if (ts) {
-          if (ts.fontFamily) childCSS['font-family'] = ts.fontFamily;
-          if (ts.fontWeight) childCSS['font-weight'] = String(ts.fontWeight);
-          if (ts.fontSize) childCSS['font-size'] = addUnit(ts.fontSize, 'px');
-          if (ts.lineHeight) childCSS['line-height'] = ts.lineHeight;
+          // Universal converter format: merge all CSS properties directly
+          if (typeof ts === 'object') {
+            Object.assign(childCSS, ts);
+          } else {
+            // Old format: specific properties only
+            if (ts.fontFamily) childCSS['font-family'] = ts.fontFamily;
+            if (ts.fontWeight) childCSS['font-weight'] = String(ts.fontWeight);
+            if (ts.fontSize) childCSS['font-size'] = addUnit(ts.fontSize, 'px');
+            if (ts.lineHeight) childCSS['line-height'] = ts.lineHeight;
+          }
         } else if (child.style) {
           // Direct from node (complete extraction)
           if (child.style.fontFamily) childCSS['font-family'] = child.style.fontFamily;
@@ -572,9 +591,16 @@ function resolveVariantStyles(
           }
         }
 
-        const cf = globalStyles[child.fills] || extractFillsFromNode(child);
+        const cf = globalStyles[child.fillsRef] || globalStyles[child.fills] || extractFillsFromNode(child);
         if (cf && Array.isArray(cf) && cf.length > 0) {
-          childCSS['color'] = cf[0];
+          // Handle both simplified format (array of objects with color property) and old format (array of color strings)
+          const firstFill = cf[0];
+          if (typeof firstFill === 'string') {
+            childCSS['color'] = firstFill;
+          } else if (firstFill?.color) {
+            // Apply opacity to color if present
+            childCSS['color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
+          }
         }
       }
 
@@ -592,6 +618,40 @@ function resolveVariantStyles(
  */
 function rgbToHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+/**
+ * Apply opacity to a color string (rgb/rgba/hex)
+ * If opacity is undefined or 1, returns the color unchanged
+ * Otherwise converts to rgba format with the opacity applied
+ */
+function applyOpacityToColor(color: string, opacity?: number): string {
+  if (opacity === undefined || opacity === 1) {
+    return color;
+  }
+
+  // Parse rgb() or rgba() format
+  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1]);
+    const g = parseInt(rgbMatch[2]);
+    const b = parseInt(rgbMatch[3]);
+    const existingAlpha = rgbMatch[4] ? parseFloat(rgbMatch[4]) : 1;
+    const finalAlpha = existingAlpha * opacity;
+    return `rgba(${r}, ${g}, ${b}, ${finalAlpha})`;
+  }
+
+  // Parse hex format
+  const hexMatch = color.match(/^#([0-9A-Fa-f]{6})$/);
+  if (hexMatch) {
+    const r = parseInt(hexMatch[1].substring(0, 2), 16);
+    const g = parseInt(hexMatch[1].substring(2, 4), 16);
+    const b = parseInt(hexMatch[1].substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+  }
+
+  // Fallback: return original color
+  return color;
 }
 
 /**
@@ -652,24 +712,31 @@ function resolveNodeCSS(
 
   // Try globalStyles first (Framelink path), then fall back to node properties (complete extraction path)
 
-  // Layout
-  const layout = globalStyles[node.layout] || extractLayoutFromNode(node);
-  if (layout) {
-    if (layout.mode === 'row' || node.layoutMode === 'HORIZONTAL') {
-      css['display'] = 'flex';
-      css['flex-direction'] = 'row';
-    } else if (layout.mode === 'column' || node.layoutMode === 'VERTICAL') {
-      css['display'] = 'flex';
-      css['flex-direction'] = 'column';
+  // Layout - try simplified CSS-ready layout from universal converter first
+  const layoutCSS = globalStyles[node.layoutRef];
+  if (layoutCSS && typeof layoutCSS === 'object') {
+    // Universal converter format: CSS properties are already ready to use
+    Object.assign(css, layoutCSS);
+  } else {
+    // Fallback to old format or extract from node
+    const layout = globalStyles[node.layout] || extractLayoutFromNode(node);
+    if (layout) {
+      if (layout.mode === 'row' || node.layoutMode === 'HORIZONTAL') {
+        css['display'] = 'flex';
+        css['flex-direction'] = 'row';
+      } else if (layout.mode === 'column' || node.layoutMode === 'VERTICAL') {
+        css['display'] = 'flex';
+        css['flex-direction'] = 'column';
+      }
+      if (layout.justifyContent) css['justify-content'] = layout.justifyContent;
+      if (layout.alignItems) css['align-items'] = layout.alignItems;
+      if (layout.gap) css['gap'] = layout.gap;
+      if (layout.padding) css['padding'] = layout.padding;
+      if (layout.dimensions?.height) css['height'] = `${layout.dimensions.height}px`;
+      if (layout.dimensions?.width) css['width'] = `${layout.dimensions.width}px`;
+      if (layout.dimensions?.minHeight) css['min-height'] = `${layout.dimensions.minHeight}px`;
+      if (layout.dimensions?.minWidth) css['min-width'] = `${layout.dimensions.minWidth}px`;
     }
-    if (layout.justifyContent) css['justify-content'] = layout.justifyContent;
-    if (layout.alignItems) css['align-items'] = layout.alignItems;
-    if (layout.gap) css['gap'] = layout.gap;
-    if (layout.padding) css['padding'] = layout.padding;
-    if (layout.dimensions?.height) css['height'] = `${layout.dimensions.height}px`;
-    if (layout.dimensions?.width) css['width'] = `${layout.dimensions.width}px`;
-    if (layout.dimensions?.minHeight) css['min-height'] = `${layout.dimensions.minHeight}px`;
-    if (layout.dimensions?.minWidth) css['min-width'] = `${layout.dimensions.minWidth}px`;
   }
 
   // Direct node properties (complete extraction)
@@ -708,17 +775,30 @@ function resolveNodeCSS(
     }
   }
 
-  // Fills (background)
-  const fills = globalStyles[node.fills] || extractFillsFromNode(node);
+  // Fills (background) - try fillsRef first, then falls back to fills
+  const fills = globalStyles[node.fillsRef] || globalStyles[node.fills] || extractFillsFromNode(node);
   if (fills && Array.isArray(fills) && fills.length > 0) {
-    css['background-color'] = fills[0];
+    // Handle both simplified format (array of objects with color property) and old format (array of color strings)
+    const firstFill = fills[0];
+    if (typeof firstFill === 'string') {
+      css['background-color'] = firstFill;
+    } else if (firstFill?.color) {
+      // Apply opacity to color if present
+      css['background-color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
+    }
   }
 
-  // Strokes (border)
-  const strokes = globalStyles[node.strokes] || extractStrokesFromNode(node);
-  if (strokes?.colors?.[0] && strokes?.strokeWeight) {
-    // Add !important to override base border: none !important
-    css['border'] = `${strokes.strokeWeight} solid ${strokes.colors[0]} !important`;
+  // Strokes (border) - try strokesRef first, then falls back to strokes
+  const strokes = globalStyles[node.strokesRef] || globalStyles[node.strokes] || extractStrokesFromNode(node);
+  if (strokes) {
+    // Handle both simplified format (from universal converter) and old format
+    if (strokes.color && strokes.width !== undefined) {
+      // Simplified format: { color: 'rgb(...)', width: 2 }
+      css['border'] = `${strokes.width}px solid ${strokes.color} !important`;
+    } else if (strokes.colors?.[0] && strokes.strokeWeight) {
+      // Old format: { colors: ['#...'], strokeWeight: '2px' }
+      css['border'] = `${strokes.strokeWeight} solid ${strokes.colors[0]} !important`;
+    }
   }
 
   // Border radius
@@ -733,10 +813,15 @@ function resolveNodeCSS(
     css['opacity'] = String(node.opacity);
   }
 
-  // Effects
-  const effects = globalStyles[node.effects] || extractEffectsFromNode(node);
+  // Effects - try effectsRef first, then falls back to effects
+  const effects = globalStyles[node.effectsRef] || globalStyles[node.effects] || extractEffectsFromNode(node);
   if (effects) {
-    if (effects.boxShadow) css['box-shadow'] = effects.boxShadow;
+    // Handle both simplified format (array) and old format (string)
+    if (effects.boxShadow) {
+      css['box-shadow'] = Array.isArray(effects.boxShadow)
+        ? effects.boxShadow.join(', ')
+        : effects.boxShadow;
+    }
     if (effects.backdropFilter) css['backdrop-filter'] = effects.backdropFilter;
   }
 

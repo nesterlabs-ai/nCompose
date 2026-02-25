@@ -157,29 +157,29 @@ function buildSimplifiedTextStyle(node: any): any {
 
   if (node.style) {
     if (node.style.fontFamily) {
-      style.fontFamily = node.style.fontFamily;
+      style['font-family'] = node.style.fontFamily;
     }
 
     if (node.style.fontSize) {
-      style.fontSize = `${node.style.fontSize}px`;
+      style['font-size'] = `${node.style.fontSize}px`;
     }
 
     if (node.style.fontWeight) {
-      style.fontWeight = node.style.fontWeight;
+      style['font-weight'] = node.style.fontWeight;
     }
 
     // Line height
     if (node.style.lineHeightPx) {
-      style.lineHeight = `${node.style.lineHeightPx}px`;
+      style['line-height'] = `${node.style.lineHeightPx}px`;
     } else if (node.style.lineHeightPercent) {
-      style.lineHeight = `${node.style.lineHeightPercent}%`;
+      style['line-height'] = `${node.style.lineHeightPercent}%`;
     } else if (node.style.lineHeightPercentFontSize) {
-      style.lineHeight = node.style.lineHeightPercentFontSize / 100;
+      style['line-height'] = node.style.lineHeightPercentFontSize / 100;
     }
 
     // Letter spacing
     if (node.style.letterSpacing) {
-      style.letterSpacing = `${node.style.letterSpacing}px`;
+      style['letter-spacing'] = `${node.style.letterSpacing}px`;
     }
 
     // Text alignment
@@ -190,12 +190,12 @@ function buildSimplifiedTextStyle(node: any): any {
         RIGHT: 'right',
         JUSTIFIED: 'justify',
       };
-      style.textAlign = alignMap[node.textAlignHorizontal] || 'left';
+      style['text-align'] = alignMap[node.textAlignHorizontal] || 'left';
     }
 
     // Text decoration
     if (node.style.textDecoration && node.style.textDecoration !== 'NONE') {
-      style.textDecoration = node.style.textDecoration.toLowerCase();
+      style['text-decoration'] = node.style.textDecoration.toLowerCase();
     }
 
     // Text transform (case)
@@ -205,12 +205,12 @@ function buildSimplifiedTextStyle(node: any): any {
         LOWER: 'lowercase',
         TITLE: 'capitalize',
       };
-      style.textTransform = caseMap[node.style.textCase];
+      style['text-transform'] = caseMap[node.style.textCase];
     }
 
     // Italic
     if (node.style.italic) {
-      style.fontStyle = 'italic';
+      style['font-style'] = 'italic';
     }
 
     // Color from fills
@@ -219,6 +219,23 @@ function buildSimplifiedTextStyle(node: any): any {
       if (fill.type === 'SOLID' && fill.color) {
         style.color = rgbaToString(fill.color);
       }
+    }
+  }
+
+  // Text overflow - controls how overflowing text is displayed
+  if (node.textTruncation === 'ENDING') {
+    style['text-overflow'] = 'ellipsis';
+  }
+
+  // White space - controls text wrapping behavior
+  // Derive from textAutoResize and maxLines properties
+  if (node.textAutoResize === 'WIDTH_AND_HEIGHT' && node.maxLines === 1) {
+    // Single line text that doesn't wrap
+    style['white-space'] = 'nowrap';
+  } else if (node.textAutoResize === 'NONE' || node.textAutoResize === 'HEIGHT') {
+    // Fixed width text box - may need nowrap if maxLines is 1
+    if (node.maxLines === 1) {
+      style['white-space'] = 'nowrap';
     }
   }
 

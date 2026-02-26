@@ -5,6 +5,7 @@ dist/
 
 # Generated output
 output/
+web_output/
 
 # Test output
 test/__integration_output__/

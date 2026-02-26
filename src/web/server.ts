@@ -4,6 +4,7 @@ import archiver from 'archiver';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { convertFigmaToCode } from '../convert.js';
+import { writeOutputFiles } from '../output.js';
 import { generateSessionId } from '../utils/session-id.js';
 import { generatePreviewHTML } from './preview.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
@@ -31,7 +32,7 @@ app.use(express.static(join(__dirname, 'public')));
  * Streams progress via Server-Sent Events, then sends completion data.
  */
 app.post('/api/convert', (req, res) => {
-  const { figmaUrl, figmaToken, frameworks } = req.body;
+  const { figmaUrl, figmaToken, frameworks, name } = req.body;
 
   // Validate inputs
   if (!figmaUrl || typeof figmaUrl !== 'string') {
@@ -74,7 +75,8 @@ app.post('/api/convert', (req, res) => {
     figmaUrl,
     {
       frameworks: selectedFrameworks,
-      output: './output',
+      output: './web_output',
+      name: name && typeof name === 'string' ? name.trim() : undefined,
       llm: 'claude',
       depth: 25,
     },
@@ -90,6 +92,24 @@ app.post('/api/convert', (req, res) => {
     .then((result) => {
       // Store result in session
       sessions.set(sessionId, result);
+
+      // Write output files to disk (same as CLI)
+      const componentOutputDir = join('./web_output', `${result.componentName}-${sessionId}`);
+      try {
+        writeOutputFiles({
+          outputDir: componentOutputDir,
+          componentName: result.componentName,
+          mitosisSource: result.mitosisSource,
+          frameworkOutputs: result.frameworkOutputs,
+          assets: result.assets,
+          componentPropertyDefinitions: result.componentPropertyDefinitions,
+          variantMetadata: result.variantMetadata,
+        });
+        sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
+      } catch (writeErr) {
+        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
+      }
 
       // Send framework outputs for code display
       sendEvent('complete', {
@@ -195,7 +215,6 @@ app.get('/api/preview/:sessionId', (req, res) => {
     result.componentName,
     sessionId,
     result.componentPropertyDefinitions,
-    result.assets?.map((a) => a.filename) ?? [],
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);

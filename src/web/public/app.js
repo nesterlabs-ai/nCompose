@@ -12,6 +12,7 @@ const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 
 // Left panel
+const componentNameInput = document.getElementById('component-name');
 const figmaUrlInput = document.getElementById('figma-url');
 const convertBtn = document.getElementById('convert-btn');
 const btnSpinner = document.getElementById('btn-spinner');
@@ -120,6 +121,7 @@ function startConversion() {
   const figmaUrl = figmaUrlInput.value.trim();
   const figmaToken = figmaTokenInput.value.trim();
   const frameworks = getSelectedFrameworks();
+  const name = componentNameInput.value.trim() || undefined;
 
   if (!figmaUrl) {
     figmaUrlInput.focus();
@@ -158,7 +160,7 @@ function startConversion() {
   tabsContent.innerHTML = '';
 
   // Start SSE request
-  const body = JSON.stringify({ figmaUrl, figmaToken, frameworks });
+  const body = JSON.stringify({ figmaUrl, figmaToken, frameworks, name });
 
   fetch('/api/convert', {
     method: 'POST',

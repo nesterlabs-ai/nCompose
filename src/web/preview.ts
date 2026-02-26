@@ -75,7 +75,6 @@ function toCamelCase(str: string): string {
 function buildVariantGridApp(
   componentName: string,
   propDefs?: Record<string, any>,
-  assetFiles?: string[],
 ): string {
   if (!propDefs) {
     // No property definitions — render a single instance
@@ -92,8 +91,6 @@ function buildVariantGridApp(
   // Separate VARIANT axes from other properties
   const variantAxes: Array<{ name: string; camel: string; values: string[] }> = [];
   const booleanProps: Array<{ name: string; camel: string; defaultValue: boolean }> = [];
-  const instanceSwapProps: Array<{ name: string; camel: string }> = [];
-
   for (const [name, def] of Object.entries(propDefs)) {
     if (def.type === 'VARIANT' && def.variantOptions) {
       variantAxes.push({
@@ -106,11 +103,6 @@ function buildVariantGridApp(
         name,
         camel: toCamelCase(name),
         defaultValue: def.defaultValue ?? true,
-      });
-    } else if (def.type === 'INSTANCE_SWAP') {
-      instanceSwapProps.push({
-        name,
-        camel: toCamelCase(name),
       });
     }
   }
@@ -155,26 +147,8 @@ function buildVariantGridApp(
       basePropsEntries.push(`${bp.camel}: true`);
     }
   }
-  for (const isp of instanceSwapProps) {
-    const nameL = isp.name.toLowerCase();
-    let iconPath = '';
-    if (assetFiles && assetFiles.length > 0) {
-      for (const f of assetFiles) {
-        const fL = f.toLowerCase().replace('.svg', '');
-        if (
-          nameL.includes(fL) ||
-          (fL.includes('left') && nameL.includes('left')) ||
-          (fL.includes('right') && nameL.includes('right'))
-        ) {
-          iconPath = f;
-          break;
-        }
-      }
-    }
-    if (iconPath) {
-      basePropsEntries.push(`${isp.camel}: React.createElement('img', { src: '/api/preview/' + sessionId + '/assets/${iconPath}', alt: 'icon' })`);
-    }
-  }
+  // INSTANCE_SWAP props are not passed — let the component use its own
+  // inline SVG defaults rather than overriding with <img> tags.
   const basePropsJS = basePropsEntries.length > 0
     ? `  const baseProps = { ${basePropsEntries.join(', ')} };`
     : `  const baseProps = {};`;
@@ -288,10 +262,9 @@ export function generatePreviewHTML(
   componentName: string,
   sessionId: string,
   componentPropertyDefinitions?: Record<string, any>,
-  assetFiles?: string[],
 ): string {
   const { code, css } = transformReactCode(reactCode, componentName, sessionId);
-  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions, assetFiles);
+  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions);
 
   return `<!DOCTYPE html>
 <html lang="en">

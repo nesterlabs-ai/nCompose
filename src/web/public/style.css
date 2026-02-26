@@ -361,6 +361,18 @@ body {
   align-items: center;
 }
 
+.name-input-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.name-input {
+  padding-left: 36px !important;
+  font-size: 13px;
+}
+
 .url-input-wrap {
   flex: 1;
   position: relative;

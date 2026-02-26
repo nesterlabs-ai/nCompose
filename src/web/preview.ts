@@ -1,0 +1,330 @@
+/**
+ * Generates a standalone HTML page that renders a React component
+ * using CDN-loaded React + Babel for in-browser JSX transpilation.
+ *
+ * For COMPONENT_SET results (with componentPropertyDefinitions),
+ * renders a grid of all variant combinations.
+ */
+
+/**
+ * Transform Mitosis-compiled React JSX into browser-runnable code.
+ *
+ * 1. Strip import lines
+ * 2. Add React globals
+ * 3. Rewrite asset paths to API endpoint
+ * 4. Extract and hoist <style> tag CSS
+ */
+function transformReactCode(
+  reactCode: string,
+  componentName: string,
+  sessionId: string,
+): { code: string; css: string } {
+  const lines = reactCode.split('\n');
+  const codeLines: string[] = [];
+  let css = '';
+
+  for (const line of lines) {
+    // Skip import lines
+    if (/^\s*import\s+/.test(line)) continue;
+    // Skip export default
+    if (/^\s*export\s+default\s+/.test(line)) continue;
+    codeLines.push(line);
+  }
+
+  let code = codeLines.join('\n');
+
+  // Extract CSS from style tags: <style>{`...css...`}</style>
+  const styleTagRegex = /<style>\{`([\s\S]*?)`\}<\/style>/g;
+  let styleMatch;
+  while ((styleMatch = styleTagRegex.exec(code)) !== null) {
+    css += styleMatch[1] + '\n';
+  }
+  // Remove <style> tags from JSX (CSS will be in a real <style> element)
+  code = code.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
+
+  // Rewrite asset paths: ./assets/foo.svg → /api/preview/:sessionId/assets/foo.svg
+  code = code.replace(
+    /["']\.\/assets\/([^"']+)["']/g,
+    `"/api/preview/${sessionId}/assets/$1"`,
+  );
+
+  // Also rewrite asset paths in CSS
+  css = css.replace(
+    /url\(["']?\.\/assets\/([^"')]+)["']?\)/g,
+    `url("/api/preview/${sessionId}/assets/$1")`,
+  );
+
+  return { code, css };
+}
+
+/**
+ * Convert a property name to camelCase for use as a React prop.
+ * e.g. "Show Left Icon#3371:152" → "showLeftIcon"
+ */
+function toCamelCase(str: string): string {
+  const clean = str.replace(/#\d+:\d+$/, '');
+  return clean
+    .replace(/[-_\s]+(.)?/g, (_, c) => (c ? c.toUpperCase() : ''))
+    .replace(/^[A-Z]/, (c) => c.toLowerCase());
+}
+
+/**
+ * Build the JavaScript source for the variant grid App component.
+ * Reads componentPropertyDefinitions to discover axes and render all combos.
+ */
+function buildVariantGridApp(
+  componentName: string,
+  propDefs?: Record<string, any>,
+  assetFiles?: string[],
+): string {
+  if (!propDefs) {
+    // No property definitions — render a single instance
+    return `
+    function App() {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
+          <${componentName} />
+        </div>
+      );
+    }`;
+  }
+
+  // Separate VARIANT axes from other properties
+  const variantAxes: Array<{ name: string; camel: string; values: string[] }> = [];
+  const booleanProps: Array<{ name: string; camel: string; defaultValue: boolean }> = [];
+  const instanceSwapProps: Array<{ name: string; camel: string }> = [];
+
+  for (const [name, def] of Object.entries(propDefs)) {
+    if (def.type === 'VARIANT' && def.variantOptions) {
+      variantAxes.push({
+        name,
+        camel: toCamelCase(name),
+        values: def.variantOptions,
+      });
+    } else if (def.type === 'BOOLEAN') {
+      booleanProps.push({
+        name,
+        camel: toCamelCase(name),
+        defaultValue: def.defaultValue ?? true,
+      });
+    } else if (def.type === 'INSTANCE_SWAP') {
+      instanceSwapProps.push({
+        name,
+        camel: toCamelCase(name),
+      });
+    }
+  }
+
+  // Identify the state axis (name is "State" or contains state-like values)
+  const stateKeywords = ['default', 'hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error'];
+  const stateAxisIdx = variantAxes.findIndex((a) => {
+    if (a.name.toLowerCase() === 'state') return true;
+    const lowerVals = a.values.map((v) => v.toLowerCase());
+    return lowerVals.filter((v) => stateKeywords.includes(v)).length >= 2;
+  });
+
+  const stateAxis = stateAxisIdx >= 0 ? variantAxes.splice(stateAxisIdx, 1)[0] : null;
+  const propAxes = variantAxes; // Remaining axes are prop axes (Style, Size, etc.)
+
+  // Build the JS arrays for variant axes
+  const axisArraysJS = propAxes.map((axis) => {
+    const values = JSON.stringify(axis.values.map((v) => v.toLowerCase()));
+    return `  const ${axis.camel}Values = ${values};`;
+  }).join('\n');
+
+  // Build state entries
+  let statesJS = `  const stateEntries = [{ label: 'Default', props: {} }];`;
+  if (stateAxis) {
+    const entries = stateAxis.values.map((val) => {
+      const lower = val.toLowerCase();
+      if (lower === 'default') {
+        return `    { label: '${val}', props: {} }`;
+      }
+      // Compound states like "Error-Hover" → { error: true, hover: true }
+      const parts = val.split(/[-\s]+/).filter(Boolean);
+      const propsObj = parts.map((p) => `${toCamelCase(p)}: true`).join(', ');
+      return `    { label: '${val}', props: { ${propsObj} } }`;
+    });
+    statesJS = `  const stateEntries = [\n${entries.join(',\n')}\n  ];`;
+  }
+
+  // Build base props (boolean defaults + instance swap icons)
+  const basePropsEntries: string[] = [];
+  for (const bp of booleanProps) {
+    if (bp.defaultValue === true) {
+      basePropsEntries.push(`${bp.camel}: true`);
+    }
+  }
+  for (const isp of instanceSwapProps) {
+    const nameL = isp.name.toLowerCase();
+    let iconPath = '';
+    if (assetFiles && assetFiles.length > 0) {
+      for (const f of assetFiles) {
+        const fL = f.toLowerCase().replace('.svg', '');
+        if (
+          nameL.includes(fL) ||
+          (fL.includes('left') && nameL.includes('left')) ||
+          (fL.includes('right') && nameL.includes('right'))
+        ) {
+          iconPath = f;
+          break;
+        }
+      }
+    }
+    if (iconPath) {
+      basePropsEntries.push(`${isp.camel}: React.createElement('img', { src: '/api/preview/' + sessionId + '/assets/${iconPath}', alt: 'icon' })`);
+    }
+  }
+  const basePropsJS = basePropsEntries.length > 0
+    ? `  const baseProps = { ${basePropsEntries.join(', ')} };`
+    : `  const baseProps = {};`;
+
+  // Determine how prop axes map to component props.
+  // Convention: first axis → "variant", second → "size", rest → camelCase of axis name
+  const propMappings = propAxes.map((axis) => {
+    // Use the axis camelCase name directly as the prop name
+    // But for "Style" → "variant" is the common convention
+    const propName = axis.name.toLowerCase() === 'style' ? 'variant'
+                   : axis.name.toLowerCase() === 'type' ? 'variant'
+                   : axis.camel;
+    return { axis, propName };
+  });
+
+  // Build cartesian product of prop axes
+  // Generate nested flatMap for all axis combinations
+  let variantBuildJS: string;
+  if (propAxes.length === 0) {
+    variantBuildJS = `
+  const allVariants = stateEntries.map((state) => ({
+    label: state.label,
+    props: { ...baseProps, ...state.props },
+  }));`;
+  } else {
+    // Build nested flatMap
+    const indent = '    ';
+    let inner = `({
+${indent}  label: [${propMappings.map((m) => m.axis.camel).join(', ')}, state.label].join(' / '),
+${indent}  props: {
+${indent}    ...baseProps,
+${indent}    ${propMappings.map((m) => {
+      const defaultVal = m.axis.values[0].toLowerCase();
+      return `...(${m.axis.camel} !== '${defaultVal}' ? { ${m.propName}: ${m.axis.camel} } : {})`;
+    }).join(`,\n${indent}    `)},
+${indent}    ...state.props,
+${indent}  },
+${indent}})`;
+
+    let expr = `stateEntries.map((state) => ${inner})`;
+
+    // Wrap in flatMaps from innermost to outermost
+    for (let i = propMappings.length - 1; i >= 0; i--) {
+      const m = propMappings[i];
+      expr = `${m.axis.camel}Values.flatMap((${m.axis.camel}) =>\n      ${expr}\n    )`;
+    }
+
+    variantBuildJS = `\n  const allVariants = ${expr};`;
+  }
+
+  return `
+    const sessionId = ${JSON.stringify('')};
+
+${axisArraysJS}
+${statesJS}
+${basePropsJS}
+${variantBuildJS}
+
+    function App() {
+      return (
+        <div style={{ padding: '32px', fontFamily: 'system-ui, -apple-system, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
+          <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+            <h1 style={{ margin: '0 0 8px', fontSize: '28px', fontWeight: 700, color: '#1a1a1a' }}>
+              ${componentName}
+            </h1>
+            <p style={{ margin: '0 0 24px', color: '#666', fontSize: '14px' }}>
+              {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
+            </p>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+              gap: '20px',
+            }}>
+              {allVariants.map((v, i) => (
+                <div key={i} style={{
+                  padding: '20px',
+                  background: '#fff',
+                  borderRadius: '12px',
+                  border: '1px solid #e5e7eb',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '12px',
+                }}>
+                  <div style={{
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    color: '#888',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    textAlign: 'center',
+                  }}>
+                    {v.label}
+                  </div>
+                  <${componentName} {...v.props}>Button</${componentName}>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }`;
+}
+
+/**
+ * Generate a standalone HTML page that renders the React component.
+ * If componentPropertyDefinitions is provided, renders a full variant grid.
+ */
+export function generatePreviewHTML(
+  reactCode: string,
+  componentName: string,
+  sessionId: string,
+  componentPropertyDefinitions?: Record<string, any>,
+  assetFiles?: string[],
+): string {
+  const { code, css } = transformReactCode(reactCode, componentName, sessionId);
+  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions, assetFiles);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Preview: ${componentName}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f8f9fa;
+      min-height: 100vh;
+    }
+    ${css}
+  </style>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    ${code}
+
+    ${appCode}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>`;
+}

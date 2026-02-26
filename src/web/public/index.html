@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nester Figma to Code</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ef3139'/><path d='M10 8h8a2 2 0 012 2v2a2 2 0 01-2 2h-2v6a4 4 0 01-8 0v-6h-2a2 2 0 01-2-2v-2a2 2 0 012-2h4z' fill='white' opacity='0.9'/></svg>" />
+</head>
+<body>
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <button class="topbar__toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <img class="topbar__logo" src="/Nester_white.svg" alt="Nester Labs" />
+    <span class="topbar__title">Figma to Code</span>
+    <span class="topbar__subtitle">Convert Figma designs to production ready code</span>
+  </header>
+
+  <!-- APP SHELL -->
+  <div class="app-shell">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar__content">
+        <!-- Profile Section -->
+        <div class="sidebar__section">
+          <div class="sidebar__section-header">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Profile</span>
+          </div>
+          <p class="sidebar__placeholder">Profile settings coming soon</p>
+        </div>
+
+        <div class="sidebar__divider"></div>
+
+        <!-- Configuration Section -->
+        <div class="sidebar__section">
+          <div class="sidebar__section-header">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="3" y="7" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Configuration</span>
+          </div>
+          <label class="form-label" for="figma-token">Figma Access Token</label>
+          <div class="token-input-wrap">
+            <input class="form-input form-input--sm" type="password" id="figma-token" placeholder="figd_xxxxxxxx..." />
+            <button class="token-toggle" id="token-toggle" type="button" aria-label="Toggle visibility">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" id="eye-icon">
+                <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+            </button>
+          </div>
+          <button class="btn btn--sm btn--outline sidebar__save-btn" id="save-token-btn" type="button">
+            Save Token
+          </button>
+          <div class="token-status" id="token-status"></div>
+        </div>
+      </div>
+
+      <!-- Status Footer -->
+      <div class="sidebar__footer">
+        <span class="status-dot ready" id="status-dot"></span>
+        <span class="status-text" id="status-text">Ready to convert</span>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main">
+
+      <!-- LEFT PANEL: Chat-like -->
+      <div class="panel panel--left" id="panel-left">
+        <div class="panel__header">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M2 3h12M2 8h8M2 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span>Import Design</span>
+        </div>
+
+        <!-- Chat body -->
+        <div class="panel__body" id="panel-body">
+          <div class="empty-state" id="empty-state">
+            <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+              <rect x="4" y="4" width="32" height="32" rx="8" stroke="currentColor" stroke-width="2" opacity="0.3"/>
+              <path d="M14 20h12M20 14v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+            </svg>
+            <p>Enter a Figma URL and click Send to begin converting your design.</p>
+          </div>
+          <ul class="progress-list" id="progress-list"></ul>
+          <div class="error-banner" id="error-banner"></div>
+        </div>
+
+        <!-- Input bar (pinned bottom) -->
+        <div class="panel__input-bar">
+          <div class="framework-row">
+            <label class="chip-label">
+              <input type="checkbox" name="framework" value="react" checked />
+              <span class="chip">React</span>
+            </label>
+            <label class="chip-label">
+              <input type="checkbox" name="framework" value="vue" checked />
+              <span class="chip">Vue</span>
+            </label>
+            <label class="chip-label">
+              <input type="checkbox" name="framework" value="svelte" checked />
+              <span class="chip">Svelte</span>
+            </label>
+            <label class="chip-label">
+              <input type="checkbox" name="framework" value="angular" checked />
+              <span class="chip">Angular</span>
+            </label>
+            <label class="chip-label">
+              <input type="checkbox" name="framework" value="solid" checked />
+              <span class="chip">Solid</span>
+            </label>
+          </div>
+          <div class="input-row">
+            <div class="url-input-wrap">
+              <svg class="url-input-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M6.5 11.5L4 14a2.12 2.12 0 01-3-3l2.5-2.5M9.5 4.5L12 2a2.12 2.12 0 013 3l-2.5 2.5M5.5 10.5l5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <input class="form-input url-input" type="url" id="figma-url" placeholder="Paste Figma URL here..." />
+            </div>
+            <button class="send-btn" type="button" id="convert-btn">
+              <span class="spinner" id="btn-spinner" style="display: none;"></span>
+              <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RESIZE HANDLE -->
+      <div class="resize-handle" id="resize-handle"></div>
+
+      <!-- RIGHT PANEL: Preview + Code -->
+      <div class="panel panel--right" id="panel-right">
+        <div class="panel__toolbar">
+          <div class="toolbar-tabs">
+            <button class="toolbar-btn active" id="mode-preview" data-mode="preview">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M2 6h12" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+              Preview
+            </button>
+            <button class="toolbar-btn" id="mode-code" data-mode="code">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Code
+            </button>
+          </div>
+          <button class="btn btn--primary btn--sm" id="download-btn" style="display: none;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2v8m0 0L5 7m3 3l3-3M3 12h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download ZIP
+          </button>
+        </div>
+
+        <!-- Preview View -->
+        <div class="panel__view" id="view-preview">
+          <div class="preview-empty" id="preview-empty">
+            <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+              <rect x="6" y="6" width="36" height="36" rx="8" stroke="currentColor" stroke-width="2" opacity="0.2"/>
+              <rect x="12" y="14" width="24" height="4" rx="2" fill="currentColor" opacity="0.1"/>
+              <rect x="12" y="22" width="16" height="4" rx="2" fill="currentColor" opacity="0.1"/>
+              <rect x="12" y="30" width="20" height="4" rx="2" fill="currentColor" opacity="0.1"/>
+            </svg>
+            <p>No preview available yet</p>
+            <span>Convert a Figma design to see the preview here</span>
+          </div>
+          <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin" style="display: none;"></iframe>
+        </div>
+
+        <!-- Code View -->
+        <div class="panel__view" id="view-code" style="display: none;">
+          <div class="tabs">
+            <div class="tabs__header" id="tabs-header"></div>
+            <div class="tabs__content" id="tabs-content"></div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Sidebar overlay (mobile) -->
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

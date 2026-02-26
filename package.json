@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "web": "tsx src/web/server.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -25,6 +26,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "archiver": "^7.0.1",
+    "express": "^4.21.2",
     "@anthropic-ai/sdk": "^0.78.0",
     "@builder.io/mitosis": "^0.13.0",
     "@figma/rest-api-spec": "^0.36.0",

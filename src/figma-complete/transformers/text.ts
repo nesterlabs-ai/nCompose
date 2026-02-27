@@ -23,13 +23,13 @@ export function typeStyleToCss(style: TypeStyle): SimplifiedTextStyle {
   }
 
   if (style.lineHeightPx) {
-    css.lineHeight = `${style.lineHeightPx}px`;
+    css.lineHeight = `${Math.round(style.lineHeightPx * 100) / 100}px`;
   } else if (style.lineHeightPercent) {
-    css.lineHeight = `${style.lineHeightPercent}%`;
+    css.lineHeight = `${Math.round(style.lineHeightPercent * 100) / 100}%`;
   }
 
   if (style.letterSpacing) {
-    css.letterSpacing = `${style.letterSpacing}px`;
+    css.letterSpacing = `${Math.round(style.letterSpacing * 100) / 100}px`;
   }
 
   if (style.textAlignHorizontal) {

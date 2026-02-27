@@ -214,7 +214,7 @@ async function convertComponentSet(
   const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
   const systemPrompt = buildComponentSetSystemPrompt();
   const defaultVariantYaml = extractDefaultVariantYaml(componentSetData.defaultVariantNode);
-  const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData);
+  const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS);
 
   // Step A4: LLM generates Mitosis component with class bindings
   const llm = createLLMProvider(options.llm);

@@ -54,6 +54,18 @@ export function validateBEMConsistency(
     return { passed: true, missingInCSS: [], summary: '' };
   }
 
+  // Derive the root base class from CSS (the class that has no __ or -- suffix)
+  const cssBase = [...cssClasses]
+    .filter((c) => !c.includes('__') && !c.includes('--') && !c.includes(':'))
+    .sort((a, b) => a.length - b.length)[0]; // shortest = most likely the root
+
+  // All element classes defined in CSS for the base component
+  const cssElementClasses = cssBase
+    ? [...cssClasses].filter(
+        (c) => c.startsWith(cssBase + '__') && !c.includes('--') && !c.includes(':'),
+      )
+    : [];
+
   // Find JSX classes that don't exist in CSS
   // Allow dynamic classes (from state.classes getter) — only check static ones
   const missingInCSS: string[] = [];
@@ -65,19 +77,30 @@ export function validateBEMConsistency(
     // Skip if it's a BEM modifier that might be applied dynamically
     if (cls.includes('--')) continue;
 
-    // Check if this might be a BEM element without the base prefix
+    // Case 1: BEM element without the base prefix
     // e.g. JSX has "frame-1" but CSS has "checkbox-field__frame-1"
     const matchesWithPrefix = [...cssClasses].some(
       (cssClass) => cssClass.endsWith(`__${cls}`),
     );
-
     if (matchesWithPrefix) {
-      // The class exists in CSS but with a BEM prefix — this is the mismatch
       const correctClass = [...cssClasses].find(
         (cssClass) => cssClass.endsWith(`__${cls}`),
       );
       missingInCSS.push(
         `"${cls}" should be "${correctClass}" (use full BEM path)`,
+      );
+      continue;
+    }
+
+    // Case 2: Completely invented BEM element class — not in CSS at all
+    // e.g. JSX uses "toast__content" but CSS only has "toast__frame-2147225756"
+    if (cssBase && cls.startsWith(cssBase + '__')) {
+      const suggestions = cssElementClasses.slice(0, 5);
+      missingInCSS.push(
+        `"${cls}" is not defined in CSS.` +
+        (suggestions.length > 0
+          ? ` Available element classes: ${suggestions.join(', ')}`
+          : ` No element classes found for base ".${cssBase}"`),
       );
     }
   }
@@ -86,8 +109,8 @@ export function validateBEMConsistency(
     ? `BEM CLASS NAME MISMATCHES (${missingInCSS.length}):\n` +
       `The following class names in JSX don't match the CSS:\n` +
       missingInCSS.map((m) => `- ${m}`).join('\n') +
-      `\n\nFix: Always use the full BEM path from the root class. ` +
-      `E.g. use "component-name__child" not just "child".`
+      `\n\nFix: Only use class names that appear in the CSS. ` +
+      `Available element classes: ${cssElementClasses.slice(0, 8).join(', ')}`
     : '';
 
   return {

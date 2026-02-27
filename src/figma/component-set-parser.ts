@@ -124,6 +124,8 @@ export interface ChildLayerInfo {
   key: string;
   originalName: string;
   nodeType: string;
+  /** Figma node ID (e.g. "3958:25101") — used for asset map lookups */
+  nodeId?: string;
   css: Record<string, string>;
   isIcon: boolean;
   isText: boolean;
@@ -135,6 +137,8 @@ export interface ChildLayerInfo {
   vectorInfo?: VectorInfo;
   /** Image scale mode for RECTANGLE with IMAGE fill */
   imageScaleMode?: 'FILL' | 'FIT' | 'TILE' | 'STRETCH' | 'CROP';
+  /** Text content (only for TEXT nodes) */
+  characters?: string;
 }
 
 export interface IconSlotProperty {
@@ -926,7 +930,9 @@ function collectNamedChildStyles(
 
     if (Object.keys(childCSS).length > 0) out[key] = childCSS;
 
-    if (child.children && child.type !== 'INSTANCE') {
+    // Walk into ALL children including INSTANCE nodes — CSS inside
+    // component instances (button text, icons) must be collected.
+    if (child.children) {
       collectNamedChildStyles(child.children, globalStyles, variables, out, key, depth + 1, maxDepth);
     }
   }
@@ -970,6 +976,7 @@ function extractChildLayers(
         key,
         originalName: child.name,
         nodeType: child.type ?? 'UNKNOWN',
+        nodeId: child.id ?? undefined,
         css,
         isIcon:  isIconKey(key) || VECTOR_NODE_TYPES.has(child.type),
         isText:  child.type === 'TEXT',
@@ -978,8 +985,11 @@ function extractChildLayers(
         inlineRuns,
         vectorInfo,
         imageScaleMode,
+        characters: child.type === 'TEXT' ? (child.characters ?? undefined) : undefined,
       });
-      if (child.children && child.type !== 'INSTANCE') walk(child.children, key, depth + 1);
+      // Walk into ALL children including INSTANCE nodes — we need to see
+      // text labels and icon frames inside component instances (e.g. Button).
+      if (child.children) walk(child.children, key, depth + 1);
     }
   }
 
@@ -1149,7 +1159,53 @@ function resolveTextNodeCSS(
   variables: Record<string, ResolvedVariable>,
 ): Record<string, string> {
   const css: Record<string, string> = {};
-  const ts = globalStyles[node.textStyle] ?? node.style ?? {};
+
+  // Detect CSS-format objects (kebab-case keys from buildSimplifiedTextStyle)
+  const rawTs = globalStyles[node.textStyle];
+  if (rawTs && ('font-family' in rawTs || 'font-size' in rawTs || 'font-weight' in rawTs)) {
+    // Copy CSS-format values directly
+    for (const [k, v] of Object.entries(rawTs)) {
+      if (v == null || v === '') continue;
+      let sv = String(v);
+      // Ensure font-family is quoted with fallback
+      if (k === 'font-family' && !sv.includes('"')) {
+        sv = `"${sv}", sans-serif`;
+      }
+      css[k] = sv;
+    }
+    // Apply design token overrides
+    const ffVar = tryBoundVariable(node, 'fontFamily', variables);
+    if (ffVar) css['font-family'] = ffVar;
+    const fsVar = tryBoundVariable(node, 'fontSize', variables);
+    if (fsVar) css['font-size'] = fsVar;
+    const fwVar = tryBoundVariable(node, 'fontWeight', variables);
+    if (fwVar) css['font-weight'] = fwVar;
+    const colorVar = tryBoundVariable(node, 'fills', variables);
+    if (colorVar) {
+      css['color'] = colorVar;
+    } else if (!css['color']) {
+      const fills = extractFillsFromNode(node, variables);
+      if (Array.isArray(fills) && fills.length > 0) css['color'] = fills[0];
+    }
+    // Node-level text behavior
+    if (node.textAutoResize) {
+      switch (node.textAutoResize) {
+        case 'HEIGHT':
+          css['height'] = 'auto'; css['min-height'] = '1em'; break;
+        case 'WIDTH_AND_HEIGHT':
+          css['width'] = 'max-content'; css['height'] = 'auto'; break;
+        case 'TRUNCATE':
+          css['overflow'] = 'hidden'; css['text-overflow'] = 'ellipsis'; css['white-space'] = 'nowrap'; break;
+      }
+    }
+    const truncation = node.textTruncation;
+    if (truncation === 'ENDING') {
+      css['overflow'] = 'hidden'; css['text-overflow'] = 'ellipsis'; css['white-space'] = 'nowrap';
+    }
+    return css;
+  }
+
+  const ts = rawTs ?? node.style ?? {};
 
   // font-family
   const ffVar = tryBoundVariable(node, 'fontFamily', variables);
@@ -1169,12 +1225,12 @@ function resolveTextNodeCSS(
   // line-height
   if (ts.lineHeight != null) {
     if (typeof ts.lineHeight === 'object') {
-      if (ts.lineHeight.unit === 'PERCENT')     css['line-height'] = `${ts.lineHeight.value}%`;
+      if (ts.lineHeight.unit === 'PERCENT')     css['line-height'] = `${roundCss(ts.lineHeight.value)}%`;
       else if (ts.lineHeight.unit === 'AUTO')   css['line-height'] = 'normal';
-      else                                       css['line-height'] = `${ts.lineHeight.value}px`;
+      else                                       css['line-height'] = `${roundCss(ts.lineHeight.value)}px`;
     } else {
       const lh = ts.lineHeight;
-      css['line-height'] = typeof lh === 'number' ? `${lh}px` : String(lh);
+      css['line-height'] = typeof lh === 'number' ? `${roundCss(lh)}px` : String(lh);
     }
   }
 
@@ -1182,10 +1238,10 @@ function resolveTextNodeCSS(
   if (ts.letterSpacing != null && ts.letterSpacing !== 0) {
     if (typeof ts.letterSpacing === 'object') {
       css['letter-spacing'] = ts.letterSpacing.unit === 'PERCENT'
-        ? `${ts.letterSpacing.value / 100}em`
-        : `${ts.letterSpacing.value}px`;
+        ? `${roundCss(ts.letterSpacing.value / 100)}em`
+        : `${roundCss(ts.letterSpacing.value)}px`;
     } else {
-      css['letter-spacing'] = `${ts.letterSpacing}px`;
+      css['letter-spacing'] = `${roundCss(ts.letterSpacing)}px`;
     }
   }
 
@@ -1860,9 +1916,116 @@ function rgbToHex(r: number, g: number, b: number): string {
 }
 
 function isIconKey(key: string): boolean {
-  const k = key.toLowerCase();
+  const leaf = key.includes('__') ? key.split('__').pop()! : key;
+  const k = leaf.toLowerCase();
+  // Compound names like "icon-and-text" are layout containers, not icons
+  if (k.includes('-and-')) return false;
   return k.includes('icon') || k.includes('leading') || k.includes('trailing') ||
     k.includes('prefix') || k.includes('suffix') || k.includes('adornment');
+}
+
+/** Detects Figma auto-generated node names (e.g. "frame-2147225756", "group-42") */
+function isAutoGeneratedKey(key: string): boolean {
+  return /^(frame|group|rectangle|ellipse|line|vector|star|polygon|instance|component|section)-\d{3,}$/.test(key)
+    || /^\d+$/.test(key);
+}
+
+/**
+ * Infers a semantic BEM element name from a node's content and layout.
+ * Used as a fallback when the Figma layer has an auto-generated name.
+ */
+function inferSemanticKey(node: any): string {
+  const children: any[]  = node.children || [];
+  const textCount        = children.filter((c: any) => c.type === 'TEXT').length;
+  const vectorCount      = children.filter((c: any) => ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'ELLIPSE', 'LINE'].includes(c.type)).length;
+  const frameCount       = children.filter((c: any) => ['FRAME', 'GROUP'].includes(c.type)).length;
+  const instanceCount    = children.filter((c: any) => c.type === 'INSTANCE').length;
+
+  if (children.length === 0) {
+    return node.fills?.some((f: any) => f.type === 'IMAGE') ? 'image' : 'slot';
+  }
+  if (children.length <= 2 && vectorCount > 0 && textCount === 0) return 'icon';
+  if (instanceCount > 0 && textCount === 0 && frameCount === 0) return 'icon';
+  if (textCount > 0 && vectorCount === 0 && frameCount === 0 && instanceCount === 0) {
+    return textCount === 1 ? 'label' : 'text';
+  }
+  if (textCount > 0 && (vectorCount > 0 || instanceCount > 0)) return 'content';
+  if (textCount > 0 && frameCount > 0) return 'body';
+  if (frameCount >= 2 || (frameCount >= 1 && instanceCount >= 1)) {
+    return node.layoutMode === 'HORIZONTAL' ? 'row' : 'stack';
+  }
+  return 'section';
+}
+
+/**
+ * Applies a semantic rename map to a child key using prefix substitution.
+ *
+ * First tries an exact match, then replaces the longest known prefix segment.
+ * This handles variant-specific nodes that don't exist in the default variant —
+ * e.g. if `frame-123__frame-456` → `row__icon`, then
+ * `frame-123__frame-456__warning` becomes `row__icon__warning`.
+ */
+function applyRenameMap(key: string, renameMap: Map<string, string>): string {
+  const exact = renameMap.get(key);
+  if (exact !== undefined) return exact;
+
+  // Try prefix substitution: longest prefix first
+  const segments = key.split('__');
+  for (let len = segments.length - 1; len >= 1; len--) {
+    const prefix  = segments.slice(0, len).join('__');
+    const renamed = renameMap.get(prefix);
+    if (renamed !== undefined) {
+      const suffix = segments.slice(len).join('__');
+      return `${renamed}__${suffix}`;
+    }
+  }
+
+  return key;
+}
+
+/**
+ * Walks the default variant node tree and builds a rename map for child keys
+ * that have Figma auto-generated names (e.g. frame-2147225756 → content).
+ *
+ * Returns Map<originalBEMPath, semanticBEMPath>. Only renamed paths are stored;
+ * callers use `applyRenameMap(key, renameMap)` to resolve with prefix fallback.
+ */
+function buildSemanticRenameMap(rootNode: any): Map<string, string> {
+  const renameMap = new Map<string, string>();
+  if (!rootNode?.children) return renameMap;
+
+  function walk(node: any, origParentPath: string, semParentPath: string): void {
+    const children: any[] = node.children || [];
+    const usedSemKeys     = new Map<string, number>();
+
+    for (let i = 0; i < children.length; i++) {
+      const child   = children[i];
+      const origKey = toKebabCase(child.name ?? '');
+
+      let semKey = origKey;
+      if (isAutoGeneratedKey(origKey)) {
+        semKey = inferSemanticKey(child);
+      }
+
+      // Deduplicate semantic keys at this level
+      const count = usedSemKeys.get(semKey) ?? 0;
+      usedSemKeys.set(semKey, count + 1);
+      const finalSemKey = count > 0 ? `${semKey}-${count + 1}` : semKey;
+
+      const fullOrigPath = origParentPath ? `${origParentPath}__${origKey}` : origKey;
+      const fullSemPath  = semParentPath  ? `${semParentPath}__${finalSemKey}` : finalSemKey;
+
+      if (fullOrigPath !== fullSemPath) {
+        renameMap.set(fullOrigPath, fullSemPath);
+      }
+
+      // Recurse: orig prefix uses original names; sem prefix uses semantic names
+      walk(child, fullOrigPath, fullSemPath);
+    }
+  }
+
+  walk(rootNode, '', '');
+  return renameMap;
 }
 
 function findDimensionsInTree(
@@ -1880,8 +2043,12 @@ function findDimensionsInTree(
   return null;
 }
 
+function roundCss(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function addUnit(value: number | string, unit: string): string {
-  if (typeof value === 'number') return `${value}${unit}`;
+  if (typeof value === 'number') return `${roundCss(value)}${unit}`;
   const s = String(value);
   return /px|em|rem|%|pt|vh|vw|ch|ex$/i.test(s) ? s : `${s}${unit}`;
 }
@@ -1951,6 +2118,9 @@ export function buildVariantCSS(
 
   const emittedFPs = deduplicateRules ? new Set<string>() : undefined;
 
+  // Build semantic rename map: replaces Figma auto-ID keys with inferred names
+  const semanticRenameMap = buildSemanticRenameMap(data.defaultVariantNode);
+
   // 1. Base container
   if (sourceComments) lines.push(`/* ${data.name} | ${data.componentCategory} | <${data.suggestedHtmlTag}> */`);
   lines.push(`.${base} {`);
@@ -1971,13 +2141,14 @@ export function buildVariantCSS(
     if (isIconKey(childKey) && merged['color']) delete merged['color'];
     if (Object.keys(merged).length === 0) continue;
 
-    if (sourceComments) lines.push('', `/* child: ${childKey} */`);
-    lines.push('', `.${base}__${childKey} {`);
+    const effectiveKey = applyRenameMap(childKey, semanticRenameMap);
+    if (sourceComments) lines.push('', `/* child: ${effectiveKey} */`);
+    lines.push('', `.${base}__${effectiveKey} {`);
     for (const [p, v] of Object.entries(merged)) lines.push(`  ${p}: ${v};`);
     lines.push('}');
 
-    if (isIconKey(childKey)) {
-      lines.push('', `.${base}__${childKey} img,`, `.${base}__${childKey} svg {`,
+    if (isIconKey(effectiveKey)) {
+      lines.push('', `.${base}__${effectiveKey} img,`, `.${base}__${effectiveKey} svg {`,
         `  width: 100%;`, `  height: 100%;`, `  object-fit: contain;`, `  display: block;`, '}');
     }
   }
@@ -2005,7 +2176,7 @@ export function buildVariantCSS(
       if (!variant) continue;
 
       if (sourceComments) lines.push('', `/* prop: ${axis.name}=${value} */`);
-      emitDiffRules(lines, base, `.${base}--${toKebabCase(value)}`, data.defaultVariant.styles, variant.styles, emittedFPs);
+      emitDiffRules(lines, base, `.${base}--${toKebabCase(value)}`, data.defaultVariant.styles, variant.styles, emittedFPs, semanticRenameMap);
     }
   }
 
@@ -2018,14 +2189,14 @@ export function buildVariantCSS(
           if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
           const baseVariant = findVariant(stateLookup);
           if (!baseVariant) continue;
-          emitStateOverrides(data, lines, base, `.${base}--${toKebabCase(axisValue)}`, stateLookup, baseVariant, findVariant, sourceComments, emittedFPs);
+          emitStateOverrides(data, lines, base, `.${base}--${toKebabCase(axisValue)}`, stateLookup, baseVariant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
         }
         break;
       }
     } else {
       const stateLookup: Record<string, string> = {};
       if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
-      emitStateOverrides(data, lines, base, `.${base}`, stateLookup, findVariant(stateLookup) ?? data.defaultVariant, findVariant, sourceComments, emittedFPs);
+      emitStateOverrides(data, lines, base, `.${base}`, stateLookup, findVariant(stateLookup) ?? data.defaultVariant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
     }
   }
 
@@ -2044,6 +2215,7 @@ function emitDiffRules(
   baseStyles: VariantStyles,
   variantStyles: VariantStyles,
   fps?: Set<string>,
+  renameMap?: Map<string, string>,
 ): void {
   const cDiff = diffStyles(baseStyles.container, variantStyles.container);
   if (Object.keys(cDiff).length > 0) maybeEmit(lines, selector, cDiff, fps);
@@ -2052,7 +2224,8 @@ function emitDiffRules(
   for (const key of allKeys) {
     const diff = diffStyles(baseStyles.children[key] ?? {}, variantStyles.children[key] ?? {});
     if (isIconKey(key) && diff['color']) delete diff['color'];
-    if (Object.keys(diff).length > 0) maybeEmit(lines, `${selector} .${base}__${key}`, diff, fps);
+    const effectiveKey = renameMap ? applyRenameMap(key, renameMap) : key;
+    if (Object.keys(diff).length > 0) maybeEmit(lines, `${selector} .${base}__${effectiveKey}`, diff, fps);
   }
 }
 
@@ -2080,13 +2253,14 @@ function emitStateOverrides(
   baseLookup: Record<string, string>, baseVariant: VariantEntry,
   findVariant: (p: Record<string, string>) => VariantEntry | undefined,
   sourceComments?: boolean, fps?: Set<string>,
+  renameMap?: Map<string, string>,
 ): void {
   for (const cs of data.classifiedStates) {
     if (cs.cssSelector === '' && cs.booleanCondition === null) continue;
     const stateVariant = findVariant({ ...baseLookup, [data.stateAxis!.name]: cs.originalValue });
     if (!stateVariant) continue;
     if (sourceComments) lines.push('', `/* state: ${cs.originalValue} */`);
-    emitDiffRules(lines, base, buildStateSelector(baseSel, cs), baseVariant.styles, stateVariant.styles, fps);
+    emitDiffRules(lines, base, buildStateSelector(baseSel, cs), baseVariant.styles, stateVariant.styles, fps, renameMap);
   }
 }
 
@@ -2107,7 +2281,8 @@ export function toKebabCase(str: string): string {
   return str
     .replace(/([a-z])([A-Z])/g, '$1-$2')
     .replace(/\s+/g, '-')
-    .replace(/[()[\]/\\]/g, '')
+    // Strip characters invalid in CSS class names and JS identifiers
+    .replace(/[()[\]/\\'",.:;!?@#$%^&*+=|~`<>{}]/g, '')
     .replace(/-{2,}/g, '-')
     .replace(/^-|-$/g, '')
     .toLowerCase();

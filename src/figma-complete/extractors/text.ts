@@ -157,7 +157,7 @@ function buildSimplifiedTextStyle(node: any): any {
 
   if (node.style) {
     if (node.style.fontFamily) {
-      style['font-family'] = node.style.fontFamily;
+      style['font-family'] = `"${node.style.fontFamily}", sans-serif`;
     }
 
     if (node.style.fontSize) {
@@ -170,16 +170,16 @@ function buildSimplifiedTextStyle(node: any): any {
 
     // Line height
     if (node.style.lineHeightPx) {
-      style['line-height'] = `${node.style.lineHeightPx}px`;
+      style['line-height'] = `${Math.round(node.style.lineHeightPx * 100) / 100}px`;
     } else if (node.style.lineHeightPercent) {
-      style['line-height'] = `${node.style.lineHeightPercent}%`;
+      style['line-height'] = `${Math.round(node.style.lineHeightPercent * 100) / 100}%`;
     } else if (node.style.lineHeightPercentFontSize) {
       style['line-height'] = node.style.lineHeightPercentFontSize / 100;
     }
 
     // Letter spacing
     if (node.style.letterSpacing) {
-      style['letter-spacing'] = `${node.style.letterSpacing}px`;
+      style['letter-spacing'] = `${Math.round(node.style.letterSpacing * 100) / 100}px`;
     }
 
     // Text alignment

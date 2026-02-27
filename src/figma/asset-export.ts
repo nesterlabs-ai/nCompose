@@ -72,19 +72,23 @@ export interface IconCollectionContext {
 /**
  * Returns true if a node contains only vector/icon content (INSTANCE, VECTOR, etc.)
  */
+/** Node types that are pure vector/shape content (no text or raster). */
+const PURE_VECTOR_TYPES = new Set([
+  'INSTANCE', 'VECTOR', 'BOOLEAN_OPERATION',
+  'LINE', 'ELLIPSE', 'STAR', 'REGULAR_POLYGON',
+]);
+
 function hasOnlyVectorContent(node: any): boolean {
   if (!node.children || node.children.length === 0) return false;
 
   for (const child of node.children) {
     const type = child.type;
-    // Allow INSTANCE (icon components), VECTOR, BOOLEAN_OPERATION, or nested FRAMEs with vector content
-    if (type === 'INSTANCE' || type === 'VECTOR' || type === 'BOOLEAN_OPERATION') {
+    if (PURE_VECTOR_TYPES.has(type)) continue;
+    // Nested FRAME/GROUP/COMPONENT containers are ok if they also contain only vectors
+    if ((type === 'FRAME' || type === 'GROUP' || type === 'COMPONENT') && hasOnlyVectorContent(child)) {
       continue;
     }
-    if (type === 'FRAME' && hasOnlyVectorContent(child)) {
-      continue;
-    }
-    // If we hit TEXT, IMAGE, or other content, this is not a pure icon container
+    // TEXT, IMAGE, or other content → not a pure icon container
     return false;
   }
 
@@ -101,9 +105,33 @@ function hasOnlyVectorContent(node: any): boolean {
  *    - `FRAME` with no children — icon slot whose vector content was stripped
  *
  * 2. Complete extraction (new):
- *    - `FRAME` with small dimensions (≤32px) containing only INSTANCE/VECTOR children
- *    - Typically icon containers like "Left Icon", "Right Icon", etc.
+ *    - `FRAME` with small dimensions (≤64px) containing only INSTANCE/VECTOR children
+ *    - Typically icon containers like "Left Icon", "Right Icon", status icons, etc.
  */
+/**
+ * Helper: extract width/height from any node (checks multiple sources).
+ */
+function getNodeDimensions(node: any): { width: number; height: number } | undefined {
+  if (node.absoluteBoundingBox?.width != null && node.absoluteBoundingBox?.height != null) {
+    return { width: node.absoluteBoundingBox.width, height: node.absoluteBoundingBox.height };
+  }
+  if (node.dimensions?.width != null && node.dimensions?.height != null) {
+    return { width: node.dimensions.width, height: node.dimensions.height };
+  }
+  if (node.size?.x != null && node.size?.y != null) {
+    return { width: node.size.x, height: node.size.y };
+  }
+  return undefined;
+}
+
+/** Max icon dimension for asset detection (px). */
+const MAX_ICON_SIZE = 80;
+
+/** Leaf vector node types (SVG shapes without children). */
+const LEAF_VECTOR_TYPES = new Set([
+  'VECTOR', 'BOOLEAN_OPERATION', 'LINE', 'ELLIPSE', 'STAR', 'REGULAR_POLYGON',
+]);
+
 export function isAssetNode(node: any): boolean {
   if (!node) return false;
 
@@ -117,30 +145,37 @@ export function isAssetNode(node: any): boolean {
     return true;
   }
 
-  // Complete extraction detection: small FRAME with only vector content
-  if (node.type === 'FRAME' && node.id) {
-    // Check dimensions (icons are typically small: 14x14, 16x16, 20x20, 24x24, 32x32)
-    let width: number | undefined;
-    let height: number | undefined;
+  const dims = getNodeDimensions(node);
 
-    if (node.absoluteBoundingBox) {
-      width = node.absoluteBoundingBox.width;
-      height = node.absoluteBoundingBox.height;
-    } else if (node.dimensions) {
-      width = node.dimensions.width;
-      height = node.dimensions.height;
-    }
+  // Small FRAME with only vector/instance content → icon container
+  if (node.type === 'FRAME' && node.id && dims) {
+    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
+    const hasVecContent = node.children?.length > 0 && hasOnlyVectorContent(node);
+    if (isSmall && isSquareish && hasVecContent) return true;
+  }
 
-    // Icon heuristic: small square-ish container with only vector/instance children
-    if (width !== undefined && height !== undefined) {
-      const isSmall = width <= 32 && height <= 32;
-      const isSquareish = Math.abs(width - height) <= 4; // Allow slight non-square
-      const hasVectorContent = node.children && node.children.length > 0 && hasOnlyVectorContent(node);
+  // INSTANCE nodes — icon component references (e.g. "check-icon", "arrow-right")
+  // Only small, roughly-square instances qualify (avoids treating entire button instances as icons).
+  if (node.type === 'INSTANCE' && node.id && dims) {
+    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
+    if (isSmall && isSquareish) return true;
+  }
 
-      if (isSmall && isSquareish && hasVectorContent) {
-        return true;
-      }
-    }
+  // Standalone VECTOR / BOOLEAN_OPERATION / LINE / ELLIPSE / STAR / REGULAR_POLYGON
+  // These are leaf SVG shapes. Only detect small ones to avoid decorative elements.
+  if (LEAF_VECTOR_TYPES.has(node.type) && node.id && dims) {
+    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+    if (isSmall) return true;
+  }
+
+  // GROUP containing only vector content
+  if (node.type === 'GROUP' && node.id && dims) {
+    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
+    const hasVecContent = node.children?.length > 0 && hasOnlyVectorContent(node);
+    if (isSmall && isSquareish && hasVecContent) return true;
   }
 
   return false;
@@ -330,11 +365,8 @@ function deduplicateSVGAssets(assets: AssetEntry[]): AssetEntry[] {
       const canRecolor = canonical.content ? canBeRecoloredWithCSS(canonical.content) : false;
 
       if (canRecolor) {
-        // Mark as color variant and replace colors with currentColor
+        // Mark as color variant (preserve original colors for <img> tag compatibility)
         canonical.isColorVariant = true;
-        if (canonical.content) {
-          canonical.content = makeColorInheritable(canonical.content);
-        }
 
         // Merge variant lists from all duplicates
         const allVariants = new Set<string>();
@@ -444,8 +476,8 @@ export async function exportAssets(
         if (res.ok) {
           let content = await res.text();
 
-          // Replace hardcoded colors with currentColor for CSS inheritance
-          content = makeColorInheritable(content);
+          // Preserve original SVG colors — currentColor doesn't work with <img> tags
+          // (SVGs in <img> are sandboxed and can't inherit CSS `color` from parent)
 
           entry.content = content;
           downloadedUrls.add(entry.url);
@@ -577,8 +609,8 @@ export async function exportAssetsFromAllVariants(
         if (res.ok) {
           let content = await res.text();
 
-          // Replace colors with currentColor for CSS control
-          content = makeColorInheritable(content);
+          // Preserve original SVG colors — currentColor doesn't work with <img> tags
+          // (SVGs in <img> are sandboxed and can't inherit CSS `color` from parent)
 
           // TODO: Fix viewBox sizing (see OPEN_ISSUES.md)
           // For now, use SVGs as-is from Figma

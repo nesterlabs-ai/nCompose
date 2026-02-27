@@ -84,6 +84,37 @@ function describeVariantStructure(
   lines.push(`Category: ${data.componentCategory}`);
   lines.push('');
 
+  // Build text-prop map: maps each TEXT layer → its prop name
+  // Step 1: Map explicit textContentProperties to layers by matching defaultValue
+  const textPropMap = new Map<string, string>();
+  const availableProps = [...data.textContentProperties];
+  for (const layer of data.childLayers) {
+    if (!layer.isText || !layer.characters) continue;
+    const matchIdx = availableProps.findIndex(p => p.defaultValue === layer.characters);
+    if (matchIdx >= 0) {
+      textPropMap.set(layer.key, toCamelCase(availableProps[matchIdx].name));
+      availableProps.splice(matchIdx, 1); // consume so it's not matched again
+    }
+  }
+  // Step 2: Auto-derive props for remaining TEXT layers (no matching textContentProperty)
+  const seenPropNames = new Set<string>(textPropMap.values());
+  for (const layer of data.childLayers) {
+    if (!layer.isText || !layer.characters || !layer.characters.trim()) continue;
+    if (textPropMap.has(layer.key)) continue;
+    const segments = layer.key.split('__');
+    let propName: string;
+    if (segments.length >= 2) {
+      propName = toCamelCase(segments[segments.length - 2]) + 'Label';
+    } else {
+      propName = toCamelCase(layer.key) + 'Text';
+    }
+    if (seenPropNames.has(propName)) {
+      propName = propName + (seenPropNames.size + 1);
+    }
+    seenPropNames.add(propName);
+    textPropMap.set(layer.key, propName);
+  }
+
   // Use the parser's already-resolved childLayers — depth 0 are direct children
   const topLevel = data.childLayers.filter((l) => l.depth === 0);
 
@@ -94,7 +125,7 @@ function describeVariantStructure(
 
   lines.push('Children:');
   for (const layer of data.childLayers) {
-    describeLayer(layer, lines, assetMap, data.childLayers);
+    describeLayer(layer, lines, assetMap, data.childLayers, textPropMap);
   }
 
   return lines.join('\n');
@@ -109,6 +140,7 @@ function describeLayer(
   lines: string[],
   assetMap?: Map<string, string>,
   allLayers?: ChildLayerInfo[],
+  textPropMap?: Map<string, string>,
 ): void {
   const indent = '  '.repeat(layer.depth + 1);
   const name   = layer.originalName;
@@ -123,8 +155,12 @@ function describeLayer(
   }
 
   if (layer.isText) {
-    // Try to get text content from the raw node via the key matching
-    lines.push(`${indent}- "${name}" (TEXT) → class: "${layer.key}"`);
+    const textPreview = layer.characters
+      ? ` content="${layer.characters.length > 60 ? layer.characters.substring(0, 60) + '...' : layer.characters}"`
+      : '';
+    const derivedProp = textPropMap?.get(layer.key);
+    const propHint = derivedProp ? ` → use: {props.${derivedProp} || "${layer.characters}"}` : '';
+    lines.push(`${indent}- "${name}" (TEXT${textPreview}) → class: "${layer.key}"${propHint}`);
 
     // Inline runs tell us about mixed-style content
     if (layer.inlineRuns && layer.inlineRuns.length > 1) {
@@ -139,24 +175,36 @@ function describeLayer(
     return;
   }
 
-  if (layer.vectorInfo) {
-    // Raw vector / SVG node
-    const assetPath = assetMap?.get(layer.vectorInfo.nodeId);    if (assetPath) {
-      lines.push(`${indent}- "${name}" (VECTOR) → render as: <img src="${assetPath}" alt="" />`);
-    } else {
-      lines.push(`${indent}- "${name}" (VECTOR, strokeCap: ${layer.vectorInfo.strokeCap})`);
+  // ── Asset node detection: any node whose nodeId is in the assetMap ──
+  // This generically catches ALL exported SVG assets (icons, vectors, etc.)
+  // regardless of node type or naming convention.
+  if (assetMap) {
+    // Direct nodeId lookup
+    let assetPath = layer.nodeId ? assetMap.get(layer.nodeId) : undefined;
+    // Also check vectorInfo.nodeId (for raw VECTOR nodes)
+    if (!assetPath && layer.vectorInfo) {
+      assetPath = assetMap.get(layer.vectorInfo.nodeId);
     }
+    // Container wrapping an exported child asset (e.g. 72px circle → 48px check)
+    if (!assetPath && allLayers) {
+      const childAsset = allLayers.find(
+        (l) => l.key.startsWith(layer.key + '__') && l.nodeId && assetMap.has(l.nodeId),
+      );
+      if (childAsset?.nodeId) assetPath = assetMap.get(childAsset.nodeId);
+    }
+    if (assetPath) {
+      lines.push(`${indent}- "${name}" → render as: <img src="${assetPath}" alt="" /> with class: "${layer.key}"`);
+      return;
+    }
+  }
+
+  if (layer.vectorInfo) {
+    lines.push(`${indent}- "${name}" (VECTOR, strokeCap: ${layer.vectorInfo.strokeCap}) → class: "${layer.key}"`);
     return;
   }
 
   if (layer.isIcon) {
-    // Icon slot: FRAME/GROUP/INSTANCE wrapping a vector
-    const assetPath = assetMap?.get(layer.key);
-    if (assetPath) {
-      lines.push(`${indent}- "${name}" (icon slot) → render as: <img src="${assetPath}" alt="" />`);
-    } else {
-      lines.push(`${indent}- "${name}" (icon slot, optional) → class: "${layer.key}"`);
-    }
+    lines.push(`${indent}- "${name}" (icon slot, optional) → class: "${layer.key}"`);
     return;
   }
 
@@ -223,9 +271,36 @@ function buildDynamicProps(
     add(toCamelCase(iconProp.name), 'React.ReactNode', 'undefined');
   }
 
-  // TEXT → string prop
+  // TEXT → string prop (from Figma component properties)
   for (const textProp of data.textContentProperties) {
     add(toCamelCase(textProp.name), 'string', `'${textProp.defaultValue}'`);
+  }
+
+  // Auto-derive text props for TEXT layers without explicit textContentProperties
+  // First, identify which layers are covered by matching defaultValue
+  const coveredLayerKeys = new Set<string>();
+  const remainingProps = [...data.textContentProperties];
+  for (const layer of data.childLayers) {
+    if (!layer.isText || !layer.characters) continue;
+    const matchIdx = remainingProps.findIndex(p => p.defaultValue === layer.characters);
+    if (matchIdx >= 0) {
+      coveredLayerKeys.add(layer.key);
+      remainingProps.splice(matchIdx, 1);
+    }
+  }
+  // Then derive props for uncovered TEXT layers
+  for (const layer of data.childLayers) {
+    if (!layer.isText || !layer.characters || !layer.characters.trim()) continue;
+    if (coveredLayerKeys.has(layer.key)) continue;
+    const segments = layer.key.split('__');
+    let propName: string;
+    if (segments.length >= 2) {
+      propName = toCamelCase(segments[segments.length - 2]) + 'Label';
+    } else {
+      propName = toCamelCase(layer.key) + 'Text';
+    }
+    const safeDefault = layer.characters.replace(/'/g, "\\'");
+    add(propName, 'string', `'${safeDefault}'`);
   }
 
   // BOOLEAN → visibility toggle
@@ -637,10 +712,30 @@ export function buildVariantPromptData(
 /**
  * Builds the full user prompt sent to the LLM.
  */
+/**
+ * Extracts the unique BEM element class names (base__element) from a CSS string.
+ * Used to build the explicit class inventory shown to the LLM.
+ */
+function extractCSSElementClasses(css: string, base: string): string[] {
+  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match .base__element (not modifiers --foo, not pseudo-selectors :hover)
+  const pattern = new RegExp(`\\.${escaped}__([a-zA-Z0-9_-]+)(?=[^a-zA-Z0-9_-]|$)`, 'g');
+  const seen    = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(css)) !== null) {
+    // Exclude modifier classes (--) appearing as nested selectors in context
+    if (!match[1].includes('--')) {
+      seen.add(`${base}__${match[1]}`);
+    }
+  }
+  return [...seen].sort();
+}
+
 export function buildComponentSetUserPrompt(
   promptData: VariantPromptData,
   defaultVariantYaml?: string,
   componentSetData?: ComponentSetData,
+  variantCSS?: string,
 ): string {
   const lines: string[] = [];
 
@@ -712,7 +807,7 @@ export function buildComponentSetUserPrompt(
           }
 
           if (asset.isColorVariant) {
-            lines.push(`  - ✓ Uses \`currentColor\` — recolorable via CSS`);
+            lines.push(`  - ✓ Color variant — original Figma colors preserved in SVG`);
           }
           lines.push('');
         }
@@ -781,9 +876,16 @@ export function buildComponentSetUserPrompt(
       }
 
       if (hasTextProps) {
-        lines.push('**Text Content (TEXT)** — expose as `string` props:');
+        lines.push('**Text Content (TEXT)** — expose as `string` props and use as text content:');
         for (const p of componentSetData.textContentProperties) {
-          lines.push(`- \`${toCamelCase(p.name)}\`: default \`"${p.defaultValue}"\``);
+          const propName = toCamelCase(p.name);
+          // Find the TEXT layer this property maps to
+          const matchingLayer = componentSetData.childLayers.find(
+            l => l.isText && l.characters === p.defaultValue
+          );
+          const classHint = matchingLayer ? ` (maps to class: "${matchingLayer.key}")` : '';
+          lines.push(`- \`${propName}\`: default \`"${p.defaultValue}"\`${classHint}`);
+          lines.push(`  → Use: \`{props.${propName} || "${p.defaultValue}"}\` as the text content`);
         }
         lines.push('');
       }
@@ -850,6 +952,34 @@ export function buildComponentSetUserPrompt(
   lines.push('### CSS Class Convention');
   lines.push(promptData.classNaming);
   lines.push('');
+
+  // ── CSS class inventory ───────────────────────────────────────────────────
+  // Include the EXACT class names from the generated CSS so the LLM can't
+  // invent different names. This is the single source of truth for child element
+  // class names — the JSX must use these exactly.
+  if (variantCSS) {
+    const base           = toKebabCase(promptData.componentName);
+    const elementClasses = extractCSSElementClasses(variantCSS, base);
+    if (elementClasses.length > 0) {
+      lines.push('### ⚠️ Exact Child CSS Classes — Use ONLY These');
+      lines.push(
+        'The CSS has already been generated with these child element class names. ' +
+        'Your JSX `class=""` attributes **must** use exactly these names — do NOT invent alternatives:',
+      );
+      lines.push('');
+      lines.push('```');
+      for (const cls of elementClasses) {
+        lines.push(`.${cls}`);
+      }
+      lines.push('```');
+      lines.push('');
+      lines.push(
+        '> If the HTML skeleton above uses different names, rename those attributes to match this list. ' +
+        'Every `class="…"` on a child element must reference a class from this inventory.',
+      );
+      lines.push('');
+    }
+  }
 
   // ── Props table ──────────────────────────────────────────────────────────
   lines.push('### Props');

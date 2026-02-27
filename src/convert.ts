@@ -219,7 +219,7 @@ async function convertComponentSet(
   // Step A4: LLM generates Mitosis component with class bindings
   const llm = createLLMProvider(options.llm);
   onStep?.(`Generating Mitosis component via ${llm.name} (class-based)...`);
-  const parseResult = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt);
+  const parseResult = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt, variantCSS);
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
 
@@ -329,6 +329,15 @@ async function convertSingleComponent(
   // Compile to target frameworks
   onStep?.(`Compiling to: ${options.frameworks.join(', ')}...`);
   const frameworkOutputs = generateFrameworkCode(parseResult.component, options.frameworks);
+
+  // Inject extracted CSS into each framework output (same as PATH A)
+  if (parseResult.css) {
+    for (const fw of options.frameworks) {
+      if (frameworkOutputs[fw]) {
+        frameworkOutputs[fw] = injectCSS(frameworkOutputs[fw], parseResult.css, fw);
+      }
+    }
+  }
 
   return {
     componentName,

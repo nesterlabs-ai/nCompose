@@ -138,9 +138,33 @@ export default function Alert(props) {
   return <Show when={state.visible}><div>Alert!</div></Show>;
 }
 \`\`\``;
-    const cleaned = cleanLLMOutput(input);
+    const { jsx: cleaned } = cleanLLMOutput(input);
     expect(cleaned).not.toContain('```');
     expect(cleaned).toContain("import { useStore, Show } from '@builder.io/mitosis'");
     expect(cleaned).toContain('export default function Alert');
+  });
+
+  it('extracts CSS from ---CSS--- delimiter', () => {
+    const input = `export default function Card(props) {
+  return <div class="card"><h2 class="card__title">Hello</h2></div>;
+}
+---CSS---
+.card { padding: 16px; }
+.card__title { font-size: 24px; }`;
+    const { jsx, css } = cleanLLMOutput(input);
+    expect(jsx).toContain('export default function Card');
+    expect(jsx).not.toContain('---CSS---');
+    expect(jsx).not.toContain('.card {');
+    expect(css).toContain('.card { padding: 16px; }');
+    expect(css).toContain('.card__title { font-size: 24px; }');
+  });
+
+  it('returns empty css when no CSS block present', () => {
+    const input = `export default function Simple(props) {
+  return <div>Hello</div>;
+}`;
+    const { jsx, css } = cleanLLMOutput(input);
+    expect(jsx).toContain('export default function Simple');
+    expect(css).toBe('');
   });
 });

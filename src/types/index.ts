@@ -37,6 +37,8 @@ export interface ParseResult {
   component?: MitosisComponent;
   error?: string;
   rawCode: string;
+  /** Extracted CSS from LLM output (PATH B class-based styling) */
+  css?: string;
 }
 
 /**

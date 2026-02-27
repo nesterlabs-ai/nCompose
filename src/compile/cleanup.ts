@@ -60,10 +60,40 @@ export function fixMissingImports(code: string): string {
 }
 
 /**
- * Full cleanup pipeline: strips fences, then fixes imports.
+ * Extracts a CSS style block from LLM output that contains both
+ * JSX and CSS separated by a `---CSS---` delimiter.
+ *
+ * Falls back to detecting a trailing `<style>` block if no delimiter found.
  */
-export function cleanLLMOutput(code: string): string {
+export function extractStyleBlock(code: string): { jsx: string; css: string } {
+  // Primary: split on ---CSS--- delimiter
+  const delimiterIndex = code.indexOf('---CSS---');
+  if (delimiterIndex !== -1) {
+    const jsx = code.substring(0, delimiterIndex).trim();
+    let css = code.substring(delimiterIndex + '---CSS---'.length).trim();
+    // Strip markdown fences around CSS if present
+    css = stripMarkdownFences(css);
+    return { jsx, css };
+  }
+
+  // Fallback: look for <style>...</style> at the end of the output
+  const styleMatch = code.match(/<style>([\s\S]*?)<\/style>\s*$/);
+  if (styleMatch) {
+    const jsx = code.replace(/<style>[\s\S]*?<\/style>\s*$/, '').trim();
+    return { jsx, css: styleMatch[1].trim() };
+  }
+
+  // No CSS found — return as-is
+  return { jsx: code, css: '' };
+}
+
+/**
+ * Full cleanup pipeline: extracts CSS block, strips fences, fixes imports.
+ * Returns both the cleaned JSX and extracted CSS.
+ */
+export function cleanLLMOutput(code: string): { jsx: string; css: string } {
   let cleaned = stripMarkdownFences(code);
-  cleaned = fixMissingImports(cleaned);
-  return cleaned;
+  const { jsx, css } = extractStyleBlock(cleaned);
+  const fixedJsx = fixMissingImports(jsx.trim());
+  return { jsx: fixedJsx, css };
 }

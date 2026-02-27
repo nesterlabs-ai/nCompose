@@ -725,8 +725,33 @@ function extractSVGDimensions(svgContent: string): { width: number; height: numb
  * so the icon inherits color from CSS (matches text color).
  *
  * Preserves fill="none" and doesn't touch opacity.
+ *
+ * SMART BEHAVIOR: If the SVG contains multiple distinct colors (e.g. a
+ * checkbox with a colored background AND a white checkmark), the colors
+ * are preserved as-is so the icon renders correctly. Single-color SVGs
+ * (typical monochrome icons) get currentColor for CSS recoloring.
  */
 function makeColorInheritable(svgContent: string): string {
+  // Collect all distinct fill/stroke colors (excluding "none", "white"/"#fff" mask fills)
+  const colorPattern = /(?:fill|stroke)="((?:#[0-9A-Fa-f]{3,8}|rgb[^"]*))"?/g;
+  const colors = new Set<string>();
+  let match;
+  while ((match = colorPattern.exec(svgContent)) !== null) {
+    const color = match[1].toLowerCase().replace(/\s+/g, '');
+    // Normalize common white representations
+    const isWhite = /^(#fff|#ffffff|#ffffffff|rgb\(255,255,255\)|rgba\(255,255,255,[^)]*\))$/.test(color);
+    if (!isWhite) {
+      colors.add(color);
+    }
+  }
+
+  // If SVG has multiple distinct non-white colors, preserve original colors
+  // (e.g. checkbox with blue background + white checkmark stroke)
+  if (colors.size > 1) {
+    return svgContent;
+  }
+
+  // Single-color SVG — safe to replace with currentColor for CSS control
   let result = svgContent;
 
   // Replace stroke="#..." with stroke="currentColor"

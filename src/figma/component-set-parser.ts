@@ -1,260 +1,692 @@
 /**
- * Parses Figma COMPONENT_SET nodes into a structured variant map.
+ * ============================================================================
+ * UNIVERSAL FIGMA COMPONENT PARSER
+ * ============================================================================
  *
- * Works universally for any component type — buttons, inputs, cards,
- * badges, toggles, etc. Extracts variant axes dynamically, classifies
- * states (including compound states like "Error-Hover"), and generates
- * diff-based CSS without hardcoded property allowlists.
+ * A complete, production-grade parser for ANY Figma component type.
+ * Handles the full Figma REST API surface area:
+ *
+ * NODE TYPES:  FRAME, GROUP, COMPONENT, COMPONENT_SET, INSTANCE,
+ *              VECTOR, BOOLEAN_OPERATION, STAR, LINE, ELLIPSE,
+ *              REGULAR_POLYGON, RECTANGLE, TEXT, SLICE, TABLE, TABLE_CELL
+ *
+ * FILLS:       SOLID, GRADIENT_LINEAR, GRADIENT_RADIAL,
+ *              GRADIENT_ANGULAR, GRADIENT_DIAMOND, IMAGE, VIDEO
+ *
+ * LAYOUT:      Auto-layout (H/V), CSS Grid, Absolute positioning,
+ *              Constraints, HUG/FILL/FIXED sizing, Wrap layouts,
+ *              min/max width & height, aspect-ratio locks,
+ *              fixed-on-scroll / sticky positioning, layout grids
+ *
+ * TYPOGRAPHY:  fontFamily, fontWeight, fontSize, lineHeight,
+ *              letterSpacing, textDecoration, textTransform (textCase),
+ *              textAlign (H+V), paragraphSpacing, paragraphIndent,
+ *              textTruncation, maxLines, textAutoResize,
+ *              inline style ranges (mixed fonts/colors per character),
+ *              OpenType feature flags, list styles, small-caps
+ *
+ * VARIABLES:   Figma design tokens via boundVariables,
+ *              resolvedVariableValues, variable collections → CSS vars,
+ *              variable modes (themes / dark-mode), alias resolution,
+ *              variable scopes (color, spacing, opacity, etc.)
+ *
+ * VECTOR:      Raw SVG path data reference, stroke caps/joins,
+ *              miter limits, vector network metadata
+ *
+ * IMAGES:      Image scale mode (FILL/FIT/TILE/STRETCH),
+ *              transform matrices, visibility flags
+ *
+ * EFFECTS:     DROP_SHADOW, INNER_SHADOW, LAYER_BLUR, BACKGROUND_BLUR,
+ *              shadow spread radius
+ *
+ * STROKES:     Per-side weights, strokeAlign (center/inside/outside),
+ *              dashed/dotted dash patterns, multiple strokes
+ *
+ * BORDERS:     cornerRadius uniform + per-corner, cornerSmoothing (squircle)
+ *
+ * INSTANCES:   componentProperties, overrides, mainComponent resolution
+ *
+ * STATES:      Simple, compound (e.g. "Error-Hover"), triple-compound,
+ *              multiple state axes, all common Figma naming patterns
+ *
+ * CSS OUTPUT:  diff-based rules, deduplication, @layer, focus-visible,
+ *              CSS custom properties passthrough, source comments,
+ *              transition hints, cursor heuristics, blend modes,
+ *              inside-stroke box-shadow trick, flex/grid child properties
+ * ============================================================================
  */
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// ============================================================================
+// SECTION 1: TYPES & INTERFACES
+// ============================================================================
 
 export interface VariantAxis {
-  name: string;             // e.g. "Style", "Size", "State"
-  values: string[];         // e.g. ["Primary", "Neutral", "Subtle"]
+  name: string;
+  values: string[];
 }
 
 export interface VariantStyles {
-  /** CSS properties for the outer container */
   container: Record<string, string>;
-  /** CSS properties for the first TEXT child (kept for backward compat) */
   text: Record<string, string>;
-  /** CSS properties for each named child node (key = kebab-case name) */
   children: Record<string, Record<string, string>>;
 }
 
 export interface VariantEntry {
-  /** Variant property values, e.g. { Style: "Primary", State: "Default", Size: "Medium" } */
   props: Record<string, string>;
-  /** Resolved CSS styles for this variant */
   styles: VariantStyles;
 }
 
 export interface ClassifiedState {
-  /** Boolean condition if compound state, e.g. "error" for "Error-Hover" */
   booleanCondition: string | null;
-  /** CSS pseudo-class / attribute selector, e.g. ":hover", "[disabled]" */
   cssSelector: string;
-  /** Original value from the axis, e.g. "Error-Hover" */
   originalValue: string;
 }
 
-export interface ComponentSetData {
+export interface ResolvedVariable {
+  id: string;
   name: string;
-  axes: VariantAxis[];
-  /** Non-state axes that become component props */
-  propAxes: VariantAxis[];
-  /** Identified state axis (null if none detected) */
-  stateAxis: VariantAxis | null;
-  /** Classified states with CSS selector mappings */
-  classifiedStates: ClassifiedState[];
-  /** Boolean props extracted from state analysis (e.g. "error", "disabled", "loading") */
-  booleanProps: string[];
-  variants: VariantEntry[];
-  /** The default variant (best match for "resting" state) */
-  defaultVariant: VariantEntry;
-  /** Raw Figma node for the default variant (for structure extraction) */
-  defaultVariantNode: any;
-
-  // NEW: Component property definitions from complete extraction
-  /** Component property definitions from Figma API */
-  componentPropertyDefinitions?: Record<string, any>;
-  /** Icon slot properties (INSTANCE_SWAP type) */
-  iconSlotProperties?: Array<{
-    name: string;
-    type: 'INSTANCE_SWAP';
-    defaultValue: string;
-    preferredValues?: any[];
-  }>;
-  /** Text content properties (TEXT type) */
-  textContentProperties?: Array<{
-    name: string;
-    type: 'TEXT';
-    defaultValue: string;
-  }>;
-  /** Boolean visibility properties (BOOLEAN type) */
-  booleanVisibilityProperties?: Array<{
-    name: string;
-    type: 'BOOLEAN';
-    defaultValue: boolean;
-  }>;
+  resolvedType: 'COLOR' | 'FLOAT' | 'STRING' | 'BOOLEAN';
+  value: string | number | boolean;
+  cssVarName: string;
+  /** Variable collection name (e.g. "Primitives", "Semantics") */
+  collectionName?: string;
+  /** Available mode names for this variable (e.g. ["Light", "Dark"]) */
+  modes?: string[];
+  /** Scopes this variable is valid for (e.g. ["ALL_FILLS", "STROKE_COLOR"]) */
+  scopes?: string[];
 }
 
-// ---------------------------------------------------------------------------
-// State classification
-// ---------------------------------------------------------------------------
+/** Per-mode resolved value for a single variable */
+export interface VariableMode {
+  modeId: string;
+  modeName: string;
+  value: string;
+}
 
-/** Interactive states → CSS pseudo-classes */
+/** Inline text style run — one segment of a mixed-style text node */
+export interface InlineTextRun {
+  characters: string;
+  css: Record<string, string>;
+}
+
+/** Vector rendering metadata */
+export interface VectorInfo {
+  nodeId: string;
+  /** SVG path data string(s), if provided by the API */
+  svgPaths?: string[];
+  strokeCap: string;
+  strokeJoin: string;
+  miterAngle?: number;
+  fillRule?: string;
+}
+
+export interface ChildLayerInfo {
+  key: string;
+  originalName: string;
+  nodeType: string;
+  css: Record<string, string>;
+  isIcon: boolean;
+  isText: boolean;
+  isImage: boolean;
+  depth: number;
+  /** Inline mixed-style text runs (only for TEXT nodes with styleOverrides) */
+  inlineRuns?: InlineTextRun[];
+  /** Vector metadata (only for VECTOR-family nodes) */
+  vectorInfo?: VectorInfo;
+  /** Image scale mode for RECTANGLE with IMAGE fill */
+  imageScaleMode?: 'FILL' | 'FIT' | 'TILE' | 'STRETCH' | 'CROP';
+}
+
+export interface IconSlotProperty {
+  name: string;
+  type: 'INSTANCE_SWAP';
+  defaultValue: string;
+  preferredValues?: any[];
+}
+
+export interface TextContentProperty {
+  name: string;
+  type: 'TEXT';
+  defaultValue: string;
+}
+
+export interface BooleanVisibilityProperty {
+  name: string;
+  type: 'BOOLEAN';
+  defaultValue: boolean;
+}
+
+export type ComponentCategory =
+  | 'button' | 'icon-button' | 'input' | 'textarea' | 'select'
+  | 'checkbox' | 'radio' | 'toggle' | 'switch'
+  | 'badge' | 'chip' | 'tag' | 'label'
+  | 'avatar' | 'card' | 'dialog' | 'modal' | 'drawer'
+  | 'tooltip' | 'popover' | 'toast' | 'alert' | 'banner'
+  | 'tab' | 'tab-panel' | 'menu' | 'menu-item' | 'dropdown'
+  | 'icon' | 'spinner' | 'progress' | 'skeleton'
+  | 'slider' | 'stepper' | 'pagination'
+  | 'table' | 'list' | 'list-item'
+  | 'accordion' | 'breadcrumb' | 'divider' | 'link'
+  | 'navigation' | 'sidebar' | 'header' | 'footer'
+  | 'unknown';
+
+export interface ComponentSetData {
+  name: string;
+  nodeId: string;
+  axes: VariantAxis[];
+  propAxes: VariantAxis[];
+  stateAxis: VariantAxis | null;
+  stateAxes: VariantAxis[];
+  classifiedStates: ClassifiedState[];
+  booleanProps: string[];
+  variants: VariantEntry[];
+  defaultVariant: VariantEntry;
+  defaultVariantNode: any;
+  componentPropertyDefinitions: Record<string, any>;
+  iconSlotProperties: IconSlotProperty[];
+  textContentProperties: TextContentProperty[];
+  booleanVisibilityProperties: BooleanVisibilityProperty[];
+  resolvedVariables: Record<string, ResolvedVariable>;
+  /** Per-mode CSS variable blocks for theming (e.g. dark mode) */
+  variableModesCSS: Record<string, string>;
+  cssTokensReferenced: string[];
+  childLayers: ChildLayerInfo[];
+  isInteractive: boolean;
+  componentCategory: ComponentCategory;
+  suggestedHtmlTag: string;
+  suggestedAriaRole: string;
+}
+
+export interface BuildVariantCSSOptions {
+  sourceComments?: boolean;
+  deduplicateRules?: boolean;
+  emitFocusReset?: boolean;
+  cssLayer?: string;
+  emitTokens?: boolean;
+  maxDepth?: number;
+}
+
+// ============================================================================
+// SECTION 2: STATE CLASSIFICATION TABLES
+// ============================================================================
+
 const KNOWN_STATE_SELECTORS: Record<string, string> = {
-  'default': '',
-  // NOTE: hover and focus are now treated as renderable variants (removed from here)
-  // They will become boolean props instead of CSS-only pseudo-classes
-  'active': ':active',
-  'pressed': ':active',
-  'disabled': '[disabled]',
-  'visited': ':visited',
+  'default':     '',
+  'rest':        '',
+  'resting':     '',
+  'normal':      '',
+  'idle':        '',
+  'base':        '',
+  'enabled':     '',
+  'active':      ':active',
+  'pressed':     ':active',
+  'disabled':    '[disabled]',
+  'visited':     ':visited',
+  'placeholder': '::placeholder',
 };
 
-/** Boolean modifiers → CSS selectors */
 const KNOWN_BOOLEAN_STATES: Record<string, string> = {
-  'loading': '.loading',
-  'hover': '[data-hover]',  // Now a renderable boolean prop
-  'focus': '[data-focus]',  // Now a renderable boolean prop
-  'focused': '[data-focus]',
-  'checked': '[data-checked]',
-  'selected': '[data-selected]',
-  'filled': '[data-filled]',
-  'filled-in': '[data-filled]',
-  'filledin': '[data-filled]',
-  'typing': '[data-typing]',
-  'error': '[data-error]',
-  'success': '[data-success]',
-  'warning': '[data-warning]',
-  'readonly': '[readonly]',
-  'required': '[data-required]',
-  'open': '[data-open]',
-  'closed': '[data-closed]',
-  'on': '[data-on]',
-  'off': '[data-off]',
-  'active': ':active',
-  'indeterminate': '[data-indeterminate]',
+  'loading':        '.loading',
+  'hover':          '[data-hover]',
+  'hovered':        '[data-hover]',
+  'focus':          '[data-focus]',
+  'focused':        '[data-focus]',
+  'focus-visible':  ':focus-visible',
+  'focus-within':   ':focus-within',
+  'checked':        '[data-checked]',
+  'unchecked':      '[data-unchecked]',
+  'selected':       '[data-selected]',
+  'unselected':     '[data-unselected]',
+  'filled':         '[data-filled]',
+  'filled-in':      '[data-filled]',
+  'filledin':       '[data-filled]',
+  'typing':         '[data-typing]',
+  'error':          '[data-error]',
+  'invalid':        '[data-invalid]',
+  'valid':          '[data-valid]',
+  'success':        '[data-success]',
+  'warning':        '[data-warning]',
+  'info':           '[data-info]',
+  'readonly':       '[readonly]',
+  'read-only':      '[readonly]',
+  'required':       '[data-required]',
+  'optional':       '[data-optional]',
+  'open':           '[data-open]',
+  'closed':         '[data-closed]',
+  'expanded':       '[data-expanded]',
+  'collapsed':      '[data-collapsed]',
+  'on':             '[data-on]',
+  'off':            '[data-off]',
+  'indeterminate':  '[data-indeterminate]',
+  'current':        '[aria-current="page"]',
+  'empty':          '[data-empty]',
+  'dragging':       '[data-dragging]',
+  'dropping':       '[data-dropping]',
+  'resizing':       '[data-resizing]',
+  'highlighted':    '[data-highlighted]',
+  'active-bool':    '[data-active]',
 };
 
-/** Keywords that indicate an axis represents interactive state */
-const STATE_KEYWORDS = ['default', 'hover', 'focus', 'focused', 'disabled', 'loading', 'active', 'pressed'];
+const STATE_KEYWORDS = [
+  'default', 'hover', 'hovered', 'focus', 'focused', 'disabled',
+  'loading', 'active', 'pressed', 'rest', 'resting', 'normal',
+  'idle', 'selected', 'checked', 'enabled', 'base',
+];
 
-/**
- * Classifies a single state value into a boolean condition + CSS selector.
- *
- * Handles:
- * - Simple interactive states: "Hover", "Focused", "Disabled"
- * - Simple boolean states: "Loading", "Error", "Filled in"
- * - Compound states: "Error-Hover", "Filled in - Hover", "Error - Focused"
- *   (prefix = boolean condition, suffix = interactive state)
- */
+// ============================================================================
+// SECTION 3: STATE CLASSIFICATION
+// ============================================================================
+
 export function classifyStateValue(value: string): ClassifiedState {
   const normalized = value.toLowerCase().trim();
 
-  // Try to split compound states on " - " (space-dash-space) first, then "-"
-  const compoundParts = splitCompoundState(normalized);
-  if (compoundParts) {
-    const [prefix, suffix] = compoundParts;
-    const suffixNorm = suffix.trim();
-    const prefixNorm = prefix.trim();
+  const compound = splitCompoundState(normalized);
+  if (compound) {
+    const [pfx, sfx] = compound;
+    const sfxTrimmed = sfx.trim();
+    const pfxTrimmed = pfx.trim();
 
-    // Check if suffix is an interactive state
-    if (suffixNorm in KNOWN_STATE_SELECTORS) {
-      const boolName = toBooleanPropName(prefixNorm);
+    if (sfxTrimmed in KNOWN_STATE_SELECTORS) {
       return {
-        booleanCondition: boolName,
-        cssSelector: KNOWN_STATE_SELECTORS[suffixNorm],
+        booleanCondition: toBooleanPropName(pfxTrimmed),
+        cssSelector: KNOWN_STATE_SELECTORS[sfxTrimmed],
+        originalValue: value,
+      };
+    }
+
+    const sfxKebab = sfxTrimmed.replace(/\s+/g, '-');
+    if (sfxTrimmed in KNOWN_BOOLEAN_STATES || sfxKebab in KNOWN_BOOLEAN_STATES) {
+      return {
+        booleanCondition: toBooleanPropName(pfxTrimmed),
+        cssSelector: KNOWN_BOOLEAN_STATES[sfxTrimmed] ?? KNOWN_BOOLEAN_STATES[sfxKebab] ?? '',
         originalValue: value,
       };
     }
   }
 
-  // Simple interactive state
   if (normalized in KNOWN_STATE_SELECTORS) {
     return { booleanCondition: null, cssSelector: KNOWN_STATE_SELECTORS[normalized], originalValue: value };
   }
 
-  // Simple boolean state (check against known list)
   if (normalized in KNOWN_BOOLEAN_STATES) {
     return { booleanCondition: toBooleanPropName(normalized), cssSelector: '', originalValue: value };
   }
 
-  // Check if it's a multi-word match in known lists (e.g., "filled in")
   const asKebab = normalized.replace(/\s+/g, '-');
   if (asKebab in KNOWN_BOOLEAN_STATES) {
     return { booleanCondition: toBooleanPropName(normalized), cssSelector: '', originalValue: value };
   }
 
-  // Unknown — treat as boolean modifier
   return { booleanCondition: toBooleanPropName(normalized), cssSelector: '', originalValue: value };
 }
 
-/**
- * Splits a compound state like "filled in - hover" or "error-default"
- * into [prefix, suffix]. Returns null if not compound.
- */
 function splitCompoundState(normalized: string): [string, string] | null {
-  // Try " - " first (space-dash-space, common in Figma)
-  const spaceDashIdx = normalized.indexOf(' - ');
-  if (spaceDashIdx > 0) {
-    return [normalized.substring(0, spaceDashIdx), normalized.substring(spaceDashIdx + 3)];
-  }
+  const sdIdx = normalized.indexOf(' - ');
+  if (sdIdx > 0) return [normalized.slice(0, sdIdx), normalized.slice(sdIdx + 3)];
 
-  // Try simple "-" but only if both parts are meaningful
-  const dashIdx = normalized.indexOf('-');
-  if (dashIdx > 0) {
-    const prefix = normalized.substring(0, dashIdx);
-    const suffix = normalized.substring(dashIdx + 1);
-    // Only treat as compound if suffix is a known interactive state
-    if (suffix.trim() in KNOWN_STATE_SELECTORS) {
-      return [prefix, suffix];
-    }
+  const dIdx = normalized.indexOf('-');
+  if (dIdx > 0) {
+    const prefix = normalized.slice(0, dIdx);
+    const suffix = normalized.slice(dIdx + 1);
+    if (suffix.trim() in KNOWN_STATE_SELECTORS) return [prefix, suffix];
   }
-
   return null;
 }
 
-/**
- * Converts a state name to a valid JavaScript prop name.
- * "filled in" → "filled", "error" → "error", "loading" → "loading"
- */
 function toBooleanPropName(stateValue: string): string {
-  // Remove spaces and convert to camelCase
-  const trimmed = stateValue.trim();
-  const parts = trimmed.split(/\s+/);
+  const parts = stateValue.trim().split(/\s+/);
   if (parts.length === 1) return parts[0];
-  // camelCase: "filled in" → "filledIn"
   return parts[0] + parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('');
 }
 
-// ---------------------------------------------------------------------------
-// Axis identification
-// ---------------------------------------------------------------------------
+// ============================================================================
+// SECTION 4: AXIS IDENTIFICATION
+// ============================================================================
 
-/**
- * Heuristically identifies which axis represents interactive state.
- * 1. Exact name match: "State"
- * 2. Heuristic: axis with 2+ interactive keywords in its values
- */
-function identifyStateAxis(axes: VariantAxis[]): VariantAxis | null {
-  // Exact name match
+function identifyStateAxes(axes: VariantAxis[]): VariantAxis[] {
+  const result: VariantAxis[] = [];
   const exact = axes.find((a) => a.name.toLowerCase() === 'state');
-  if (exact) return exact;
+  if (exact) result.push(exact);
 
-  // Heuristic: look for axes whose values contain interactive state keywords
   for (const axis of axes) {
+    if (result.includes(axis)) continue;
     const lowered = axis.values.map((v) => v.toLowerCase());
-    const matches = STATE_KEYWORDS.filter((kw) => lowered.some((v) => v === kw || v.includes(kw)));
-    if (matches.length >= 2) return axis;
+    const hits = STATE_KEYWORDS.filter((kw) => lowered.some((v) => v === kw || v.includes(kw)));
+    if (hits.length >= 2) result.push(axis);
   }
-
-  return null;
+  return result;
 }
 
-// ---------------------------------------------------------------------------
-// Default variant selection
-// ---------------------------------------------------------------------------
+// ============================================================================
+// SECTION 5: COMPONENT CATEGORY DETECTION
+// ============================================================================
+
+const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
+  [/\bicon[-\s]?button\b/, 'icon-button'],
+  [/\bbutton\b|\bbtn\b|\bcta\b/, 'button'],
+  [/\btextarea\b|\btext[-\s]?area\b/, 'textarea'],
+  [/\binput\b|\btext[-\s]?field\b|\btext[-\s]?box\b/, 'input'],
+  [/\bcombobox\b|\bautocomplete\b/, 'select'],
+  [/\bselect\b|\bdropdown\b/, 'select'],
+  [/\bcheckbox\b/, 'checkbox'],
+  [/\bradio\b/, 'radio'],
+  [/\btoggle\b|\bswitch\b/, 'toggle'],
+  [/\bbadge\b/, 'badge'],
+  [/\bchip\b/, 'chip'],
+  [/\btag\b/, 'tag'],
+  [/\blabel\b/, 'label'],
+  [/\bavatar\b/, 'avatar'],
+  [/\bdrawer\b|\bsheet\b/, 'drawer'],
+  [/\bdialog\b|\bmodal\b/, 'dialog'],
+  [/\bcard\b/, 'card'],
+  [/\btoast\b|\bsnackbar\b/, 'toast'],
+  [/\balert\b|\bbanner\b/, 'alert'],
+  [/\btooltip\b/, 'tooltip'],
+  [/\bpopover\b|\bdropdown[-\s]?menu\b/, 'popover'],
+  [/\btab[-\s]?panel\b/, 'tab-panel'],
+  [/\btab\b/, 'tab'],
+  [/\bmenu[-\s]?item\b/, 'menu-item'],
+  [/\bmenu\b/, 'menu'],
+  [/\baccordion\b/, 'accordion'],
+  [/\bbreadcrumb\b/, 'breadcrumb'],
+  [/\bdivider\b|\bseparator\b/, 'divider'],
+  [/\blink\b|\banchor\b/, 'link'],
+  [/\bpagination\b/, 'pagination'],
+  [/\bstepper\b/, 'stepper'],
+  [/\bslider\b|\brange\b/, 'slider'],
+  [/\bprogress\b/, 'progress'],
+  [/\bskeleton\b/, 'skeleton'],
+  [/\bspinner\b|\bloading[-\s]?indicator\b/, 'spinner'],
+  [/\bicon\b/, 'icon'],
+  [/\btable[-\s]?cell\b|\btd\b/, 'table'],
+  [/\btable\b|\bdata[-\s]?grid\b/, 'table'],
+  [/\blist[-\s]?item\b/, 'list-item'],
+  [/\blist\b/, 'list'],
+  [/\bnavigation\b|\bnav\b/, 'navigation'],
+  [/\bsidebar\b/, 'sidebar'],
+  [/\bheader\b/, 'header'],
+  [/\bfooter\b/, 'footer'],
+];
+
+const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
+  'button': 'button', 'icon-button': 'button', 'input': 'input', 'textarea': 'textarea',
+  'select': 'div', 'checkbox': 'label', 'radio': 'label', 'toggle': 'button', 'switch': 'button',
+  'badge': 'span', 'chip': 'div', 'tag': 'span', 'label': 'label', 'avatar': 'div',
+  'card': 'article', 'dialog': 'dialog', 'modal': 'dialog', 'drawer': 'aside',
+  'tooltip': 'div', 'popover': 'div', 'toast': 'div', 'alert': 'div', 'banner': 'div',
+  'tab': 'button', 'tab-panel': 'div', 'menu': 'ul', 'menu-item': 'li', 'dropdown': 'div',
+  'icon': 'span', 'spinner': 'div', 'progress': 'div', 'skeleton': 'div',
+  'slider': 'div', 'stepper': 'div', 'pagination': 'nav',
+  'table': 'table', 'list': 'ul', 'list-item': 'li',
+  'accordion': 'div', 'breadcrumb': 'nav', 'divider': 'hr', 'link': 'a',
+  'navigation': 'nav', 'sidebar': 'aside', 'header': 'header', 'footer': 'footer',
+  'unknown': 'div',
+};
+
+const CATEGORY_ARIA_ROLES: Record<ComponentCategory, string> = {
+  'button': 'button', 'icon-button': 'button', 'input': 'textbox', 'textarea': 'textbox',
+  'select': 'combobox', 'checkbox': 'checkbox', 'radio': 'radio', 'toggle': 'switch', 'switch': 'switch',
+  'badge': 'status', 'chip': 'option', 'tag': 'listitem', 'label': '', 'avatar': 'img',
+  'card': 'article', 'dialog': 'dialog', 'modal': 'dialog', 'drawer': 'dialog',
+  'tooltip': 'tooltip', 'popover': 'dialog', 'toast': 'alert', 'alert': 'alert', 'banner': 'banner',
+  'tab': 'tab', 'tab-panel': 'tabpanel', 'menu': 'menu', 'menu-item': 'menuitem', 'dropdown': 'listbox',
+  'icon': 'img', 'spinner': 'progressbar', 'progress': 'progressbar', 'skeleton': 'progressbar',
+  'slider': 'slider', 'stepper': 'group', 'pagination': 'navigation',
+  'table': 'table', 'list': 'list', 'list-item': 'listitem',
+  'accordion': 'region', 'breadcrumb': 'navigation', 'divider': 'separator', 'link': 'link',
+  'navigation': 'navigation', 'sidebar': 'complementary', 'header': 'banner', 'footer': 'contentinfo',
+  'unknown': '',
+};
+
+const INTERACTIVE_CATEGORIES = new Set<ComponentCategory>([
+  'button', 'icon-button', 'input', 'textarea', 'select', 'checkbox', 'radio',
+  'toggle', 'switch', 'chip', 'tab', 'menu-item', 'slider', 'link', 'accordion',
+]);
+
+function detectComponentCategory(name: string): ComponentCategory {
+  const n = name.toLowerCase();
+  for (const [pattern, cat] of CATEGORY_PATTERNS) {
+    if (pattern.test(n)) return cat;
+  }
+  return 'unknown';
+}
 
 /**
- * Finds the best "resting" default variant.
- * Uses the state axis's "Default" value (or first) and first values for all prop axes.
+ * Enhanced category detection that also analyzes variant axes and child structure.
+ * Falls back to detectComponentCategory(name) if no signals are found.
+ *
+ * This allows components named "FormControl" or "SelectionField" to still be
+ * correctly categorised as checkbox/radio/toggle based on their Figma properties.
  */
+function detectComponentCategoryEnhanced(
+  name: string,
+  axes: VariantAxis[],
+  childNames: string[],
+): ComponentCategory {
+  // First try name-based detection
+  const fromName = detectComponentCategory(name);
+  if (fromName !== 'unknown') return fromName;
+
+  // Analyze variant axis values for component type signals
+  const allAxisValues = axes.flatMap((a) =>
+    a.values.map((v) => v.toLowerCase()),
+  );
+  const allAxisNames = axes.map((a) => a.name.toLowerCase());
+
+  // Checkbox signals: axis values like "checked", "unchecked", "indeterminate"
+  const checkboxSignals = ['checked', 'unchecked', 'indeterminate'];
+  const hasCheckboxValues = checkboxSignals.filter((s) => allAxisValues.includes(s)).length >= 2;
+  if (hasCheckboxValues) {
+    // Distinguish radio from checkbox: radio has no indeterminate
+    if (allAxisValues.includes('indeterminate')) return 'checkbox';
+    // If axis is named "value type" or "checked", likely checkbox
+    if (allAxisNames.some((n) => /value\s*type|check/.test(n))) return 'checkbox';
+    return 'checkbox';
+  }
+
+  // Radio signals: "selected"/"unselected" without "indeterminate"
+  if (allAxisValues.includes('selected') && allAxisValues.includes('unselected') &&
+      !allAxisValues.includes('indeterminate')) {
+    return 'radio';
+  }
+
+  // Toggle/switch signals: "on"/"off" axis values
+  if (allAxisValues.includes('on') && allAxisValues.includes('off')) return 'toggle';
+
+  // Button signals: axis named "style"/"type" with values like "primary", "secondary"
+  const styleAxis = axes.find((a) => /^(style|type|variant)$/i.test(a.name));
+  const buttonStyleValues = ['primary', 'secondary', 'tertiary', 'outlined', 'ghost', 'destructive', 'danger'];
+  if (styleAxis) {
+    const lowerVals = styleAxis.values.map((v) => v.toLowerCase());
+    const matchCount = lowerVals.filter((v) => buttonStyleValues.includes(v)).length;
+    if (matchCount >= 2) return 'button';
+  }
+
+  // Input signals: axis values like "filled", "typing", "placeholder"
+  const inputSignals = ['filled', 'typing', 'placeholder', 'empty'];
+  if (inputSignals.filter((s) => allAxisValues.includes(s)).length >= 2) return 'input';
+
+  // Analyze child node names for semantic hints
+  const childNamesLower = childNames.map((c) => c.toLowerCase());
+  const childHints: Array<[RegExp, ComponentCategory]> = [
+    [/checkbox|check[-\s]?box|check[-\s]?mark/, 'checkbox'],
+    [/radio|radio[-\s]?button/, 'radio'],
+    [/toggle|switch|thumb|track/, 'toggle'],
+    [/\binput\b|text[-\s]?field/, 'input'],
+    [/\bslider\b|range|track.*thumb/, 'slider'],
+  ];
+  for (const [pattern, cat] of childHints) {
+    if (childNamesLower.some((c) => pattern.test(c))) return cat;
+  }
+
+  return 'unknown';
+}
+
+// ============================================================================
+// SECTION 6: FIGMA DESIGN VARIABLES (TOKENS)
+// ============================================================================
+
+function resolveDesignVariables(completeDesign: any): Record<string, ResolvedVariable> {
+  const variables: Record<string, ResolvedVariable> = {};
+
+  const varDefs     = completeDesign?.variables ?? completeDesign?.localVariables ?? {};
+  const collections = completeDesign?.variableCollections ?? completeDesign?.localVariableCollections ?? {};
+
+  for (const [id, varDef] of Object.entries(varDefs) as [string, any][]) {
+    if (!varDef) continue;
+
+    const name         = varDef.name ?? id;
+    const resolvedType = varDef.resolvedType ?? varDef.type ?? 'STRING';
+    const collection   = collections[varDef.variableCollectionId];
+    const defaultMode  = collection?.defaultModeId ?? collection?.modes?.[0]?.modeId;
+    const modes        = collection?.modes?.map((m: any) => m.name) ?? [];
+
+    // Resolve value — walk alias chain
+    let rawValue: any = varDef.value;
+    if (defaultMode && varDef.valuesByMode?.[defaultMode] !== undefined) {
+      rawValue = varDef.valuesByMode[defaultMode];
+    }
+
+    // Dereference VARIABLE_ALIAS
+    let cssValue = '';
+    if (rawValue && typeof rawValue === 'object' && rawValue.type === 'VARIABLE_ALIAS') {
+      const aliasId  = rawValue.id;
+      const aliasVar = varDefs[aliasId];
+      if (aliasVar) {
+        const aliasMode = aliasVar.valuesByMode?.[defaultMode] ?? aliasVar.value;
+        rawValue = aliasMode;
+      }
+    }
+
+    if (resolvedType === 'COLOR' && rawValue && typeof rawValue === 'object' && 'r' in rawValue) {
+      cssValue = figmaColorToCSS(rawValue);
+    } else if (resolvedType === 'FLOAT') {
+      cssValue = String(rawValue ?? 0);
+    } else {
+      cssValue = String(rawValue ?? '');
+    }
+
+    const cssVarName = '--' + name
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/\//g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    variables[id] = {
+      id, name, resolvedType, value: cssValue, cssVarName,
+      collectionName: collection?.name,
+      modes,
+      scopes: varDef.scopes ?? [],
+    };
+  }
+
+  return variables;
+}
+
+/**
+ * Builds per-mode CSS variable override blocks for theming.
+ * Returns a map of modeName → CSS string (e.g. "Dark" → "[data-theme='dark'] { --color: #000; }")
+ */
+function buildVariableModesCSS(
+  completeDesign: any,
+  variables: Record<string, ResolvedVariable>,
+): Record<string, string> {
+  const modeBlocks: Record<string, string> = {};
+
+  const varDefs     = completeDesign?.variables ?? completeDesign?.localVariables ?? {};
+  const collections = completeDesign?.variableCollections ?? completeDesign?.localVariableCollections ?? {};
+
+  // Gather all modes across all collections
+  const allModes = new Map<string, string>(); // modeId → modeName
+  for (const col of Object.values(collections) as any[]) {
+    for (const mode of col.modes ?? []) {
+      if (!allModes.has(mode.modeId)) allModes.set(mode.modeId, mode.name);
+    }
+  }
+
+  for (const [modeId, modeName] of allModes) {
+    const props: string[] = [];
+
+    for (const [id, varDef] of Object.entries(varDefs) as [string, any][]) {
+      const v = variables[id];
+      if (!v) continue;
+
+      let rawValue = varDef.valuesByMode?.[modeId];
+      if (rawValue === undefined) continue;
+
+      // Dereference alias
+      if (rawValue && typeof rawValue === 'object' && rawValue.type === 'VARIABLE_ALIAS') {
+        const alias = varDefs[rawValue.id];
+        if (alias) rawValue = alias.valuesByMode?.[modeId] ?? alias.value;
+      }
+
+      let cssVal: string;
+      if (v.resolvedType === 'COLOR' && rawValue && typeof rawValue === 'object' && 'r' in rawValue) {
+        cssVal = figmaColorToCSS(rawValue);
+      } else if (v.resolvedType === 'FLOAT') {
+        cssVal = String(rawValue ?? 0);
+      } else {
+        cssVal = String(rawValue ?? '');
+      }
+
+      props.push(`  ${v.cssVarName}: ${cssVal}; /* ${v.name} */`);
+    }
+
+    if (props.length > 0) {
+      const selector = modeName.toLowerCase() === 'dark'
+        ? `[data-theme="dark"], @media (prefers-color-scheme: dark) { :root`
+        : `[data-theme="${modeName.toLowerCase()}"]`;
+      modeBlocks[modeName] = `${selector} {\n${props.join('\n')}\n}`;
+    }
+  }
+
+  return modeBlocks;
+}
+
+function resolveBoundVariable(ref: any, variables: Record<string, ResolvedVariable>): string | null {
+  if (!ref) return null;
+  const id = ref.id ?? ref;
+  if (!id) return null;
+  const v = variables[String(id)];
+  return v ? `var(${v.cssVarName})` : null;
+}
+
+function tryBoundVariable(
+  node: any,
+  prop: string,
+  variables: Record<string, ResolvedVariable>,
+): string | null {
+  if (!node?.boundVariables) return null;
+  const binding = node.boundVariables[prop];
+  if (!binding) return null;
+  if (Array.isArray(binding)) return binding.length > 0 ? resolveBoundVariable(binding[0], variables) : null;
+  return resolveBoundVariable(binding, variables);
+}
+
+function figmaColorToCSS(c: { r: number; g: number; b: number; a?: number }): string {
+  const { r, g, b, a = 1 } = c;
+  const alpha = parseFloat(a.toFixed(3));
+  return alpha >= 0.999 ? rgbToHex(r, g, b)
+    : `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
+}
+
+// ============================================================================
+// SECTION 7: DEFAULT VARIANT SELECTION
+// ============================================================================
+
+const DEFAULT_STATE_NAMES = ['default', 'rest', 'resting', 'normal', 'idle', 'enabled', 'base'];
+
 function findDefaultVariant(
   variants: VariantEntry[],
   axes: VariantAxis[],
   stateAxis: VariantAxis | null,
 ): VariantEntry {
   const defaultStateName = stateAxis
-    ? (stateAxis.values.find((v) => v.toLowerCase() === 'default') ?? stateAxis.values[0])
+    ? (stateAxis.values.find((v) => DEFAULT_STATE_NAMES.includes(v.toLowerCase())) ?? stateAxis.values[0])
     : undefined;
 
-  // Build preferred props: first value for each non-state axis, default state for state axis
   const preferred: Record<string, string> = {};
   for (const axis of axes) {
     if (stateAxis && axis.name === stateAxis.name) {
@@ -264,42 +696,39 @@ function findDefaultVariant(
     }
   }
 
-  // Try exact match on all preferred values
   const exact = variants.find((v) =>
     Object.entries(preferred).every(([k, val]) => v.props[k] === val),
   );
   if (exact) return exact;
 
-  // Fallback: any variant with default state
   if (stateAxis && defaultStateName) {
-    const withDefaultState = variants.find((v) => v.props[stateAxis.name] === defaultStateName);
-    if (withDefaultState) return withDefaultState;
+    const fallback = variants.find((v) => v.props[stateAxis.name] === defaultStateName);
+    if (fallback) return fallback;
   }
-
   return variants[0];
 }
 
-// ---------------------------------------------------------------------------
-// Main parser
-// ---------------------------------------------------------------------------
+// ============================================================================
+// SECTION 8: MAIN PARSER
+// ============================================================================
 
-/**
- * Parses a COMPONENT_SET's complete design data into a structured variant map.
- * Now uses the complete extraction library which preserves ALL component properties.
- */
-export function parseComponentSet(
-  completeDesign: any,
-): ComponentSetData | null {
-  const nodes = completeDesign?.nodes;
-  if (!nodes || !Array.isArray(nodes)) return null;
+export function parseComponentSet(completeDesign: any): ComponentSetData | null {
+  if (!completeDesign) return null;
+
+  const nodes: any[] = completeDesign.nodes;
+  if (!Array.isArray(nodes) || nodes.length === 0) return null;
 
   const rootNode = nodes[0];
   if (!rootNode || rootNode.type !== 'COMPONENT_SET') return null;
 
-  const children = rootNode.children;
-  if (!children || !Array.isArray(children) || children.length === 0) return null;
+  const children: any[] = rootNode.children ?? [];
+  if (children.length === 0) return null;
 
-  // Merge all globalVars into a single styles map for compatibility
+  // Resolve design variables
+  const resolvedVariables = resolveDesignVariables(completeDesign);
+  const variableModesCSS  = buildVariableModesCSS(completeDesign, resolvedVariables);
+
+  // Merge globalVars (Framelink format)
   const globalStyles: Record<string, any> = {
     ...(completeDesign?.globalVars?.layouts ?? {}),
     ...(completeDesign?.globalVars?.textStyles ?? {}),
@@ -308,12 +737,12 @@ export function parseComponentSet(
     ...(completeDesign?.globalVars?.effects ?? {}),
   };
 
-  // Parse variant axes from child names
+  // Parse variants
   const axisMap = new Map<string, Set<string>>();
   const variants: VariantEntry[] = [];
 
   for (const child of children) {
-    const props = parseVariantName(child.name);
+    const props = parseVariantName(child.name) ?? parseVariantProperties(child);
     if (!props) continue;
 
     for (const [key, value] of Object.entries(props)) {
@@ -321,647 +750,1092 @@ export function parseComponentSet(
       axisMap.get(key)!.add(value);
     }
 
-    const styles = resolveVariantStyles(child, globalStyles);
-    variants.push({ props, styles });
+    variants.push({ props, styles: resolveVariantStyles(child, globalStyles, resolvedVariables) });
   }
 
-  // Build axes
-  const axes: VariantAxis[] = [];
-  for (const [name, values] of axisMap) {
-    axes.push({ name, values: [...values] });
-  }
+  if (variants.length === 0) return null;
 
-  // Identify state axis using heuristics
-  const stateAxis = identifyStateAxis(axes);
-  const propAxes = axes.filter((a) => a !== stateAxis);
+  const axes: VariantAxis[] = [...axisMap.entries()].map(([name, values]) => ({ name, values: [...values] }));
+  const stateAxes  = identifyStateAxes(axes);
+  const stateAxis  = stateAxes[0] ?? null;
+  const propAxes   = axes.filter((a) => !stateAxes.includes(a));
 
-  // Classify states and extract boolean props
-  const classifiedStates: ClassifiedState[] = stateAxis
-    ? stateAxis.values.map(classifyStateValue)
-    : [];
+  const classifiedStates = stateAxis ? stateAxis.values.map(classifyStateValue) : [];
 
   const booleanPropsSet = new Set<string>();
   for (const cs of classifiedStates) {
     if (cs.booleanCondition) booleanPropsSet.add(cs.booleanCondition);
-    // "disabled" in simple state form also becomes a boolean prop
-    if (!cs.booleanCondition && cs.originalValue.toLowerCase() === 'disabled') {
-      booleanPropsSet.add('disabled');
-    }
-    if (!cs.booleanCondition && cs.originalValue.toLowerCase() === 'loading') {
-      booleanPropsSet.add('loading');
-    }
+    const ov = cs.originalValue.toLowerCase();
+    if (!cs.booleanCondition && ['disabled', 'loading'].includes(ov)) booleanPropsSet.add(ov);
   }
-  const booleanProps = [...booleanPropsSet];
 
-  // Find default variant
   const defaultVariant = findDefaultVariant(variants, axes, stateAxis);
-
-  // Find the raw node for the default variant
-  const defaultVariantNode = children.find((child: any) => {
-    const parsed = parseVariantName(child.name);
-    if (!parsed) return false;
-    return Object.entries(defaultVariant.props).every(([k, v]) => parsed[k] === v);
+  const defaultVariantNode = children.find((c: any) => {
+    const p = parseVariantName(c.name) ?? parseVariantProperties(c);
+    return p && Object.entries(defaultVariant.props).every(([k, v]) => p[k] === v);
   }) ?? children[0];
 
-  // Extract component property definitions from complete design
   const componentPropertyDefinitions = extractComponentPropertyDefinitions(
-    rootNode.componentSetId || rootNode.id,
-    completeDesign
+    rootNode.componentSetId ?? rootNode.id,
+    completeDesign,
   );
-
-  // Classify component properties by type
   const { iconSlotProperties, textContentProperties, booleanVisibilityProperties } =
     classifyComponentPropertyDefinitions(componentPropertyDefinitions);
 
+  const childLayers = extractChildLayers(defaultVariantNode, globalStyles, resolvedVariables);
+
+  // Enhanced detection: analyze name, variant axes, AND child node names
+  const childNames = (defaultVariantNode?.children ?? []).map((c: any) => c.name ?? '');
+  const componentCategory = detectComponentCategoryEnhanced(rootNode.name, axes, childNames);
+  const suggestedHtmlTag  = CATEGORY_HTML_TAGS[componentCategory] ?? 'div';
+  const suggestedAriaRole = CATEGORY_ARIA_ROLES[componentCategory] ?? '';
+  const isInteractive     = INTERACTIVE_CATEGORIES.has(componentCategory) || stateAxis !== null;
+
   return {
-    name: rootNode.name,
-    axes,
-    propAxes,
-    stateAxis,
+    name:    rootNode.name,
+    nodeId:  rootNode.id ?? rootNode.componentSetId ?? '',
+    axes, propAxes, stateAxis, stateAxes,
     classifiedStates,
-    booleanProps,
-    variants,
-    defaultVariant,
-    defaultVariantNode,
+    booleanProps: [...booleanPropsSet],
+    variants, defaultVariant, defaultVariantNode,
     componentPropertyDefinitions,
-    iconSlotProperties,
-    textContentProperties,
-    booleanVisibilityProperties,
+    iconSlotProperties, textContentProperties, booleanVisibilityProperties,
+    resolvedVariables,
+    variableModesCSS,
+    cssTokensReferenced: collectCSSTokens(defaultVariant.styles),
+    childLayers,
+    isInteractive, componentCategory, suggestedHtmlTag, suggestedAriaRole,
   };
 }
 
-/**
- * Extract component property definitions from complete design data
- */
-function extractComponentPropertyDefinitions(
-  componentSetId: string,
-  completeDesign: any
-): Record<string, any> {
-  // Try to get from componentSets map
-  const componentSet = completeDesign?.componentSets?.[componentSetId];
-  if (componentSet?.componentPropertyDefinitions) {
-    return componentSet.componentPropertyDefinitions;
-  }
+// ============================================================================
+// SECTION 9: VARIANT NAME PARSING
+// ============================================================================
 
-  // Fallback: empty object
-  return {};
-}
-
-/**
- * Clean component property name by removing Figma's internal node ID suffix
- * "Show Left Icon#3371:152" -> "Show Left Icon"
- */
-function cleanPropertyName(name: string): string {
-  return name.replace(/#\d+:\d+$/, '');
-}
-
-/**
- * Classify component property definitions into categories
- */
-function classifyComponentPropertyDefinitions(
-  propertyDefinitions: Record<string, any>
-): {
-  iconSlotProperties: Array<any>;
-  textContentProperties: Array<any>;
-  booleanVisibilityProperties: Array<any>;
-} {
-  const iconSlotProperties: Array<any> = [];
-  const textContentProperties: Array<any> = [];
-  const booleanVisibilityProperties: Array<any> = [];
-
-  for (const [name, def] of Object.entries(propertyDefinitions)) {
-    const cleanName = cleanPropertyName(name);
-
-    if (def.type === 'INSTANCE_SWAP') {
-      iconSlotProperties.push({
-        name: cleanName,
-        type: 'INSTANCE_SWAP',
-        defaultValue: def.defaultValue,
-        preferredValues: def.preferredValues,
-      });
-    } else if (def.type === 'TEXT') {
-      textContentProperties.push({
-        name: cleanName,
-        type: 'TEXT',
-        defaultValue: def.defaultValue,
-      });
-    } else if (def.type === 'BOOLEAN') {
-      booleanVisibilityProperties.push({
-        name: cleanName,
-        type: 'BOOLEAN',
-        defaultValue: def.defaultValue,
-      });
-    }
-  }
-
-  return {
-    iconSlotProperties,
-    textContentProperties,
-    booleanVisibilityProperties,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Variant name parsing
-// ---------------------------------------------------------------------------
-
-/**
- * Parses variant name like "Style=Primary, State=Default, Size=Medium"
- */
 function parseVariantName(name: string): Record<string, string> | null {
-  if (!name.includes('=')) return null;
-
+  if (!name?.includes('=')) return null;
   const props: Record<string, string> = {};
-  const parts = name.split(',').map((s) => s.trim());
-
-  for (const part of parts) {
-    const [key, value] = part.split('=').map((s) => s.trim());
-    if (key && value) {
-      props[key] = value;
-    }
+  for (const part of name.split(',')) {
+    const eq = part.indexOf('=');
+    if (eq < 1) continue;
+    const k = part.slice(0, eq).trim();
+    const v = part.slice(eq + 1).trim();
+    if (k && v) props[k] = v;
   }
-
   return Object.keys(props).length > 0 ? props : null;
 }
 
-// ---------------------------------------------------------------------------
-// Style resolution
-// ---------------------------------------------------------------------------
+function parseVariantProperties(node: any): Record<string, string> | null {
+  if (!node?.variantProperties || typeof node.variantProperties !== 'object') return null;
+  const props: Record<string, string> = {};
+  for (const [k, v] of Object.entries(node.variantProperties)) {
+    props[k] = v != null ? String(v) : '';
+  }
+  return Object.keys(props).length > 0 ? props : null;
+}
 
-/**
- * Resolves a variant's style tokens to actual CSS values.
- * Only includes properties that exist — no fallback defaults.
- */
+// ============================================================================
+// SECTION 10: COMPONENT PROPERTY EXTRACTION
+// ============================================================================
+
+function extractComponentPropertyDefinitions(id: string, completeDesign: any): Record<string, any> {
+  return completeDesign?.componentSets?.[id]?.componentPropertyDefinitions ?? {};
+}
+
+function cleanPropertyName(name: string): string {
+  return name.replace(/#[\w:]+$/, '').trim();
+}
+
+function classifyComponentPropertyDefinitions(defs: Record<string, any>) {
+  const iconSlotProperties:          IconSlotProperty[]          = [];
+  const textContentProperties:       TextContentProperty[]       = [];
+  const booleanVisibilityProperties: BooleanVisibilityProperty[] = [];
+
+  for (const [name, def] of Object.entries(defs)) {
+    const clean = cleanPropertyName(name);
+    if (def.type === 'INSTANCE_SWAP') {
+      iconSlotProperties.push({ name: clean, type: 'INSTANCE_SWAP', defaultValue: def.defaultValue, preferredValues: def.preferredValues });
+    } else if (def.type === 'TEXT') {
+      textContentProperties.push({ name: clean, type: 'TEXT', defaultValue: def.defaultValue });
+    } else if (def.type === 'BOOLEAN') {
+      booleanVisibilityProperties.push({ name: clean, type: 'BOOLEAN', defaultValue: def.defaultValue });
+    }
+  }
+  return { iconSlotProperties, textContentProperties, booleanVisibilityProperties };
+}
+
+// ============================================================================
+// SECTION 11: STYLE RESOLUTION
+// ============================================================================
+
 function resolveVariantStyles(
   node: any,
   globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
 ): VariantStyles {
-  const container = resolveNodeCSS(node, globalStyles);
+  const container = resolveNodeCSS(node, globalStyles, variables, 0);
   const children: Record<string, Record<string, string>> = {};
 
-  // Resolve text styles from first TEXT child (backward compat)
+  // Backward-compat first text child
   const text: Record<string, string> = {};
-  const textChild = findFirstTextNode(node);
-  if (textChild) {
-    // Try globalStyles first, then direct node properties
-    const textStyle = globalStyles[textChild.textStyle];
-    if (textStyle) {
-      // Universal converter format: merge all CSS properties directly
-      if (typeof textStyle === 'object') {
-        Object.assign(text, textStyle);
-      } else {
-        // Old format: specific properties only
-        if (textStyle.fontFamily) text['font-family'] = textStyle.fontFamily;
-        if (textStyle.fontWeight) text['font-weight'] = String(textStyle.fontWeight);
-        if (textStyle.fontSize) text['font-size'] = addUnit(textStyle.fontSize, 'px');
-        if (textStyle.lineHeight) text['line-height'] = textStyle.lineHeight;
-      }
-    } else if (textChild.style) {
-      // Direct from node (complete extraction)
-      if (textChild.style.fontFamily) text['font-family'] = textChild.style.fontFamily;
-      if (textChild.style.fontWeight) text['font-weight'] = String(textChild.style.fontWeight);
-      if (textChild.style.fontSize) text['font-size'] = addUnit(textChild.style.fontSize, 'px');
-      if (textChild.style.lineHeight) {
-        const lh = textChild.style.lineHeight;
-        text['line-height'] = typeof lh === 'number' ? `${lh}px` : lh;
-      }
-    }
+  const firstText = findFirstTextNode(node);
+  if (firstText) Object.assign(text, resolveTextNodeCSS(firstText, globalStyles, variables));
 
-    const textFills = globalStyles[textChild.fillsRef] || globalStyles[textChild.fills] || extractFillsFromNode(textChild);
-    if (textFills && Array.isArray(textFills) && textFills.length > 0) {
-      // Handle both simplified format (array of objects with color property) and old format (array of color strings)
-      const firstFill = textFills[0];
-      if (typeof firstFill === 'string') {
-        text['color'] = firstFill;
-      } else if (firstFill?.color) {
-        // Apply opacity to color if present
-        text['color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
-      }
-    }
-  }
-
-  // Resolve styles for ALL named children (depth 1)
   if (node.children) {
-    for (const child of node.children) {
-      const childName = child.name;
-      if (!childName || childName.startsWith('_')) continue;
-
-      const key = toKebabCase(childName);
-      const childCSS = resolveNodeCSS(child, globalStyles);
-
-      // For icon containers (FRAME with vector content), extract color from deep VECTOR children
-      if (child.type === 'FRAME' && child.absoluteBoundingBox) {
-        const width = child.absoluteBoundingBox.width;
-        const height = child.absoluteBoundingBox.height;
-        const isSmall = width <= 32 && height <= 32;
-
-        if (isSmall) {
-          const vectorColor = extractVectorColorRecursive(child);
-          if (vectorColor && !childCSS['color']) {
-            childCSS['color'] = vectorColor;
-          }
-        }
-      }
-
-      // For TEXT nodes, fills represent text color, not background
-      if (child.type === 'TEXT') {
-        delete childCSS['background-color'];
-
-        // Try globalStyles first, then direct node properties
-        const ts = globalStyles[child.textStyle];
-        if (ts) {
-          // Universal converter format: merge all CSS properties directly
-          if (typeof ts === 'object') {
-            Object.assign(childCSS, ts);
-          } else {
-            // Old format: specific properties only
-            if (ts.fontFamily) childCSS['font-family'] = ts.fontFamily;
-            if (ts.fontWeight) childCSS['font-weight'] = String(ts.fontWeight);
-            if (ts.fontSize) childCSS['font-size'] = addUnit(ts.fontSize, 'px');
-            if (ts.lineHeight) childCSS['line-height'] = ts.lineHeight;
-          }
-        } else if (child.style) {
-          // Direct from node (complete extraction)
-          if (child.style.fontFamily) childCSS['font-family'] = child.style.fontFamily;
-          if (child.style.fontWeight) childCSS['font-weight'] = String(child.style.fontWeight);
-          if (child.style.fontSize) childCSS['font-size'] = addUnit(child.style.fontSize, 'px');
-          if (child.style.lineHeight) {
-            const lh = child.style.lineHeight;
-            childCSS['line-height'] = typeof lh === 'number' ? `${lh}px` : lh;
-          }
-        }
-
-        const cf = globalStyles[child.fillsRef] || globalStyles[child.fills] || extractFillsFromNode(child);
-        if (cf && Array.isArray(cf) && cf.length > 0) {
-          // Handle both simplified format (array of objects with color property) and old format (array of color strings)
-          const firstFill = cf[0];
-          if (typeof firstFill === 'string') {
-            childCSS['color'] = firstFill;
-          } else if (firstFill?.color) {
-            // Apply opacity to color if present
-            childCSS['color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
-          }
-        }
-      }
-
-      if (Object.keys(childCSS).length > 0) {
-        children[key] = childCSS;
-      }
-    }
+    collectNamedChildStyles(node.children, globalStyles, variables, children, '', 0, 4);
   }
-
   return { container, text, children };
 }
 
-/**
- * Convert RGB(0-1) to hex color string
- */
-function rgbToHex(r: number, g: number, b: number): string {
-  return `#${[r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
-}
+function collectNamedChildStyles(
+  childNodes: any[],
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+  out: Record<string, Record<string, string>>,
+  prefix: string,
+  depth: number,
+  maxDepth: number,
+): void {
+  if (depth > maxDepth) return;
 
-/**
- * Apply opacity to a color string (rgb/rgba/hex)
- * If opacity is undefined or 1, returns the color unchanged
- * Otherwise converts to rgba format with the opacity applied
- */
-function applyOpacityToColor(color: string, opacity?: number): string {
-  if (opacity === undefined || opacity === 1) {
-    return color;
-  }
+  for (const child of childNodes) {
+    if (!child?.name || child.name.startsWith('_')) continue;
+    if (child.visible === false) continue;
 
-  // Parse rgb() or rgba() format
-  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-  if (rgbMatch) {
-    const r = parseInt(rgbMatch[1]);
-    const g = parseInt(rgbMatch[2]);
-    const b = parseInt(rgbMatch[3]);
-    const existingAlpha = rgbMatch[4] ? parseFloat(rgbMatch[4]) : 1;
-    const finalAlpha = existingAlpha * opacity;
-    return `rgba(${r}, ${g}, ${b}, ${finalAlpha})`;
-  }
+    const key      = prefix ? `${prefix}__${toKebabCase(child.name)}` : toKebabCase(child.name);
+    const childCSS = resolveNodeCSS(child, globalStyles, variables, depth);
 
-  // Parse hex format
-  const hexMatch = color.match(/^#([0-9A-Fa-f]{6})$/);
-  if (hexMatch) {
-    const r = parseInt(hexMatch[1].substring(0, 2), 16);
-    const g = parseInt(hexMatch[1].substring(2, 4), 16);
-    const b = parseInt(hexMatch[1].substring(4, 6), 16);
-    return `rgba(${r}, ${g}, ${b}, ${opacity})`;
-  }
+    if (child.type === 'TEXT') {
+      delete childCSS['background-color'];
+      delete childCSS['background'];
+      Object.assign(childCSS, resolveTextNodeCSS(child, globalStyles, variables));
+    }
 
-  // Fallback: return original color
-  return color;
-}
-
-/**
- * Recursively searches for VECTOR nodes and extracts their stroke or fill color
- * Used for icon containers to get the color from deep vector children
- */
-function extractVectorColorRecursive(node: any): string | null {
-  if (!node) return null;
-
-  // If this is a VECTOR node, extract its color
-  if (node.type === 'VECTOR') {
-    // Try strokes first (icons often use strokes)
-    if (node.strokes && Array.isArray(node.strokes) && node.strokes.length > 0) {
-      const stroke = node.strokes[0];
-      if (stroke.visible !== false && stroke.type === 'SOLID' && stroke.color) {
-        const { r, g, b, a } = stroke.color;
-        if (a === undefined || a === 1) {
-          return rgbToHex(r, g, b);
-        } else {
-          return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`;
-        }
+    // Small FRAME/GROUP/INSTANCE — pull icon color from nested vectors
+    if (['FRAME', 'GROUP', 'INSTANCE', 'COMPONENT'].includes(child.type) && child.absoluteBoundingBox) {
+      const { width, height } = child.absoluteBoundingBox;
+      if (width <= 48 && height <= 48) {
+        const vColor = extractVectorColorRecursive(child, variables);
+        if (vColor && !childCSS['color']) childCSS['color'] = vColor;
       }
     }
 
-    // Fall back to fills
-    if (node.fills && Array.isArray(node.fills) && node.fills.length > 0) {
-      const fill = node.fills[0];
-      if (fill.visible !== false && fill.type === 'SOLID' && fill.color) {
-        const { r, g, b, a } = fill.color;
-        if (a === undefined || a === 1) {
-          return rgbToHex(r, g, b);
-        } else {
-          return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`;
-        }
-      }
+    // Table node typing
+    if (child.type === 'TABLE')      { childCSS['display'] = 'table'; childCSS['border-collapse'] = 'collapse'; }
+    if (child.type === 'TABLE_CELL') { childCSS['display'] = 'table-cell'; }
+
+    if (Object.keys(childCSS).length > 0) out[key] = childCSS;
+
+    if (child.children && child.type !== 'INSTANCE') {
+      collectNamedChildStyles(child.children, globalStyles, variables, out, key, depth + 1, maxDepth);
     }
   }
-
-  // Recursively search children
-  if (node.children && Array.isArray(node.children)) {
-    for (const child of node.children) {
-      const color = extractVectorColorRecursive(child);
-      if (color) return color;
-    }
-  }
-
-  return null;
 }
 
-/**
- * Resolves a single node's visual CSS properties from globalStyles.
- */
-function resolveNodeCSS(
+function extractChildLayers(
   node: any,
-  globalStyles: Record<string, string> = {},
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+): ChildLayerInfo[] {
+  const layers: ChildLayerInfo[] = [];
+  if (!node?.children) return layers;
+
+  function walk(children: any[], prefix: string, depth: number) {
+    if (depth > 6) return;
+    for (const child of children) {
+      if (!child?.name || child.name.startsWith('_')) continue;
+      const key = prefix ? `${prefix}__${toKebabCase(child.name)}` : toKebabCase(child.name);
+      const css = resolveNodeCSS(child, globalStyles, variables, depth);
+
+      // Inline text runs for mixed-style TEXT nodes
+      let inlineRuns: InlineTextRun[] | undefined;
+      if (child.type === 'TEXT' && child.characterStyleOverrides?.length > 0) {
+        inlineRuns = extractInlineTextRuns(child, globalStyles, variables);
+      }
+
+      // Vector metadata
+      let vectorInfo: VectorInfo | undefined;
+      if (VECTOR_NODE_TYPES.has(child.type)) {
+        vectorInfo = extractVectorInfo(child);
+      }
+
+      // Image scale mode
+      let imageScaleMode: ChildLayerInfo['imageScaleMode'] | undefined;
+      const imageFill = child.fills?.find((f: any) => f.type === 'IMAGE');
+      if (imageFill) {
+        imageScaleMode = (imageFill.scaleMode ?? 'FILL') as ChildLayerInfo['imageScaleMode'];
+      }
+
+      layers.push({
+        key,
+        originalName: child.name,
+        nodeType: child.type ?? 'UNKNOWN',
+        css,
+        isIcon:  isIconKey(key) || VECTOR_NODE_TYPES.has(child.type),
+        isText:  child.type === 'TEXT',
+        isImage: !!imageFill,
+        depth,
+        inlineRuns,
+        vectorInfo,
+        imageScaleMode,
+      });
+      if (child.children && child.type !== 'INSTANCE') walk(child.children, key, depth + 1);
+    }
+  }
+
+  walk(node.children, '', 0);
+  return layers;
+}
+
+// ============================================================================
+// SECTION 11b: INLINE TEXT RUNS (mixed-style text)
+// ============================================================================
+
+/**
+ * Extracts per-character style segments from a TEXT node that has
+ * characterStyleOverrides (mixed fonts, colors, weights inside one text node).
+ * Returns an array of {characters, css} runs for rich text rendering.
+ */
+function extractInlineTextRuns(
+  node: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+): InlineTextRun[] {
+  const chars: string[]  = (node.characters ?? '').split('');
+  const overrides: number[] = node.characterStyleOverrides ?? [];
+  const styleTable: Record<number, any> = node.styleOverrideTable ?? {};
+
+  if (overrides.length === 0 || chars.length === 0) return [];
+
+  const runs: InlineTextRun[] = [];
+  let currentIdx    = overrides[0];
+  let runStart      = 0;
+  let runChars: string[] = [];
+
+  for (let i = 0; i <= overrides.length; i++) {
+    const idx = overrides[i] ?? -1;
+    if (i === overrides.length || idx !== currentIdx) {
+      // Flush current run
+      if (runChars.length > 0) {
+        const styleObj = styleTable[currentIdx] ?? {};
+        const css = resolveInlineStyle(styleObj, globalStyles, variables);
+        runs.push({ characters: runChars.join(''), css });
+      }
+      runChars   = [];
+      currentIdx = idx;
+      runStart   = i;
+    }
+    if (i < chars.length) runChars.push(chars[i]);
+  }
+
+  return runs;
+}
+
+function resolveInlineStyle(
+  style: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
 ): Record<string, string> {
   const css: Record<string, string> = {};
+  if (!style) return css;
 
-  // Try globalStyles first (Framelink path), then fall back to node properties (complete extraction path)
+  if (style.fontFamily)  css['font-family']  = `"${style.fontFamily}", sans-serif`;
+  if (style.fontWeight)  css['font-weight']  = String(style.fontWeight);
+  if (style.fontSize)    css['font-size']    = addUnit(style.fontSize, 'px');
+  if (style.italic)      css['font-style']   = 'italic';
+  if (style.textDecoration && style.textDecoration !== 'NONE') {
+    css['text-decoration'] = style.textDecoration === 'UNDERLINE' ? 'underline' : 'line-through';
+  }
+  if (style.fills && Array.isArray(style.fills) && style.fills.length > 0) {
+    const fills = extractFillsFromNode({ fills: style.fills }, variables);
+    if (fills?.[0]) css['color'] = fills[0];
+  }
+  if (style.openTypeFeatures) {
+    css['font-feature-settings'] = resolveOpenTypeFeatures(style.openTypeFeatures);
+  }
+  return css;
+}
 
-  // Layout - try simplified CSS-ready layout from universal converter first
-  const layoutCSS = globalStyles[node.layoutRef];
-  if (layoutCSS && typeof layoutCSS === 'object') {
-    // Universal converter format: CSS properties are already ready to use
-    Object.assign(css, layoutCSS);
-  } else {
-    // Fallback to old format or extract from node
-    const layout = globalStyles[node.layout] || extractLayoutFromNode(node);
-    if (layout) {
-      if (layout.mode === 'row' || node.layoutMode === 'HORIZONTAL') {
-        css['display'] = 'flex';
-        css['flex-direction'] = 'row';
-      } else if (layout.mode === 'column' || node.layoutMode === 'VERTICAL') {
-        css['display'] = 'flex';
-        css['flex-direction'] = 'column';
-      }
-      if (layout.justifyContent) css['justify-content'] = layout.justifyContent;
-      if (layout.alignItems) css['align-items'] = layout.alignItems;
-      if (layout.gap) css['gap'] = layout.gap;
-      if (layout.padding) css['padding'] = layout.padding;
-      if (layout.dimensions?.height) css['height'] = `${layout.dimensions.height}px`;
-      if (layout.dimensions?.width) css['width'] = `${layout.dimensions.width}px`;
-      if (layout.dimensions?.minHeight) css['min-height'] = `${layout.dimensions.minHeight}px`;
-      if (layout.dimensions?.minWidth) css['min-width'] = `${layout.dimensions.minWidth}px`;
+/**
+ * Converts Figma OpenType feature flags to CSS font-feature-settings.
+ * e.g. { LIGA: true, TNUM: true } → '"liga" on, "tnum" on'
+ */
+function resolveOpenTypeFeatures(features: Record<string, boolean>): string {
+  return Object.entries(features)
+    .filter(([, enabled]) => enabled)
+    .map(([tag]) => `"${tag.toLowerCase()}" on`)
+    .join(', ');
+}
+
+// ============================================================================
+// SECTION 11c: VECTOR METADATA
+// ============================================================================
+
+function extractVectorInfo(node: any): VectorInfo {
+  const paths: string[] = [];
+
+  // fillGeometry or strokeGeometry contain SVG path data
+  if (Array.isArray(node.fillGeometry)) {
+    for (const geom of node.fillGeometry) {
+      if (geom.path) paths.push(geom.path);
+    }
+  }
+  if (Array.isArray(node.strokeGeometry)) {
+    for (const geom of node.strokeGeometry) {
+      if (geom.path && !paths.includes(geom.path)) paths.push(geom.path);
     }
   }
 
-  // Direct node properties (complete extraction)
-  if (node.itemSpacing) css['gap'] = `${node.itemSpacing}px`;
-  if (node.padding) {
-    const p = node.padding;
-    if (typeof p === 'number') {
-      css['padding'] = `${p}px`;
-    } else if (p.top !== undefined) {
-      css['padding'] = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
-    }
-  }
-  if (node.absoluteBoundingBox) {
-    // Height handling
-    if (!css['height']) css['height'] = `${node.absoluteBoundingBox.height}px`;
+  return {
+    nodeId:     node.id ?? '',
+    svgPaths:   paths.length > 0 ? paths : undefined,
+    strokeCap:  node.strokeCap  ?? 'NONE',
+    strokeJoin: node.strokeJoin ?? 'MITER',
+    miterAngle: node.strokeMiterAngle,
+    fillRule:   node.fillGeometry?.[0]?.windingRule ?? undefined,
+  };
+}
 
-    // Width handling - check if this is a HUG layout (auto-size to content)
-    const isHorizontalLayout = node.layoutMode === 'HORIZONTAL';
-    const isVerticalLayout = node.layoutMode === 'VERTICAL';
-    const primaryAxisIsAuto = node.primaryAxisSizingMode === 'AUTO';
-    const counterAxisIsAuto = node.counterAxisSizingMode === 'AUTO';
+// ============================================================================
+// SECTION 11d: IMAGE SCALE MODE → CSS
+// ============================================================================
 
-    // If horizontal layout with AUTO primary axis, or vertical layout with AUTO counter axis, use min-width instead of fixed width
-    const shouldUseMinWidth =
-      (isHorizontalLayout && primaryAxisIsAuto) ||
-      (isVerticalLayout && counterAxisIsAuto);
-
-    if (!css['width']) {
-      if (shouldUseMinWidth) {
-        // Use min-width for flexible layouts (HUG)
-        css['min-width'] = `${node.absoluteBoundingBox.width}px`;
+function applyImageScaleMode(fill: any, css: Record<string, string>): void {
+  const scaleMode = fill.scaleMode ?? 'FILL';
+  switch (scaleMode) {
+    case 'FILL':
+      css['background-size']     = 'cover';
+      css['background-position'] = 'center';
+      css['background-repeat']   = 'no-repeat';
+      break;
+    case 'FIT':
+      css['background-size']     = 'contain';
+      css['background-position'] = 'center';
+      css['background-repeat']   = 'no-repeat';
+      break;
+    case 'TILE':
+      css['background-size']   = `${fill.scalingFactor ? fill.scalingFactor * 100 : 100}%`;
+      css['background-repeat'] = 'repeat';
+      break;
+    case 'STRETCH':
+      css['background-size']   = '100% 100%';
+      css['background-repeat'] = 'no-repeat';
+      break;
+    case 'CROP':
+      if (fill.imageTransform) {
+        // imageTransform is a 2×3 affine matrix [[a,b],[c,d],[tx,ty]]
+        const [[a, c], [b, d], [tx, ty]] = fill.imageTransform;
+        css['background-size']     = 'cover';
+        css['background-position'] = `${Math.round(tx * 100)}% ${Math.round(ty * 100)}%`;
+        css['background-repeat']   = 'no-repeat';
+        // Represent scale via background-size approximation
+        if (a !== 0) css['background-size'] = `${Math.abs(Math.round(1 / a * 100))}%`;
       } else {
-        // Use fixed width for FIXED layouts
-        css['width'] = `${node.absoluteBoundingBox.width}px`;
+        css['background-size']     = 'cover';
+        css['background-position'] = 'center';
+        css['background-repeat']   = 'no-repeat';
       }
+      break;
+  }
+}
+
+// ============================================================================
+// SECTION 12: TYPOGRAPHY
+// ============================================================================
+
+function resolveTextNodeCSS(
+  node: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+): Record<string, string> {
+  const css: Record<string, string> = {};
+  const ts = globalStyles[node.textStyle] ?? node.style ?? {};
+
+  // font-family
+  const ffVar = tryBoundVariable(node, 'fontFamily', variables);
+  if (ffVar) { css['font-family'] = ffVar; }
+  else if (ts.fontFamily) { css['font-family'] = `"${ts.fontFamily}", sans-serif`; }
+
+  // font-size
+  const fsVar = tryBoundVariable(node, 'fontSize', variables);
+  if (fsVar) { css['font-size'] = fsVar; }
+  else if (ts.fontSize) { css['font-size'] = addUnit(ts.fontSize, 'px'); }
+
+  // font-weight
+  const fwVar = tryBoundVariable(node, 'fontWeight', variables);
+  if (fwVar) { css['font-weight'] = fwVar; }
+  else if (ts.fontWeight) { css['font-weight'] = String(ts.fontWeight); }
+
+  // line-height
+  if (ts.lineHeight != null) {
+    if (typeof ts.lineHeight === 'object') {
+      if (ts.lineHeight.unit === 'PERCENT')     css['line-height'] = `${ts.lineHeight.value}%`;
+      else if (ts.lineHeight.unit === 'AUTO')   css['line-height'] = 'normal';
+      else                                       css['line-height'] = `${ts.lineHeight.value}px`;
+    } else {
+      const lh = ts.lineHeight;
+      css['line-height'] = typeof lh === 'number' ? `${lh}px` : String(lh);
     }
   }
 
-  // Fills (background) - try fillsRef first, then falls back to fills
-  const fills = globalStyles[node.fillsRef] || globalStyles[node.fills] || extractFillsFromNode(node);
-  if (fills && Array.isArray(fills) && fills.length > 0) {
-    // Handle both simplified format (array of objects with color property) and old format (array of color strings)
-    const firstFill = fills[0];
-    if (typeof firstFill === 'string') {
-      css['background-color'] = firstFill;
-    } else if (firstFill?.color) {
-      // Apply opacity to color if present
-      css['background-color'] = applyOpacityToColor(firstFill.color, firstFill.opacity);
+  // letter-spacing
+  if (ts.letterSpacing != null && ts.letterSpacing !== 0) {
+    if (typeof ts.letterSpacing === 'object') {
+      css['letter-spacing'] = ts.letterSpacing.unit === 'PERCENT'
+        ? `${ts.letterSpacing.value / 100}em`
+        : `${ts.letterSpacing.value}px`;
+    } else {
+      css['letter-spacing'] = `${ts.letterSpacing}px`;
     }
   }
 
-  // Strokes (border) - try strokesRef first, then falls back to strokes
-  const strokes = globalStyles[node.strokesRef] || globalStyles[node.strokes] || extractStrokesFromNode(node);
-  if (strokes) {
-    // Handle both simplified format (from universal converter) and old format
-    if (strokes.color && strokes.width !== undefined) {
-      // Simplified format: { color: 'rgb(...)', width: 2 }
-      css['border'] = `${strokes.width}px solid ${strokes.color} !important`;
-    } else if (strokes.colors?.[0] && strokes.strokeWeight) {
-      // Old format: { colors: ['#...'], strokeWeight: '2px' }
-      css['border'] = `${strokes.strokeWeight} solid ${strokes.colors[0]} !important`;
+  // text-decoration
+  if (ts.textDecoration && ts.textDecoration !== 'NONE') {
+    const dm: Record<string, string> = { UNDERLINE: 'underline', STRIKETHROUGH: 'line-through' };
+    css['text-decoration'] = dm[ts.textDecoration] ?? ts.textDecoration.toLowerCase();
+  }
+
+  // text-transform (textCase in Figma)
+  if (ts.textCase && ts.textCase !== 'ORIGINAL') {
+    const tm: Record<string, string> = {
+      UPPER: 'uppercase', LOWER: 'lowercase', TITLE: 'capitalize',
+      SMALL_CAPS: 'lowercase', SMALL_CAPS_FORCED: 'lowercase',
+    };
+    if (tm[ts.textCase]) css['text-transform'] = tm[ts.textCase];
+    if (ts.textCase === 'SMALL_CAPS' || ts.textCase === 'SMALL_CAPS_FORCED') css['font-variant'] = 'small-caps';
+  }
+
+  // text-align horizontal
+  if (ts.textAlignHorizontal) {
+    const am: Record<string, string> = { LEFT: 'left', RIGHT: 'right', CENTER: 'center', JUSTIFIED: 'justify' };
+    if (am[ts.textAlignHorizontal]) css['text-align'] = am[ts.textAlignHorizontal];
+  }
+
+  // text-align vertical
+  if (ts.textAlignVertical) {
+    const vam: Record<string, string> = { TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' };
+    if (vam[ts.textAlignVertical]) css['vertical-align'] = vam[ts.textAlignVertical];
+  }
+
+  // paragraph-spacing
+  if (ts.paragraphSpacing) css['margin-bottom'] = `${ts.paragraphSpacing}px`;
+
+  // paragraph-indent
+  if (ts.paragraphIndent) css['text-indent'] = `${ts.paragraphIndent}px`;
+
+  // text auto-resize → controls whether container grows with text
+  if (node.textAutoResize) {
+    switch (node.textAutoResize) {
+      case 'HEIGHT':
+        css['height']     = 'auto';
+        css['min-height'] = '1em';
+        break;
+      case 'WIDTH_AND_HEIGHT':
+        css['width']  = 'max-content';
+        css['height'] = 'auto';
+        break;
+      case 'TRUNCATE':
+        css['overflow']      = 'hidden';
+        css['text-overflow'] = 'ellipsis';
+        css['white-space']   = 'nowrap';
+        break;
+      // 'NONE' = fixed size — already handled by dimensions
     }
   }
 
-  // Border radius
-  if (node.cornerRadius) {
-    css['border-radius'] = `${node.cornerRadius}px`;
-  } else if (node.borderRadius) {
-    css['border-radius'] = node.borderRadius;
+  // OpenType feature flags
+  if (ts.openTypeFeatures && Object.keys(ts.openTypeFeatures).length > 0) {
+    css['font-feature-settings'] = resolveOpenTypeFeatures(ts.openTypeFeatures);
   }
 
-  // Opacity
-  if (node.opacity !== undefined && node.opacity !== 1) {
-    css['opacity'] = String(node.opacity);
+  // hyperlink underline hint
+  if (ts.hyperlink) css['text-decoration'] = css['text-decoration'] ?? 'underline';
+
+  // text truncation
+  const truncation = ts.textTruncation ?? node.textTruncation;
+  if (truncation === 'ENDING') {
+    css['overflow']      = 'hidden';
+    css['text-overflow'] = 'ellipsis';
+    css['white-space']   = 'nowrap';
+  } else if (ts.maxLines > 1) {
+    css['display']             = '-webkit-box';
+    css['-webkit-box-orient']  = 'vertical';
+    css['-webkit-line-clamp']  = String(ts.maxLines);
+    css['overflow']            = 'hidden';
   }
 
-  // Effects - try effectsRef first, then falls back to effects
-  const effects = globalStyles[node.effectsRef] || globalStyles[node.effects] || extractEffectsFromNode(node);
-  if (effects) {
-    // Handle both simplified format (array) and old format (string)
-    if (effects.boxShadow) {
-      css['box-shadow'] = Array.isArray(effects.boxShadow)
-        ? effects.boxShadow.join(', ')
-        : effects.boxShadow;
-    }
-    if (effects.backdropFilter) css['backdrop-filter'] = effects.backdropFilter;
+  // color
+  const colorVar = tryBoundVariable(node, 'fills', variables);
+  if (colorVar) {
+    css['color'] = colorVar;
+  } else {
+    const fills = globalStyles[node.fills] ?? extractFillsFromNode(node, variables);
+    if (Array.isArray(fills) && fills.length > 0) css['color'] = fills[0];
   }
 
   return css;
 }
 
-/**
- * Extract layout info directly from node properties (complete extraction format)
- */
+// ============================================================================
+// SECTION 13: NODE CSS RESOLUTION
+// ============================================================================
+
+const BLEND_MODE_MAP: Record<string, string> = {
+  MULTIPLY: 'multiply', SCREEN: 'screen', OVERLAY: 'overlay', DARKEN: 'darken',
+  LIGHTEN: 'lighten', COLOR_DODGE: 'color-dodge', COLOR_BURN: 'color-burn',
+  HARD_LIGHT: 'hard-light', SOFT_LIGHT: 'soft-light', DIFFERENCE: 'difference',
+  EXCLUSION: 'exclusion', HUE: 'hue', SATURATION: 'saturation', COLOR: 'color', LUMINOSITY: 'luminosity',
+};
+
+const VECTOR_NODE_TYPES = new Set([
+  'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'LINE', 'ELLIPSE', 'REGULAR_POLYGON',
+]);
+
+function resolveNodeCSS(
+  node: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+  depth: number,
+): Record<string, string> {
+  const css: Record<string, string> = {};
+  if (!node) return css;
+  if (node.visible === false) return { display: 'none' };
+
+  resolveLayout(node, globalStyles, css);
+  resolvePadding(node, css);
+  resolveDimensions(node, css);
+  resolveGrid(node, css);
+  resolvePositioning(node, css);
+  resolveFlexChild(node, css);
+  resolveOverflow(node, css);
+  resolveFills(node, globalStyles, variables, css);
+  resolveStrokes(node, globalStyles, variables, css);
+  resolveBorderRadius(node, css);
+
+  if (node.opacity !== undefined && node.opacity < 0.9999) {
+    css['opacity'] = parseFloat(node.opacity.toFixed(3)).toString();
+  }
+
+  const effects = globalStyles[node.effects] ?? extractEffectsFromNode(node);
+  if (effects) {
+    if (effects.boxShadow)      css['box-shadow']      = effects.boxShadow;
+    if (effects.backdropFilter) css['backdrop-filter'] = effects.backdropFilter;
+    if (effects.filter)         css['filter']          = effects.filter;
+  }
+
+  if (node.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(node.blendMode)) {
+    css['mix-blend-mode'] = BLEND_MODE_MAP[node.blendMode] ?? node.blendMode.toLowerCase();
+  }
+
+  // Aspect ratio for image rectangles
+  if (node.type === 'RECTANGLE' && node.absoluteBoundingBox) {
+    const { width, height } = node.absoluteBoundingBox;
+    if (width > 0 && height > 0 && node.fills?.some((f: any) => f.type === 'IMAGE')) {
+      css['aspect-ratio'] = `${width} / ${height}`;
+    }
+  }
+
+  const cursor = heuristicCursor(node);
+  if (cursor) css['cursor'] = cursor;
+
+  if (node.transitionNodeID || node.transitionEasing) {
+    css['transition'] = buildTransitionHint(node);
+  }
+
+  if (node.rotation && Math.abs(node.rotation) > 0.1) {
+    css['transform'] = `rotate(${parseFloat((-node.rotation).toFixed(2))}deg)`;
+    css['transform-origin'] = 'center';
+  }
+
+  return css;
+}
+
+// ── Layout ──────────────────────────────────────────────────────────────────
+
+function resolveLayout(node: any, globalStyles: Record<string, any>, css: Record<string, string>) {
+  const layout = globalStyles[node.layout] ?? extractLayoutFromNode(node);
+  if (!layout) return;
+
+  if (layout.mode === 'row' || node.layoutMode === 'HORIZONTAL') {
+    css['display'] = 'flex'; css['flex-direction'] = 'row';
+  } else if (layout.mode === 'column' || node.layoutMode === 'VERTICAL') {
+    css['display'] = 'flex'; css['flex-direction'] = 'column';
+  }
+
+  if (layout.justifyContent) css['justify-content'] = layout.justifyContent;
+  if (layout.alignItems)     css['align-items']     = layout.alignItems;
+  if (layout.gap)            css['gap']             = layout.gap;
+  if (node.itemSpacing)      css['gap']             = `${node.itemSpacing}px`;
+}
+
 function extractLayoutFromNode(node: any): any | null {
   if (!node.layoutMode || node.layoutMode === 'NONE') return null;
-
   const layout: any = {};
   if (node.layoutMode === 'HORIZONTAL') layout.mode = 'row';
-  if (node.layoutMode === 'VERTICAL') layout.mode = 'column';
-
-  if (node.primaryAxisAlignItems) {
-    layout.justifyContent = mapAlignItems(node.primaryAxisAlignItems);
-  }
-  if (node.counterAxisAlignItems) {
-    layout.alignItems = mapAlignItems(node.counterAxisAlignItems);
-  }
-  if (node.itemSpacing) layout.gap = `${node.itemSpacing}px`;
-
+  if (node.layoutMode === 'VERTICAL')   layout.mode = 'column';
+  if (node.primaryAxisAlignItems) layout.justifyContent = mapAlignItems(node.primaryAxisAlignItems);
+  if (node.counterAxisAlignItems) layout.alignItems     = mapAlignItems(node.counterAxisAlignItems);
+  if (node.itemSpacing)           layout.gap            = `${node.itemSpacing}px`;
   return layout;
 }
 
-/**
- * Map Figma alignment to CSS
- */
 function mapAlignItems(align: string): string {
   const map: Record<string, string> = {
-    'MIN': 'flex-start',
-    'CENTER': 'center',
-    'MAX': 'flex-end',
-    'SPACE_BETWEEN': 'space-between',
-    'STRETCH': 'stretch',
+    MIN: 'flex-start', CENTER: 'center', MAX: 'flex-end',
+    SPACE_BETWEEN: 'space-between', STRETCH: 'stretch', BASELINE: 'baseline',
   };
-  return map[align] || align.toLowerCase();
+  return map[align] ?? align.toLowerCase().replace(/_/g, '-');
 }
 
-/**
- * Extract fills from node properties
- */
-function extractFillsFromNode(node: any): string[] | null {
-  if (!node.fills || !Array.isArray(node.fills)) return null;
+// ── Grid ────────────────────────────────────────────────────────────────────
 
-  const colors: string[] = [];
-  for (const fill of node.fills) {
-    if (fill.type === 'SOLID' && fill.color) {
-      const { r, g, b, a = 1 } = fill.color;
+function resolveGrid(node: any, css: Record<string, string>) {
+  if (!Array.isArray(node.layoutGrids) || node.layoutGrids.length === 0) return;
 
-      // Figma has TWO opacity concepts:
-      // 1. fill.opacity - the fill layer's opacity
-      // 2. node.opacity - the entire node/layer's appearance opacity
-      // Both need to be multiplied together for the final alpha
-      const fillOpacity = fill.opacity !== undefined ? fill.opacity : 1;
-      const nodeOpacity = node.opacity !== undefined ? node.opacity : 1;
-      const finalAlpha = a * fillOpacity * nodeOpacity;
-
-      if (finalAlpha < 1) {
-        colors.push(`rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${finalAlpha})`);
-      } else {
-        const hex = `#${[r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
-        colors.push(hex);
-      }
+  for (const grid of node.layoutGrids) {
+    if (grid.pattern === 'COLUMNS') {
+      css['display'] = 'grid';
+      css['grid-template-columns'] = `repeat(${grid.count ?? 'auto-fill'}, 1fr)`;
+      if (grid.gutterSize) css['column-gap'] = `${grid.gutterSize}px`;
+      break;
+    }
+    if (grid.pattern === 'ROWS') {
+      css['display'] = 'grid';
+      css['grid-auto-rows'] = `${grid.sectionSize ?? 'auto'}px`;
+      if (grid.gutterSize) css['row-gap'] = `${grid.gutterSize}px`;
+      break;
     }
   }
 
-  return colors.length > 0 ? colors : null;
+  if (node.layoutWrap === 'WRAP' && css['display'] === 'flex') {
+    css['flex-wrap'] = 'wrap';
+    if (node.counterAxisSpacing) css['row-gap'] = `${node.counterAxisSpacing}px`;
+  }
 }
 
-/**
- * Extract strokes from node properties
- */
-function extractStrokesFromNode(node: any): any | null {
-  if (!node.strokes || !Array.isArray(node.strokes)) return null;
+// ── Padding ─────────────────────────────────────────────────────────────────
+
+function resolvePadding(node: any, css: Record<string, string>) {
+  if (node.padding !== undefined) {
+    const p = node.padding;
+    if (typeof p === 'number') { css['padding'] = `${p}px`; return; }
+    if (typeof p === 'string') { css['padding'] = p; return; }
+    if (typeof p === 'object' && p.top !== undefined) {
+      css['padding'] = `${p.top ?? 0}px ${p.right ?? 0}px ${p.bottom ?? 0}px ${p.left ?? 0}px`;
+      return;
+    }
+  }
+
+  const t = node.paddingTop ?? 0, r = node.paddingRight ?? 0;
+  const b = node.paddingBottom ?? 0, l = node.paddingLeft ?? 0;
+  if (t === 0 && r === 0 && b === 0 && l === 0) return;
+
+  if (t === r && t === b && t === l)           css['padding'] = `${t}px`;
+  else if (t === b && l === r)                 css['padding'] = `${t}px ${r}px`;
+  else                                         css['padding'] = `${t}px ${r}px ${b}px ${l}px`;
+}
+
+// ── Dimensions ──────────────────────────────────────────────────────────────
+
+function resolveDimensions(node: any, css: Record<string, string>) {
+  if (!node.absoluteBoundingBox) return;
+  const { width, height } = node.absoluteBoundingBox;
+
+  const isH = node.layoutMode === 'HORIZONTAL';
+  const isV = node.layoutMode === 'VERTICAL';
+
+  // ── Min/Max constraints ──
+  if (node.minWidth  != null && node.minWidth  > 0) css['min-width']  = `${node.minWidth}px`;
+  if (node.maxWidth  != null && node.maxWidth  > 0) css['max-width']  = `${node.maxWidth}px`;
+  if (node.minHeight != null && node.minHeight > 0) css['min-height'] = `${node.minHeight}px`;
+  if (node.maxHeight != null && node.maxHeight > 0) css['max-height'] = `${node.maxHeight}px`;
+
+  // ── Aspect ratio lock ──
+  if (node.preserveRatio === true && width > 0 && height > 0) {
+    const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+    const g = gcd(Math.round(width), Math.round(height));
+    css['aspect-ratio'] = `${Math.round(width / g)} / ${Math.round(height / g)}`;
+  }
+
+  // ── Height ──
+  if (!css['height'] && !css['min-height']) {
+    if ((isV && node.primaryAxisSizingMode === 'AUTO') || node.layoutSizingVertical === 'HUG') {
+      css['min-height'] = `${height}px`;
+    } else if (node.layoutSizingVertical === 'FILL') {
+      css['height'] = '100%';
+    } else {
+      css['height'] = `${height}px`;
+    }
+  }
+
+  // ── Width ──
+  if (!css['width'] && !css['min-width']) {
+    const hug  = (isH && node.primaryAxisSizingMode === 'AUTO') ||
+                 (isV && node.counterAxisSizingMode  === 'AUTO') ||
+                 node.layoutSizingHorizontal === 'HUG';
+    const fill = node.layoutSizingHorizontal === 'FILL' || node.layoutGrow === 1;
+
+    if (fill) {
+      css['flex-grow'] = '1'; css['width'] = '100%';
+    } else if (hug) {
+      css['min-width'] = `${width}px`;
+    } else {
+      css['width'] = `${width}px`;
+    }
+  }
+}
+
+// ── Absolute positioning + constraints ───────────────────────────────────────
+
+function resolvePositioning(node: any, css: Record<string, string>) {
+  // Fixed position on scroll (Figma "scrollingBehavior: FIXED")
+  if (node.scrollBehavior === 'FIXED' || node.isFixed === true) {
+    css['position'] = 'sticky';
+    css['top'] = '0';
+    css['z-index'] = '100';
+    return;
+  }
+
+  if (node.layoutPositioning !== 'ABSOLUTE') return;
+  css['position'] = 'absolute';
+
+  if (!node.constraints) {
+    if (node.x !== undefined) css['left'] = `${node.x}px`;
+    if (node.y !== undefined) css['top']  = `${node.y}px`;
+    return;
+  }
+
+  const { horizontal: h, vertical: v } = node.constraints;
+  const bb = node.absoluteBoundingBox;
+
+  if (h === 'LEFT' || h === 'MIN')            { if (bb) css['left'] = `${bb.x}px`; }
+  else if (h === 'RIGHT' || h === 'MAX')      { css['right'] = '0'; }
+  else if (h === 'CENTER')                    { css['left'] = '50%'; css['transform'] = (css['transform'] ? css['transform'] + ' ' : '') + 'translateX(-50%)'; }
+  else if (h === 'STRETCH' || h === 'SCALE')  { css['left'] = '0'; css['right'] = '0'; }
+
+  if (v === 'TOP' || v === 'MIN')             { if (bb) css['top'] = `${bb.y}px`; }
+  else if (v === 'BOTTOM' || v === 'MAX')     { css['bottom'] = '0'; }
+  else if (v === 'CENTER')                    { css['top'] = '50%'; css['transform'] = (css['transform'] ? css['transform'] + ' ' : '') + 'translateY(-50%)'; }
+  else if (v === 'STRETCH' || v === 'SCALE')  { css['top'] = '0'; css['bottom'] = '0'; }
+}
+
+// ── Flex child ───────────────────────────────────────────────────────────────
+
+function resolveFlexChild(node: any, css: Record<string, string>) {
+  if (node.layoutAlign === 'STRETCH') css['align-self'] = 'stretch';
+  if (node.layoutAlign === 'INHERIT') css['align-self'] = 'auto';
+}
+
+// ── Overflow ──────────────────────────────────────────────────────────────────
+
+function resolveOverflow(node: any, css: Record<string, string>) {
+  if (node.clipsContent === true) {
+    css['overflow'] = 'hidden';
+  } else if (node.overflowDirection) {
+    const map: Record<string, [string, string]> = {
+      VERTICAL:                 ['overflow-y', 'auto'],
+      HORIZONTAL:               ['overflow-x', 'auto'],
+      HORIZONTAL_AND_VERTICAL:  ['overflow',   'auto'],
+    };
+    const entry = map[node.overflowDirection];
+    if (entry) css[entry[0]] = entry[1];
+  }
+}
+
+// ── Fills ──────────────────────────────────────────────────────────────────────
+
+function resolveFills(
+  node: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+  css: Record<string, string>,
+) {
+  const fillVar = tryBoundVariable(node, 'fills', variables);
+  if (fillVar) { css['background-color'] = fillVar; return; }
+
+  const fills = globalStyles[node.fills] ?? extractFillsFromNode(node, variables);
+  if (!Array.isArray(fills) || fills.length === 0) return;
+
+  const primary = fills[0];
+  if (!primary) return;
+
+  if (primary.startsWith('linear-gradient') || primary.startsWith('radial-gradient') || primary.startsWith('conic-gradient')) {
+    css['background'] = primary;
+  } else if (primary.startsWith('url(')) {
+    css['background-image'] = primary;
+    // Apply image scale mode from the raw fill data
+    const rawImageFill = node.fills?.find((f: any) => f.type === 'IMAGE' && f.visible !== false);
+    if (rawImageFill) {
+      applyImageScaleMode(rawImageFill, css);
+    } else {
+      css['background-size'] = 'cover';
+      css['background-position'] = 'center';
+      css['background-repeat'] = 'no-repeat';
+    }
+  } else {
+    css['background-color'] = primary;
+  }
+
+  if (fills.length > 1) css['background'] = [...fills.slice(1), primary].join(', ');
+}
+
+function extractFillsFromNode(node: any, variables: Record<string, ResolvedVariable> = {}): string[] | null {
+  if (!Array.isArray(node.fills) || node.fills.length === 0) return null;
+
+  const result: string[] = [];
+  for (const fill of node.fills) {
+    if (fill.visible === false) continue;
+
+    const varRef = fill.boundVariables?.color;
+    if (varRef) {
+      const resolved = resolveBoundVariable(varRef, variables);
+      if (resolved) { result.push(resolved); continue; }
+    }
+
+    switch (fill.type) {
+      case 'SOLID':            if (fill.color) result.push(solidFillToCSS(fill, node)); break;
+      case 'GRADIENT_LINEAR':  result.push(linearGradientToCSS(fill)); break;
+      case 'GRADIENT_RADIAL':  result.push(radialGradientToCSS(fill)); break;
+      case 'GRADIENT_ANGULAR': result.push(angularGradientToCSS(fill)); break;
+      case 'GRADIENT_DIAMOND': result.push(radialGradientToCSS(fill)); break; // best approx
+      case 'IMAGE':
+        result.push(fill.imageRef ? `url(/* ${fill.imageRef} */)` : 'url()');
+        break;
+      case 'VIDEO':            result.push('transparent'); break;
+    }
+  }
+  return result.length > 0 ? result : null;
+}
+
+function solidFillToCSS(fill: any, node: any): string {
+  const { r, g, b, a = 1 } = fill.color;
+  const fillOp = fill.opacity  !== undefined ? fill.opacity : 1;
+  const nodeOp = node.opacity  !== undefined ? node.opacity : 1;
+  const alpha  = parseFloat((a * fillOp * nodeOp).toFixed(3));
+  return alpha >= 0.999 ? rgbToHex(r, g, b)
+    : `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
+}
+
+function linearGradientToCSS(fill: any): string {
+  if (!fill.gradientHandlePositions?.length || !fill.gradientStops?.length)
+    return 'linear-gradient(to right, transparent, transparent)';
+  const [start, end] = fill.gradientHandlePositions;
+  const angle = Math.round(Math.atan2(end.x - start.x, -(end.y - start.y)) * (180 / Math.PI));
+  return `linear-gradient(${angle}deg, ${gradientStopsToCSS(fill.gradientStops)})`;
+}
+
+function radialGradientToCSS(fill: any): string {
+  if (!fill.gradientStops?.length) return 'radial-gradient(transparent, transparent)';
+  return `radial-gradient(circle, ${gradientStopsToCSS(fill.gradientStops)})`;
+}
+
+function angularGradientToCSS(fill: any): string {
+  if (!fill.gradientStops?.length) return 'conic-gradient(transparent, transparent)';
+  return `conic-gradient(${gradientStopsToCSS(fill.gradientStops)})`;
+}
+
+function gradientStopsToCSS(stops: any[]): string {
+  return stops.map((s) => {
+    const { r, g, b, a = 1 } = s.color;
+    const col = a >= 0.999 ? rgbToHex(r, g, b)
+      : `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${parseFloat(a.toFixed(3))})`;
+    return `${col} ${Math.round(s.position * 100)}%`;
+  }).join(', ');
+}
+
+// ── Strokes ────────────────────────────────────────────────────────────────────
+
+function resolveStrokes(
+  node: any,
+  globalStyles: Record<string, any>,
+  variables: Record<string, ResolvedVariable>,
+  css: Record<string, string>,
+) {
+  const strokeVar = tryBoundVariable(node, 'strokes', variables);
+  const strokes   = globalStyles[node.strokes] ?? extractStrokesFromNode(node, variables);
+  if (!strokes?.colors?.length) return;
+
+  const weight = strokes.strokeWeight ?? '1px';
+  const color  = strokeVar ?? strokes.colors[0];
+
+  if (node.strokeAlign === 'INSIDE') {
+    const existing = css['box-shadow'] ? css['box-shadow'] + ', ' : '';
+    css['box-shadow'] = `${existing}inset 0 0 0 ${weight} ${color}`;
+  } else if (node.strokeAlign === 'OUTSIDE') {
+    const existing = css['box-shadow'] ? css['box-shadow'] + ', ' : '';
+    css['box-shadow'] = `${existing}0 0 0 ${weight} ${color}`;
+  } else {
+    // CENTER (default CSS border)
+    if (strokes.sides) {
+      const val = `${weight} solid ${color} !important`;
+      if (strokes.sides.top)    css['border-top']    = val;
+      if (strokes.sides.right)  css['border-right']  = val;
+      if (strokes.sides.bottom) css['border-bottom'] = val;
+      if (strokes.sides.left)   css['border-left']   = val;
+    } else {
+      css['border'] = `${weight} solid ${color} !important`;
+    }
+  }
+
+  // Dash pattern
+  if (Array.isArray(node.dashPattern) && node.dashPattern.length >= 2) {
+    const [dash, gap] = node.dashPattern;
+    css['border-style'] = (css['border'] || css['border-top']) ? (dash === gap ? 'dashed' : 'dotted') : css['border-style'];
+  }
+}
+
+function extractStrokesFromNode(node: any, variables: Record<string, ResolvedVariable> = {}): any | null {
+  if (!Array.isArray(node.strokes) || node.strokes.length === 0) return null;
 
   const colors: string[] = [];
   for (const stroke of node.strokes) {
+    if (stroke.visible === false) continue;
+    const varRef = stroke.boundVariables?.color;
+    if (varRef) {
+      const resolved = resolveBoundVariable(varRef, variables);
+      if (resolved) { colors.push(resolved); continue; }
+    }
     if (stroke.type === 'SOLID' && stroke.color) {
-      const { r, g, b, a = 1 } = stroke.color;
-
-      // Figma has TWO opacity concepts:
-      // 1. stroke.opacity - the stroke layer's opacity
-      // 2. node.opacity - the entire node/layer's appearance opacity
-      // Both need to be multiplied together for the final alpha
-      const strokeOpacity = stroke.opacity !== undefined ? stroke.opacity : 1;
-      const nodeOpacity = node.opacity !== undefined ? node.opacity : 1;
-      const finalAlpha = a * strokeOpacity * nodeOpacity;
-
-      if (finalAlpha < 1) {
-        colors.push(`rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${finalAlpha})`);
-      } else {
-        const hex = `#${[r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
-        colors.push(hex);
-      }
+      colors.push(solidFillToCSS({ ...stroke, color: stroke.color }, node));
     }
   }
+  if (colors.length === 0) return null;
 
-  return colors.length > 0 ? {
+  const sides: Record<string, boolean> = {};
+  if ((node.strokeTopWeight    ?? 0) > 0) sides.top    = true;
+  if ((node.strokeRightWeight  ?? 0) > 0) sides.right  = true;
+  if ((node.strokeBottomWeight ?? 0) > 0) sides.bottom = true;
+  if ((node.strokeLeftWeight   ?? 0) > 0) sides.left   = true;
+
+  return {
     colors,
-    strokeWeight: node.strokeWeight ? `${node.strokeWeight}px` : '1px'
-  } : null;
+    strokeWeight: node.strokeWeight ? `${node.strokeWeight}px` : '1px',
+    sides: Object.keys(sides).length > 0 && Object.keys(sides).length < 4 ? sides : null,
+    strokeAlign: node.strokeAlign,
+  };
 }
 
-/**
- * Extract effects from node properties
- */
+// ── Border radius ─────────────────────────────────────────────────────────────
+
+function resolveBorderRadius(node: any, css: Record<string, string>) {
+  if (node.cornerRadius !== undefined && node.cornerRadius !== null) {
+    const r = node.cornerRadius;
+    css['border-radius'] = node.cornerSmoothing && node.cornerSmoothing > 0
+      ? `${Math.round(r * (1 + node.cornerSmoothing * 0.5))}px`
+      : `${r}px`;
+    return;
+  }
+
+  const tl = node.topLeftRadius     ?? node.rectangleCornerRadii?.[0];
+  const tr = node.topRightRadius    ?? node.rectangleCornerRadii?.[1];
+  const br = node.bottomRightRadius ?? node.rectangleCornerRadii?.[2];
+  const bl = node.bottomLeftRadius  ?? node.rectangleCornerRadii?.[3];
+
+  if (tl !== undefined || tr !== undefined || br !== undefined || bl !== undefined) {
+    css['border-radius'] = `${tl ?? 0}px ${tr ?? 0}px ${br ?? 0}px ${bl ?? 0}px`;
+    return;
+  }
+  if (node.borderRadius) css['border-radius'] = node.borderRadius;
+}
+
+// ── Effects ───────────────────────────────────────────────────────────────────
+
 function extractEffectsFromNode(node: any): any | null {
-  if (!node.effects || !Array.isArray(node.effects)) return null;
+  if (!Array.isArray(node.effects) || node.effects.length === 0) return null;
 
   const result: any = {};
   const shadows: string[] = [];
 
   for (const effect of node.effects) {
+    if (effect.visible === false) continue;
     if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
-      const { offset, radius, color } = effect;
+      const { offset, radius, spread = 0, color } = effect;
       if (offset && color) {
         const { r, g, b, a = 1 } = color;
-        const colorStr = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`;
-        const prefix = effect.type === 'INNER_SHADOW' ? 'inset ' : '';
-        shadows.push(`${prefix}${offset.x}px ${offset.y}px ${radius || 0}px 0px ${colorStr}`);
+        const col = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${parseFloat(a.toFixed(3))})`;
+        shadows.push(`${effect.type === 'INNER_SHADOW' ? 'inset ' : ''}${offset.x}px ${offset.y}px ${radius ?? 0}px ${spread}px ${col}`);
       }
-    } else if (effect.type === 'LAYER_BLUR' && effect.radius) {
+    } else if (effect.type === 'BACKGROUND_BLUR' && effect.radius) {
       result.backdropFilter = `blur(${effect.radius}px)`;
+    } else if (effect.type === 'LAYER_BLUR' && effect.radius) {
+      result.filter = `blur(${effect.radius}px)`;
     }
   }
 
-  if (shadows.length > 0) {
-    result.boxShadow = shadows.join(', ');
-  }
-
+  if (shadows.length > 0) result.boxShadow = shadows.join(', ');
   return Object.keys(result).length > 0 ? result : null;
 }
 
-/** Recursively finds the first TEXT node in a subtree. */
+// ── Vector color ──────────────────────────────────────────────────────────────
+
+function extractVectorColorRecursive(node: any, variables: Record<string, ResolvedVariable> = {}): string | null {
+  if (!node) return null;
+
+  if (VECTOR_NODE_TYPES.has(node.type)) {
+    // Strokes first
+    if (Array.isArray(node.strokes)) {
+      for (const s of node.strokes) {
+        if (s.visible === false) continue;
+        const varRef = s.boundVariables?.color;
+        if (varRef) { const r = resolveBoundVariable(varRef, variables); if (r) return r; }
+        if (s.type === 'SOLID' && s.color) {
+          const { r, g, b, a = 1 } = s.color;
+          return a >= 0.999 ? rgbToHex(r, g, b)
+            : `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${parseFloat(a.toFixed(3))})`;
+        }
+      }
+    }
+    // Then fills
+    if (Array.isArray(node.fills)) {
+      for (const f of node.fills) {
+        if (f.visible === false) continue;
+        const varRef = f.boundVariables?.color;
+        if (varRef) { const r = resolveBoundVariable(varRef, variables); if (r) return r; }
+        if (f.type === 'SOLID' && f.color) {
+          const { r, g, b, a = 1 } = f.color;
+          return a >= 0.999 ? rgbToHex(r, g, b)
+            : `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${parseFloat(a.toFixed(3))})`;
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const color = extractVectorColorRecursive(child, variables);
+      if (color) return color;
+    }
+  }
+  return null;
+}
+
+// ── Misc helpers ──────────────────────────────────────────────────────────────
+
+function heuristicCursor(node: any): string | null {
+  const n = (node.name ?? '').toLowerCase();
+  if (/\b(button|btn|cta|link|clickable|anchor|tab|chip|tag|radio|checkbox|toggle|switch|selectable)\b/.test(n)) return 'pointer';
+  if (/\b(input|textarea|field|text.?box|editable|search)\b/.test(n)) return 'text';
+  if (/\b(slider|range|track|thumb)\b/.test(n)) return 'ew-resize';
+  if (/\b(resize|handle)\b/.test(n)) return 'se-resize';
+  if (/\b(drag|draggable)\b/.test(n)) return 'grab';
+  if (/\bdisabled\b/.test(n)) return 'not-allowed';
+  return null;
+}
+
+function buildTransitionHint(node: any): string {
+  const dur = node.transitionDuration ?? 200;
+  const ms  = typeof dur === 'number' ? `${dur}ms` : dur;
+  const EASING: Record<string, string> = {
+    EASE_IN: 'ease-in', EASE_OUT: 'ease-out', EASE_IN_AND_OUT: 'ease-in-out', LINEAR: 'linear',
+    EASE_IN_BACK: 'cubic-bezier(0.36, 0, 0.66, -0.56)', EASE_OUT_BACK: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+    EASE_IN_AND_OUT_BACK: 'cubic-bezier(0.68, -0.55, 0.265, 1.55)', SPRING: 'cubic-bezier(0.5, 0, 0, 1.5)',
+  };
+  return `all ${ms} ${(node.transitionEasing && EASING[node.transitionEasing]) ?? 'ease'}`;
+}
+
 function findFirstTextNode(node: any): any | null {
   if (node.type === 'TEXT') return node;
-  if (node.children) {
+  if (Array.isArray(node.children)) {
     for (const child of node.children) {
       const found = findFirstTextNode(child);
       if (found) return found;
@@ -970,362 +1844,322 @@ function findFirstTextNode(node: any): any | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// CSS generation — diff-based, universal
-// ---------------------------------------------------------------------------
+function collectCSSTokens(styles: VariantStyles): string[] {
+  const tokens = new Set<string>();
+  const re = /var\(--[^)]+\)/g;
+  const scan = (obj: Record<string, string>) =>
+    Object.values(obj).forEach((v) => String(v).match(re)?.forEach((m) => tokens.add(m)));
+  scan(styles.container);
+  scan(styles.text);
+  Object.values(styles.children).forEach(scan);
+  return [...tokens];
+}
 
-/**
- * Builds a clean, grouped CSS stylesheet from the variant data.
- *
- * Structure:
- *   .base { all default properties }
- *   .base__label { text properties }
- *   .base--value { prop-axis diff from default }
- *   .base:hover { state diff from default }
- *   .base--value:hover { state diff per prop-axis value }
- *   .base[data-error] { boolean state }
- *   .base[data-error]:hover { compound state }
- *
- * @param dimensionMap - Optional map of node ID → dimensions for icon sizing
- */
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+function isIconKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return k.includes('icon') || k.includes('leading') || k.includes('trailing') ||
+    k.includes('prefix') || k.includes('suffix') || k.includes('adornment');
+}
+
+function findDimensionsInTree(
+  node: any,
+  dimensionMap: Map<string, { width: number; height: number }>,
+): { width: number; height: number } | null {
+  if (!node) return null;
+  if (node.id && dimensionMap.has(node.id)) return dimensionMap.get(node.id)!;
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const d = findDimensionsInTree(child, dimensionMap);
+      if (d) return d;
+    }
+  }
+  return null;
+}
+
+function addUnit(value: number | string, unit: string): string {
+  if (typeof value === 'number') return `${value}${unit}`;
+  const s = String(value);
+  return /px|em|rem|%|pt|vh|vw|ch|ex$/i.test(s) ? s : `${s}${unit}`;
+}
+
+// ============================================================================
+// SECTION 14: CSS GENERATION
+// ============================================================================
+
 export function buildVariantCSS(
   data: ComponentSetData,
   dimensionMap?: Map<string, { width: number; height: number }>,
+  options: BuildVariantCSSOptions = {},
 ): string {
-  const base = toKebabCase(data.name);
+  const {
+    sourceComments   = false,
+    deduplicateRules = true,
+    emitFocusReset   = true,
+    cssLayer,
+    emitTokens       = false,
+  } = options;
+
+  const base  = toKebabCase(data.name);
   const lines: string[] = [];
 
+  if (emitTokens && Object.keys(data.resolvedVariables).length > 0) {
+    lines.push(':root {');
+    for (const v of Object.values(data.resolvedVariables)) {
+      lines.push(`  ${v.cssVarName}: ${v.value}; /* ${v.name} */`);
+    }
+    lines.push('}', '');
+
+    // Emit per-mode theme overrides
+    for (const [modeName, modeCSS] of Object.entries(data.variableModesCSS)) {
+      lines.push(`/* Theme: ${modeName} */`);
+      lines.push(modeCSS, '');
+    }
+  }
+
+  if (cssLayer) lines.push(`@layer ${cssLayer} {`);
+
   const findVariant = (props: Record<string, string>) =>
-    data.variants.find((v) =>
-      Object.entries(props).every(([k, val]) => v.props[k] === val),
-    );
+    data.variants.find((v) => Object.entries(props).every(([k, val]) => v.props[k] === val));
 
   const defaultContainer = data.defaultVariant.styles.container;
-  const defaultChildren = data.defaultVariant.styles.children;
+  const defaultChildren  = data.defaultVariant.styles.children;
 
-  // Find text color to apply to icon containers (for SVG currentColor inheritance)
-  let textColor: string | undefined;
-  for (const [childKey, childCSS] of Object.entries(defaultChildren)) {
-    if (childCSS['color']) {
-      textColor = childCSS['color'];
-      break;
-    }
-  }
-
-  // Build a map from child name → dimensions by searching the node tree
-  // Also check ALL variants to find explicit dimensions (like loading state with 14x14)
+  // Dimension map
   const childDimensions = new Map<string, { width: number; height: number }>();
-
-  // First, check all variants for explicit child dimensions
   for (const variant of data.variants) {
-    for (const [childKey, childCSS] of Object.entries(variant.styles.children)) {
-      if (childCSS['width'] && childCSS['height']) {
-        // Extract numeric values
-        const widthMatch = String(childCSS['width']).match(/(\d+(?:\.\d+)?)/);
-        const heightMatch = String(childCSS['height']).match(/(\d+(?:\.\d+)?)/);
-        if (widthMatch && heightMatch) {
-          const dims = {
-            width: parseFloat(widthMatch[1]),
-            height: parseFloat(heightMatch[1]),
-          };
-          // Use first found dimensions for each child
-          if (!childDimensions.has(childKey)) {
-            childDimensions.set(childKey, dims);
-          }
-        }
+    for (const [key, css] of Object.entries(variant.styles.children)) {
+      if (css['width'] && css['height'] && !childDimensions.has(key)) {
+        const w = parseFloat(String(css['width']));
+        const h = parseFloat(String(css['height']));
+        if (!isNaN(w) && !isNaN(h)) childDimensions.set(key, { width: w, height: h });
       }
     }
   }
-
-  // Then, check asset dimension map
-  if (dimensionMap && dimensionMap.size > 0 && data.defaultVariantNode?.children) {
+  if (dimensionMap?.size && data.defaultVariantNode?.children) {
     for (const child of data.defaultVariantNode.children) {
-      const childKey = toKebabCase(child.name ?? '');
-      if (!childDimensions.has(childKey)) {
+      const key = toKebabCase(child.name ?? '');
+      if (!childDimensions.has(key)) {
         const dims = findDimensionsInTree(child, dimensionMap);
-        if (dims) {
-          childDimensions.set(childKey, dims);
-        }
+        if (dims) childDimensions.set(key, dims);
       }
     }
   }
 
-  // --- 1. Base styles: ALL properties from default variant ---
+  const emittedFPs = deduplicateRules ? new Set<string>() : undefined;
+
+  // 1. Base container
+  if (sourceComments) lines.push(`/* ${data.name} | ${data.componentCategory} | <${data.suggestedHtmlTag}> */`);
   lines.push(`.${base} {`);
-  for (const [prop, val] of Object.entries(defaultContainer)) {
-    lines.push(`  ${prop}: ${val};`);
-  }
-  // CRITICAL: Reset HTML button's default border if no border is defined
-  // This prevents browser default borders from appearing on variants without borders
-  // Use !important to override any global button styles
-  if (!defaultContainer['border']) {
-    lines.push(`  border: none !important;`);
-    lines.push(`  outline: none;`);
-  }
+  for (const [p, v] of Object.entries(defaultContainer)) lines.push(`  ${p}: ${v};`);
+  if (!defaultContainer['border']) { lines.push(`  border: none !important;`); lines.push(`  outline: none;`); }
+  if (emitFocusReset && data.isInteractive) lines.push(`  outline-offset: 2px;`);
   lines.push('}');
 
-  // Base child styles (each named child gets its own rule)
+  if (emitFocusReset && data.isInteractive) {
+    lines.push('', `.${base}:focus-visible {`, `  outline: 2px solid currentColor;`, `  outline-offset: 2px;`, '}');
+  }
+
+  // 2. Child rules
   for (const [childKey, childCSS] of Object.entries(defaultChildren)) {
-    const mergedCSS = { ...childCSS };
-
-    // Apply icon dimensions if available
+    const merged = { ...childCSS };
     const dims = childDimensions.get(childKey);
-    if (dims) {
-      mergedCSS['width'] = `${dims.width}px`;
-      mergedCSS['height'] = `${dims.height}px`;
-    }
+    if (dims) { merged['width'] = `${dims.width}px`; merged['height'] = `${dims.height}px`; }
+    if (isIconKey(childKey) && merged['color']) delete merged['color'];
+    if (Object.keys(merged).length === 0) continue;
 
-    // If this is an icon container, apply text color so SVG currentColor inherits properly
-    const isIconContainer = childKey.toLowerCase().includes('icon');
-    if (isIconContainer && textColor && !mergedCSS['color']) {
-      mergedCSS['color'] = textColor;
-    }
+    if (sourceComments) lines.push('', `/* child: ${childKey} */`);
+    lines.push('', `.${base}__${childKey} {`);
+    for (const [p, v] of Object.entries(merged)) lines.push(`  ${p}: ${v};`);
+    lines.push('}');
 
-    if (Object.keys(mergedCSS).length > 0) {
-      lines.push('');
-      lines.push(`.${base}__${childKey} {`);
-      for (const [prop, val] of Object.entries(mergedCSS)) {
-        lines.push(`  ${prop}: ${val};`);
-      }
-      lines.push('}');
-
-      // Add img child rules for icons to make SVG respect container color
-      if (isIconContainer) {
-        lines.push('');
-        lines.push(`.${base}__${childKey} img {`);
-        lines.push(`  width: 100%;`);
-        lines.push(`  height: 100%;`);
-        lines.push(`  object-fit: contain;`);
-        lines.push('}');
-      }
+    if (isIconKey(childKey)) {
+      lines.push('', `.${base}__${childKey} img,`, `.${base}__${childKey} svg {`,
+        `  width: 100%;`, `  height: 100%;`, `  object-fit: contain;`, `  display: block;`, '}');
     }
   }
 
-  // Helper: build default lookup props
+  // Build state lookup helpers
   const defaultLookup: Record<string, string> = {};
   for (const axis of data.propAxes) {
     defaultLookup[axis.name] = data.defaultVariant.props[axis.name] ?? axis.values[0];
   }
   const defaultStateName = data.stateAxis
-    ? (data.defaultVariant.props[data.stateAxis.name] ??
-       data.stateAxis.values.find((v) => v.toLowerCase() === 'default') ??
-       data.stateAxis.values[0])
+    ? (data.defaultVariant.props[data.stateAxis.name]
+        ?? data.stateAxis.values.find((v) => DEFAULT_STATE_NAMES.includes(v.toLowerCase()))
+        ?? data.stateAxis.values[0])
     : undefined;
 
-  // --- 2. Prop axis modifiers (diff-based) ---
+  // 3. Prop-axis modifier rules
   for (const axis of data.propAxes) {
     for (const value of axis.values) {
       if (value === (data.defaultVariant.props[axis.name] ?? axis.values[0])) continue;
 
-      const lookupProps: Record<string, string> = { ...defaultLookup, [axis.name]: value };
-      if (data.stateAxis && defaultStateName) {
-        lookupProps[data.stateAxis.name] = defaultStateName;
-      }
+      const lookup = { ...defaultLookup, [axis.name]: value };
+      if (data.stateAxis && defaultStateName) lookup[data.stateAxis.name] = defaultStateName;
 
-      const variant = findVariant(lookupProps);
+      const variant = findVariant(lookup);
       if (!variant) continue;
 
-      const modSelector = `.${base}--${toKebabCase(value)}`;
-      emitDiffRules(lines, base, modSelector, data.defaultVariant.styles, variant.styles);
+      if (sourceComments) lines.push('', `/* prop: ${axis.name}=${value} */`);
+      emitDiffRules(lines, base, `.${base}--${toKebabCase(value)}`, data.defaultVariant.styles, variant.styles, emittedFPs);
     }
   }
 
-  // --- 3. State overrides ---
+  // 4. State override rules
   if (data.stateAxis && data.classifiedStates.length > 0) {
-    const hasPropAxes = data.propAxes.length > 0;
-
-    if (hasPropAxes) {
+    if (data.propAxes.length > 0) {
       for (const axis of data.propAxes) {
         for (const axisValue of axis.values) {
-          const baseSelector = `.${base}--${toKebabCase(axisValue)}`;
-          const defaultStateLookup: Record<string, string> = { ...defaultLookup, [axis.name]: axisValue };
-          if (defaultStateName) {
-            defaultStateLookup[data.stateAxis.name] = defaultStateName;
-          }
-          const defaultStateVariant = findVariant(defaultStateLookup);
-          if (!defaultStateVariant) continue;
-
-          emitStateOverrides(data, lines, base, baseSelector, defaultStateLookup, defaultStateVariant, findVariant);
+          const stateLookup = { ...defaultLookup, [axis.name]: axisValue };
+          if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
+          const baseVariant = findVariant(stateLookup);
+          if (!baseVariant) continue;
+          emitStateOverrides(data, lines, base, `.${base}--${toKebabCase(axisValue)}`, stateLookup, baseVariant, findVariant, sourceComments, emittedFPs);
         }
-        break; // Only first prop axis
+        break;
       }
     } else {
-      const defaultStateLookup: Record<string, string> = {};
-      if (defaultStateName) {
-        defaultStateLookup[data.stateAxis.name] = defaultStateName;
-      }
-      const defaultStateVariant = findVariant(defaultStateLookup) ?? data.defaultVariant;
-
-      emitStateOverrides(data, lines, base, `.${base}`, defaultStateLookup, defaultStateVariant, findVariant);
+      const stateLookup: Record<string, string> = {};
+      if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
+      emitStateOverrides(data, lines, base, `.${base}`, stateLookup, findVariant(stateLookup) ?? data.defaultVariant, findVariant, sourceComments, emittedFPs);
     }
   }
 
+  if (cssLayer) lines.push('}');
   return lines.join('\n');
 }
 
-/**
- * Emits diff CSS rules for container, text (__label), and all named children.
- */
+// ============================================================================
+// SECTION 15: DIFF & EMISSION
+// ============================================================================
+
 function emitDiffRules(
   lines: string[],
   base: string,
   selector: string,
   baseStyles: VariantStyles,
   variantStyles: VariantStyles,
+  fps?: Set<string>,
 ): void {
-  const containerDiff = diffStyles(baseStyles.container, variantStyles.container);
-  if (Object.keys(containerDiff).length > 0) {
-    lines.push('');
-    lines.push(`${selector} {`);
-    for (const [prop, val] of Object.entries(containerDiff)) {
-      lines.push(`  ${prop}: ${val};`);
-    }
-    lines.push('}');
-  }
+  const cDiff = diffStyles(baseStyles.container, variantStyles.container);
+  if (Object.keys(cDiff).length > 0) maybeEmit(lines, selector, cDiff, fps);
 
-  // Diff all named children
-  const allChildKeys = new Set([
-    ...Object.keys(baseStyles.children),
-    ...Object.keys(variantStyles.children),
-  ]);
-  for (const childKey of allChildKeys) {
-    const baseChild = baseStyles.children[childKey] ?? {};
-    const variantChild = variantStyles.children[childKey] ?? {};
-    const childDiff = diffStyles(baseChild, variantChild);
-    if (Object.keys(childDiff).length > 0) {
-      lines.push('');
-      lines.push(`${selector} .${base}__${childKey} {`);
-      for (const [prop, val] of Object.entries(childDiff)) {
-        lines.push(`  ${prop}: ${val};`);
-      }
-      lines.push('}');
-    }
+  const allKeys = new Set([...Object.keys(baseStyles.children), ...Object.keys(variantStyles.children)]);
+  for (const key of allKeys) {
+    const diff = diffStyles(baseStyles.children[key] ?? {}, variantStyles.children[key] ?? {});
+    if (isIconKey(key) && diff['color']) delete diff['color'];
+    if (Object.keys(diff).length > 0) maybeEmit(lines, `${selector} .${base}__${key}`, diff, fps);
   }
 }
 
-/**
- * Builds the CSS selector for a classified state.
- */
+function maybeEmit(lines: string[], selector: string, props: Record<string, string>, fps?: Set<string>): void {
+  const body = Object.entries(props).map(([p, v]) => `  ${p}: ${v};`).join('\n');
+  const fp   = `${selector}||${body}`;
+  if (fps) { if (fps.has(fp)) return; fps.add(fp); }
+  lines.push('', `${selector} {`, body, '}');
+}
+
 function buildStateSelector(baseSelector: string, cs: ClassifiedState): string {
-  let selector = baseSelector;
+  const clean = baseSelector.replace(/[()[\]]/g, '');
+  let sel = clean;
   if (cs.booleanCondition) {
-    const boolLower = cs.booleanCondition.toLowerCase();
-    const boolKebab = toKebabCase(cs.booleanCondition);
-    const boolSelector =
-      KNOWN_BOOLEAN_STATES[boolLower] ??
-      KNOWN_BOOLEAN_STATES[boolKebab] ??
-      `[data-${boolKebab}]`;
-    selector += boolSelector;
+    const lo = cs.booleanCondition.toLowerCase();
+    const kb = toKebabCase(cs.booleanCondition);
+    sel += KNOWN_BOOLEAN_STATES[lo] ?? KNOWN_BOOLEAN_STATES[kb] ?? `[data-${kb}]`;
   }
-  if (cs.cssSelector) {
-    selector += cs.cssSelector;
-  }
-  return selector;
+  if (cs.cssSelector) sel += cs.cssSelector;
+  return sel;
 }
 
-/**
- * Emits CSS rules for state overrides relative to a base variant.
- */
 function emitStateOverrides(
-  data: ComponentSetData,
-  lines: string[],
-  base: string,
-  baseSelector: string,
-  baseLookup: Record<string, string>,
-  baseVariant: VariantEntry,
-  findVariant: (props: Record<string, string>) => VariantEntry | undefined,
+  data: ComponentSetData, lines: string[], base: string, baseSel: string,
+  baseLookup: Record<string, string>, baseVariant: VariantEntry,
+  findVariant: (p: Record<string, string>) => VariantEntry | undefined,
+  sourceComments?: boolean, fps?: Set<string>,
 ): void {
   for (const cs of data.classifiedStates) {
-    // Skip the default/resting state
     if (cs.cssSelector === '' && cs.booleanCondition === null) continue;
-
-    const stateLookup = { ...baseLookup, [data.stateAxis!.name]: cs.originalValue };
-    const stateVariant = findVariant(stateLookup);
+    const stateVariant = findVariant({ ...baseLookup, [data.stateAxis!.name]: cs.originalValue });
     if (!stateVariant) continue;
-
-    const selector = buildStateSelector(baseSelector, cs);
-    emitDiffRules(lines, base, selector, baseVariant.styles, stateVariant.styles);
+    if (sourceComments) lines.push('', `/* state: ${cs.originalValue} */`);
+    emitDiffRules(lines, base, buildStateSelector(baseSel, cs), baseVariant.styles, stateVariant.styles, fps);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-/**
- * Recursively searches a node tree for any node whose ID exists in the dimensionMap.
- * Returns the first matching dimensions found.
- */
-function findDimensionsInTree(
-  node: any,
-  dimensionMap: Map<string, { width: number; height: number }>,
-): { width: number; height: number } | null {
-  if (!node) return null;
-
-  // Check this node
-  if (node.id && dimensionMap.has(node.id)) {
-    return dimensionMap.get(node.id)!;
-  }
-
-  // Check children
-  if (node.children) {
-    for (const child of node.children) {
-      const dims = findDimensionsInTree(child, dimensionMap);
-      if (dims) return dims;
-    }
-  }
-
-  return null;
-}
-
-function diffStyles(
-  baseStyles: Record<string, string>,
-  variantStyles: Record<string, string>,
-): Record<string, string> {
+function diffStyles(base: Record<string, string>, variant: Record<string, string>): Record<string, string> {
   const diff: Record<string, string> = {};
-  for (const [key, val] of Object.entries(variantStyles)) {
-    if (baseStyles[key] !== val) {
-      diff[key] = val;
-    }
-  }
-  for (const key of Object.keys(baseStyles)) {
-    if (!(key in variantStyles)) {
-      // Use 'none !important' for border to override base class !important
-      // Use 'unset' for other properties
-      diff[key] = key === 'border' ? 'none !important' : 'unset';
-    }
+  for (const [k, v] of Object.entries(variant)) { if (base[k] !== v) diff[k] = v; }
+  for (const k of Object.keys(base)) {
+    if (!(k in variant)) diff[k] = (k === 'background-color' || k === 'background') ? 'transparent' : 'unset';
   }
   return diff;
 }
 
+// ============================================================================
+// SECTION 16: PUBLIC UTILITIES
+// ============================================================================
+
 export function toKebabCase(str: string): string {
   return str
     .replace(/([a-z])([A-Z])/g, '$1-$2')
-    .replace(/[()]/g, '')  // Remove parentheses to avoid CSS selector issues
     .replace(/\s+/g, '-')
+    .replace(/[()[\]/\\]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
     .toLowerCase();
 }
 
 export function toCamelCase(str: string): string {
   return str
-    .replace(/[-_\s]+(.)?/g, (_, char) => (char ? char.toUpperCase() : ''))
-    .replace(/^[A-Z]/, (char) => char.toLowerCase());
+    .replace(/[-_\s]+(.)?/g, (_, c) => (c ? c.toUpperCase() : ''))
+    .replace(/^[A-Z]/, (c) => c.toLowerCase());
 }
 
-/**
- * Safely add a unit to a value if it doesn't already have it
- * Prevents double units like "14pxpx"
- */
-function addUnit(value: number | string, unit: string): string {
-  if (typeof value === 'number') {
-    return `${value}${unit}`;
-  }
+/** Generates a :root CSS tokens block + all theme-mode overrides */
+export function buildTokensCSS(data: ComponentSetData): string {
+  const vars = Object.values(data.resolvedVariables);
+  if (vars.length === 0) return '';
+  const lines = [':root {'];
+  for (const v of vars) lines.push(`  ${v.cssVarName}: ${v.value}; /* ${v.name} */`);
+  lines.push('}');
 
-  const strValue = String(value);
-  // If it already ends with the unit or any other unit-like suffix, return as-is
-  if (strValue.match(/px|em|rem|%|pt|vh|vw$/)) {
-    return strValue;
+  for (const [modeName, modeCSS] of Object.entries(data.variableModesCSS)) {
+    lines.push('', `/* Theme: ${modeName} */`, modeCSS);
   }
+  return lines.join('\n');
+}
 
-  return `${strValue}${unit}`;
+/** Returns a JSON-serialisable summary for codegen / documentation */
+export function summarizeComponent(data: ComponentSetData): object {
+  return {
+    name:            data.name,
+    nodeId:          data.nodeId,
+    category:        data.componentCategory,
+    htmlTag:         data.suggestedHtmlTag,
+    ariaRole:        data.suggestedAriaRole,
+    isInteractive:   data.isInteractive,
+    propAxes:        data.propAxes.map((a) => ({ name: a.name, values: a.values })),
+    stateAxis:       data.stateAxis ? { name: data.stateAxis.name, states: data.classifiedStates } : null,
+    booleanProps:    data.booleanProps,
+    iconSlots:       data.iconSlotProperties.map((p) => p.name),
+    textSlots:       data.textContentProperties.map((p) => p.name),
+    booleanSlots:    data.booleanVisibilityProperties.map((p) => p.name),
+    cssTokensUsed:   data.cssTokensReferenced,
+    variableModes:   Object.keys(data.variableModesCSS),
+    variantCount:    data.variants.length,
+    childLayers:     data.childLayers.map((l) => ({
+      key:            l.key,
+      type:           l.nodeType,
+      isIcon:         l.isIcon,
+      isText:         l.isText,
+      isImage:        l.isImage,
+      imageScaleMode: l.imageScaleMode,
+      hasInlineRuns:  (l.inlineRuns?.length ?? 0) > 0,
+      hasVectorInfo:  !!l.vectorInfo,
+    })),
+  };
 }

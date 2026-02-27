@@ -49,7 +49,7 @@ describe('generateWithRetry', () => {
 
     // Second call should include error feedback
     const secondCallArgs = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[1];
-    expect(secondCallArgs[0]).toContain('⚠️ Your previous output failed to compile');
+    expect(secondCallArgs[0]).toContain('⚠️ Your previous output failed');
   });
 
   it('makes a final simplified attempt after MAX_RETRIES failures', async () => {

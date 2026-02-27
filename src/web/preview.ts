@@ -48,6 +48,12 @@ function transformReactCode(
     `"/api/preview/${sessionId}/assets/$1"`,
   );
 
+  // Also catch bare SVG filenames without ./assets/ prefix (LLM sometimes omits the path)
+  code = code.replace(
+    /src=["']([^"'/][^"']*\.svg)["']/g,
+    `src="/api/preview/${sessionId}/assets/$1"`,
+  );
+
   // Also rewrite asset paths in CSS
   css = css.replace(
     /url\(["']?\.\/assets\/([^"')]+)["']?\)/g,

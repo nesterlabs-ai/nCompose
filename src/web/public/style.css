@@ -731,6 +731,9 @@ body {
   flex: 1;
   overflow: hidden;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .tab-panel {
@@ -801,6 +804,12 @@ body {
   line-height: 1.6;
   color: var(--text-secondary);
   white-space: pre;
+}
+
+/* Monaco Editor container */
+.monaco-editor-container {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Error Banner ── */

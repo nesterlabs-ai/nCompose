@@ -31,6 +31,9 @@ const previewFrame = document.getElementById('preview-frame');
 const downloadBtn = document.getElementById('download-btn');
 const tabsHeader = document.getElementById('tabs-header');
 const tabsContent = document.getElementById('tabs-content');
+const codeFilename = document.getElementById('code-filename');
+const codeCopyBtn = document.getElementById('code-copy-btn');
+const monacoContainer = document.getElementById('monaco-editor-container');
 
 // Resize
 const resizeHandle = document.getElementById('resize-handle');
@@ -40,6 +43,10 @@ const panelLeft = document.getElementById('panel-left');
 let currentSessionId = null;
 let currentFrameworkOutputs = {};
 let currentComponentName = '';
+let monacoEditor = null;
+let monacoReady = false;
+let tabsData = [];
+let currentTabKey = null;
 
 // ── LocalStorage ──
 const STORAGE_KEY = 'figma-to-code-token';
@@ -155,7 +162,6 @@ function startConversion() {
   previewFrame.src = 'about:blank';
   downloadBtn.style.display = 'none';
   tabsHeader.innerHTML = '';
-  tabsContent.innerHTML = '';
 
   // Start SSE request
   const body = JSON.stringify({ figmaUrl, figmaToken, frameworks });
@@ -345,6 +351,65 @@ function handleComplete(data) {
   previewFrame.src = `/api/preview/${currentSessionId}`;
 }
 
+// ── Monaco Editor ──
+const MONACO_CDN = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min';
+
+function getMonacoLanguage(ext) {
+  if (ext.endsWith('.tsx') || ext.endsWith('.ts')) return 'typescript';
+  if (ext.endsWith('.jsx') || ext.endsWith('.js')) return 'javascript';
+  if (ext.endsWith('.vue') || ext.endsWith('.svelte')) return 'html';
+  return 'plaintext';
+}
+
+function initMonaco(callback) {
+  if (monacoReady && monacoEditor) {
+    callback?.();
+    return;
+  }
+  if (typeof require === 'undefined') {
+    console.error('Monaco loader not loaded');
+    callback?.();
+    return;
+  }
+  require.config({
+    paths: { vs: `${MONACO_CDN}/vs` },
+    'vs/nls': { availableLanguages: {} },
+  });
+  window.MonacoEnvironment = {
+    getWorkerUrl: function (workerId, label) {
+      return `data:text/javascript;charset=utf-8,${encodeURIComponent(`
+        self.MonacoEnvironment = { baseUrl: "${MONACO_CDN}/" };
+        importScripts("${MONACO_CDN}/vs/base/worker/workerMain.js");
+      `)}`;
+    },
+  };
+  require(['vs/editor/editor.main'], function () {
+    monacoEditor = monaco.editor.create(monacoContainer, {
+      value: '',
+      language: 'typescript',
+      readOnly: true,
+      theme: 'vs-dark',
+      minimap: { enabled: false },
+      fontSize: 12,
+      fontFamily: "JetBrains Mono, ui-monospace, Menlo, 'Courier New', monospace",
+      scrollBeyondLastLine: false,
+      padding: { top: 12 },
+    });
+    monacoReady = true;
+    window.addEventListener('resize', layoutMonaco);
+    callback?.();
+  });
+}
+
+function layoutMonaco() {
+  if (monacoEditor && monacoContainer) {
+    monacoEditor.layout({
+      width: monacoContainer.offsetWidth,
+      height: monacoContainer.offsetHeight,
+    });
+  }
+}
+
 // ── Mode Toggle (Preview / Code) ──
 modePreviewBtn.addEventListener('click', () => switchMode('preview'));
 modeCodeBtn.addEventListener('click', () => switchMode('code'));
@@ -354,17 +419,19 @@ function switchMode(mode) {
   modeCodeBtn.classList.toggle('active', mode === 'code');
   viewPreview.style.display = mode === 'preview' ? 'flex' : 'none';
   viewCode.style.display = mode === 'code' ? 'flex' : 'none';
+  if (mode === 'code') {
+    requestAnimationFrame(layoutMonaco);
+  }
 }
 
 // ── Build Tabs ──
 function buildTabs(data) {
   tabsHeader.innerHTML = '';
-  tabsContent.innerHTML = '';
 
   const frameworks = data.frameworks || [];
 
-  const allTabs = [
-    { key: 'mitosis', label: 'Mitosis', code: data.mitosisSource, ext: '.lite.tsx' },
+  tabsData = [
+    { key: 'mitosis', label: 'Mitosis', code: data.mitosisSource || '', ext: '.lite.tsx' },
     ...frameworks.map((fw) => ({
       key: fw,
       label: fw.charAt(0).toUpperCase() + fw.slice(1),
@@ -373,57 +440,57 @@ function buildTabs(data) {
     })),
   ];
 
-  allTabs.forEach((tab, idx) => {
+  tabsData.forEach((tab, idx) => {
     const btn = document.createElement('button');
     btn.className = `tab-btn${idx === 0 ? ' active' : ''}`;
     btn.textContent = tab.label;
     btn.dataset.tab = tab.key;
     btn.addEventListener('click', () => switchTab(tab.key));
     tabsHeader.appendChild(btn);
+  });
 
-    const panel = document.createElement('div');
-    panel.className = `tab-panel${idx === 0 ? ' active' : ''}`;
-    panel.id = `tab-${tab.key}`;
-    panel.innerHTML = `
-      <div class="code-block">
-        <div class="code-block__header">
-          <span class="code-block__filename">${escapeHtml(currentComponentName)}${tab.ext}</span>
-          <button class="code-block__copy" onclick="copyCode('${tab.key}')">Copy</button>
-        </div>
-        <pre><code>${escapeHtml(tab.code)}</code></pre>
-      </div>
-    `;
-    tabsContent.appendChild(panel);
+  const firstKey = tabsData[0]?.key;
+  currentTabKey = firstKey;
+
+  initMonaco(() => {
+    if (firstKey) switchTab(firstKey);
+    layoutMonaco();
   });
 }
 
 function switchTab(key) {
+  currentTabKey = key;
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === key);
   });
-  document.querySelectorAll('.tab-panel').forEach((panel) => {
-    panel.classList.toggle('active', panel.id === `tab-${key}`);
-  });
+
+  const tab = tabsData.find((t) => t.key === key);
+  if (!tab) return;
+
+  codeFilename.textContent = currentComponentName + tab.ext;
+
+  if (monacoEditor && typeof monaco !== 'undefined') {
+    monacoEditor.setValue(tab.code || '');
+    monaco.editor.setModelLanguage(monacoEditor.getModel(), getMonacoLanguage(tab.ext));
+  }
+
+  layoutMonaco();
 }
 
 // ── Copy ──
-window.copyCode = function (key) {
-  const panel = document.getElementById(`tab-${key}`);
-  if (!panel) return;
-
-  const code = panel.querySelector('code')?.textContent || '';
+codeCopyBtn.addEventListener('click', () => {
+  const tab = tabsData.find((t) => t.key === currentTabKey);
+  const code = tab?.code || (monacoEditor ? monacoEditor.getValue() : '');
+  if (!code) return;
   navigator.clipboard.writeText(code).then(() => {
-    const btn = panel.querySelector('.code-block__copy');
-    if (btn) {
-      btn.textContent = 'Copied!';
-      btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = 'Copy';
-        btn.classList.remove('copied');
-      }, 2000);
-    }
+    codeCopyBtn.textContent = 'Copied!';
+    codeCopyBtn.classList.add('copied');
+    setTimeout(() => {
+      codeCopyBtn.textContent = 'Copy';
+      codeCopyBtn.classList.remove('copied');
+    }, 2000);
   });
-};
+});
 
 // ── Download ──
 downloadBtn.addEventListener('click', () => {

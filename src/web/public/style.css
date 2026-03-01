@@ -8,7 +8,7 @@
   box-sizing: border-box;
 }
 
-/* ── Tokens ── */
+/* ── Tokens (Dark theme default) ── */
 :root {
   --bg: #000000;
   --surface: hsla(0, 0%, 100%, 0.03);
@@ -25,6 +25,17 @@
   --orange: #f97316;
   --input-bg: #27272a;
   --input-border: hsla(0, 0%, 100%, 0.1);
+  --hero-prompt-bg: #f5f3ef;
+  --hero-prompt-text: #1f2937;
+  --hero-prompt-muted: #4b5563;
+  --hero-prompt-placeholder: #9ca3af;
+  --hero-prompt-add-bg: rgba(0, 0, 0, 0.06);
+  --hero-prompt-add-hover: rgba(0, 0, 0, 0.1);
+  --hero-prompt-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --hero-prompt-focus-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 2px rgba(0, 0, 0, 0.16);
+  --hero-prompt-border: rgba(255, 255, 255, 0.9);
+  --chip-hover-bg: #3f3f46;
+  --send-btn-bg: #374151;
   --radius-pill: 999px;
   --radius-card: 18px;
   --radius-input: 10px;
@@ -33,6 +44,31 @@
   --font-mono: 'JetBrains Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
   --sidebar-width: 260px;
   --topbar-height: 48px;
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --surface-hover: #f4f4f5;
+  --border: #e4e4e7;
+  --border-light: #d4d4d8;
+  --text: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --input-bg: #ffffff;
+  --input-border: #d4d4d8;
+  --hero-prompt-bg: #ffffff;
+  --hero-prompt-text: #18181b;
+  --hero-prompt-muted: #52525b;
+  --hero-prompt-placeholder: #71717a;
+  --hero-prompt-add-bg: rgba(0, 0, 0, 0.06);
+  --hero-prompt-add-hover: rgba(0, 0, 0, 0.1);
+  --hero-prompt-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --hero-prompt-focus-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 2px rgba(239, 49, 57, 0.25);
+  --hero-prompt-border: #e4e4e7;
+  --chip-hover-bg: #e4e4e7;
+  --send-btn-bg: #27272a;
 }
 
 body {
@@ -85,6 +121,10 @@ body {
   width: auto;
 }
 
+[data-theme="light"] .topbar__logo {
+  filter: invert(1);
+}
+
 .topbar__title {
   font-size: 15px;
   font-weight: 600;
@@ -96,6 +136,31 @@ body {
   font-size: 12px;
   margin-left: auto;
 }
+
+.topbar__theme-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.topbar__theme-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.theme-icon--sun { display: block; }
+.theme-icon--moon { display: none; }
+[data-theme="light"] .theme-icon--sun { display: none; }
+[data-theme="light"] .theme-icon--moon { display: block; }
 
 /* ── App Shell ── */
 .app-shell {
@@ -353,15 +418,15 @@ body {
 
 .hero__prompt {
   padding: 12px;
-  background: #f5f3ef;
-  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: var(--hero-prompt-bg);
+  border: 1px solid var(--hero-prompt-border);
   border-radius: 28px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--hero-prompt-shadow);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .hero__prompt-form:focus-within .hero__prompt {
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 2px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--hero-prompt-focus-shadow);
 }
 
 .hero__prompt-body {
@@ -393,17 +458,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--hero-prompt-add-bg);
   border: none;
-  color: #4b5563;
+  color: var(--hero-prompt-muted);
   cursor: pointer;
   border-radius: 50%;
   transition: background 0.2s ease, color 0.2s ease;
 }
 
 .hero__prompt-add:hover {
-  background: rgba(0, 0, 0, 0.1);
-  color: #1f2937;
+  background: var(--hero-prompt-add-hover);
+  color: var(--hero-prompt-text);
 }
 
 .hero__prompt-input-wrap {
@@ -417,7 +482,7 @@ body {
   left: 0;
   top: 6px;
   right: 0;
-  color: #9ca3af;
+  color: var(--hero-prompt-placeholder);
   font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
@@ -447,7 +512,7 @@ body {
   padding: 6px 0;
   border: none;
   background: transparent;
-  color: #1f2937;
+  color: var(--hero-prompt-text);
   font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
@@ -457,7 +522,7 @@ body {
 }
 
 .hero__prompt-input::placeholder {
-  color: #9ca3af;
+  color: var(--hero-prompt-placeholder);
 }
 
 .hero__prompt-footer {
@@ -480,7 +545,7 @@ body {
 .hero__prompt-label {
   flex-shrink: 0;
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--text-secondary);
 }
 
 .hero__prompt-chips {
@@ -492,16 +557,35 @@ body {
 }
 
 .chip--prompt {
-  padding: 4px 10px;
+  padding: 6px 14px;
   font-size: 12px;
-  background: rgba(0, 0, 0, 0.06);
-  color: #4b5563;
-  border: none;
+  font-weight: 500;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 20px;
+  transition: background 0.25s ease, color 0.25s ease, transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.chip-label:hover .chip--prompt {
+  background: var(--chip-hover-bg);
+  color: var(--text);
+  border-color: var(--border-light);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .chip-label input:checked + .chip--prompt {
   background: var(--accent);
   color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 2px 12px rgba(239, 49, 57, 0.4);
+}
+
+.chip-label input:checked:hover + .chip--prompt {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 16px rgba(239, 49, 57, 0.5);
+  transform: translateY(-1px);
 }
 
 .hero__prompt-actions {
@@ -519,15 +603,15 @@ body {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #6b7280;
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: 8px;
   transition: background 0.2s ease, color 0.2s ease;
 }
 
 .hero__prompt-mic:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #1f2937;
+  background: var(--hero-prompt-add-bg);
+  color: var(--hero-prompt-text);
 }
 
 .hero__prompt-send {
@@ -537,7 +621,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #374151;
+  background: var(--send-btn-bg);
   border: none;
   color: #fff;
   cursor: pointer;
@@ -546,7 +630,7 @@ body {
 }
 
 .hero__prompt-send:hover:not(:disabled) {
-  background: #1f2937;
+  background: var(--text);
 }
 
 .hero__prompt-send:disabled {

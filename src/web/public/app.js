@@ -1,5 +1,33 @@
 // ── DOM Elements ──
 
+// Theme
+const themeToggle = document.getElementById('theme-toggle');
+const THEME_KEY = 'figma-to-code-theme';
+
+function getTheme() {
+  return localStorage.getItem(THEME_KEY) || 'dark';
+}
+
+function setTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  localStorage.setItem(THEME_KEY, theme);
+}
+
+if (themeToggle) {
+  themeToggle.addEventListener('click', () => {
+    const current = getTheme();
+    const next = current === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+  });
+}
+
+// Apply saved theme on load
+setTheme(getTheme());
+
 // Sidebar
 const sidebar = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebar-toggle');

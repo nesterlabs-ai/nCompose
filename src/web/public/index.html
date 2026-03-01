@@ -22,11 +22,15 @@
           <img class="sidebar__logo sidebar__logo--collapsed" src="/nester-logo-white.svg" alt="Nester" />
         </div>
         <button class="sidebar__toggle" id="sidebar-toggle" aria-label="Toggle sidebar" title="Collapse sidebar">
-          <svg class="sidebar__toggle-icon sidebar__toggle-icon--collapse" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Collapse: sidebar visible (shown when expanded) -->
+          <svg class="sidebar__toggle-icon sidebar__toggle-icon--collapse" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <line x1="8" y1="6" x2="8" y2="18" />
           </svg>
-          <svg class="sidebar__toggle-icon sidebar__toggle-icon--expand" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Expand: sidebar collapsed (shown when collapsed) -->
+          <svg class="sidebar__toggle-icon sidebar__toggle-icon--expand" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <line x1="5" y1="6" x2="5" y2="18" />
           </svg>
         </button>
       </div>

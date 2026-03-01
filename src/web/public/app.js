@@ -169,6 +169,10 @@ function startConversion() {
   downloadBtn.style.display = 'none';
   explorerFiles.innerHTML = '';
   editorTabs.innerHTML = '';
+  activeFile = null;
+  openFiles = [];
+  tabsData = [];
+  updateCodeActionsState();
 
   // Start SSE request
   const body = JSON.stringify({ figmaUrl, figmaToken, frameworks });
@@ -503,6 +507,15 @@ function setEditMode(editing) {
   codeSaveBtn.style.display = editing ? 'inline-flex' : 'none';
 }
 
+function updateCodeActionsState() {
+  const hasCode = activeFile && tabsData.length > 0;
+  codeEditBtn.disabled = !hasCode;
+  codeCopyBtn.disabled = !hasCode;
+  if (!hasCode) {
+    setEditMode(false);
+  }
+}
+
 function openFile(key) {
   const tab = tabsData.find((t) => t.key === key);
   if (!tab) return;
@@ -530,6 +543,7 @@ function openFile(key) {
   }
 
   layoutMonaco();
+  updateCodeActionsState();
 }
 
 function closeFile(key) {
@@ -552,6 +566,7 @@ function closeFile(key) {
     document.querySelectorAll('.explorer-file').forEach((el) => el.classList.remove('active'));
   }
 
+  updateCodeActionsState();
   layoutMonaco();
 }
 
@@ -578,6 +593,7 @@ function buildTabs(data) {
 
   initMonaco(() => {
     if (firstKey) openFile(firstKey);
+    updateCodeActionsState();
     layoutMonaco();
   });
 }
@@ -590,6 +606,7 @@ explorerToggle.addEventListener('click', () => {
 
 // ── Edit ──
 codeEditBtn.addEventListener('click', () => {
+  if (!activeFile) return;
   setEditMode(true);
 });
 
@@ -636,6 +653,7 @@ codeSaveBtn.addEventListener('click', async () => {
 
 // ── Copy ──
 codeCopyBtn.addEventListener('click', () => {
+  if (!activeFile) return;
   const tab = tabsData.find((t) => t.key === activeFile);
   const code = tab?.code || (monacoEditor ? monacoEditor.getValue() : '');
   if (!code) return;
@@ -713,3 +731,4 @@ function escapeHtml(str) {
 
 // ── Init ──
 loadSavedToken();
+updateCodeActionsState();

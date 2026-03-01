@@ -185,12 +185,27 @@
 
         <!-- Code View -->
         <div class="panel__view" id="view-code" style="display: none;">
-          <div class="tabs">
-            <div class="tabs__header" id="tabs-header"></div>
-            <div class="tabs__content" id="tabs-content">
+          <div class="code-view-layout">
+            <aside class="code-explorer" id="code-explorer">
+              <div class="explorer-header">
+                <span>Explorer</span>
+                <button class="explorer-toggle" id="explorer-toggle" aria-label="Toggle explorer">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="explorer-body" id="explorer-body">
+                <div class="explorer-section">
+                  <div class="explorer-section-title">Generated Files</div>
+                  <div class="explorer-files" id="explorer-files"></div>
+                </div>
+              </div>
+            </aside>
+            <div class="code-main">
+              <div class="editor-tabs" id="editor-tabs"></div>
               <div class="code-block">
                 <div class="code-block__header">
-                  <span class="code-block__filename" id="code-filename"></span>
                   <button class="code-block__copy" id="code-copy-btn">Copy</button>
                 </div>
                 <div class="monaco-editor-container" id="monaco-editor-container"></div>

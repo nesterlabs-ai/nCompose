@@ -202,9 +202,24 @@ body {
 }
 
 .sidebar__logo {
-  height: 24px;
+  height: 20px;
   width: auto;
   flex-shrink: 0;
+}
+
+.sidebar__logo--collapsed {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar__logo--expanded {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar__logo--collapsed {
+  display: block;
+  height: 24px;
+  width: 24px;
+  object-fit: contain;
 }
 
 [data-theme="light"] .sidebar__logo {
@@ -230,10 +245,6 @@ body {
 
 .sidebar.collapsed .sidebar__title {
   display: none;
-}
-
-.sidebar.collapsed .sidebar__logo {
-  height: 28px;
 }
 
 .sidebar__content {

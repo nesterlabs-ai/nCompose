@@ -983,9 +983,14 @@ body {
   transition: all 0.2s ease;
 }
 
-.code-block__copy:hover {
+.code-block__copy:hover:not(:disabled) {
   border-color: var(--text-muted);
   color: var(--text-secondary);
+}
+
+.code-block__copy:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .code-block__copy.copied {

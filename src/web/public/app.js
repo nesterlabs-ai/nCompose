@@ -1,7 +1,6 @@
 // ── DOM Elements ──
 
 // Theme
-const themeToggle = document.getElementById('theme-toggle');
 const THEME_KEY = 'figma-to-code-theme';
 
 function getTheme() {
@@ -24,13 +23,15 @@ function setMonacoTheme(appTheme) {
   monaco.editor.setTheme(monacoTheme);
 }
 
-if (themeToggle) {
-  themeToggle.addEventListener('click', () => {
-    const current = getTheme();
-    const next = current === 'dark' ? 'light' : 'dark';
-    setTheme(next);
-  });
+function onThemeToggleClick() {
+  const current = getTheme();
+  const next = current === 'dark' ? 'light' : 'dark';
+  setTheme(next);
 }
+
+document.querySelectorAll('.theme-toggle').forEach((el) => {
+  el.addEventListener('click', onThemeToggleClick);
+});
 
 // Apply saved theme on load
 setTheme(getTheme());
@@ -39,6 +40,7 @@ setTheme(getTheme());
 const sidebar = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
+const mainMenuBtn = document.getElementById('main-menu-btn');
 const figmaTokenInput = document.getElementById('figma-token');
 const tokenToggle = document.getElementById('token-toggle');
 const saveTokenBtn = document.getElementById('save-token-btn');
@@ -127,6 +129,22 @@ const FRAMEWORK_EXT = {
 };
 
 // ── Sidebar Toggle ──
+function updateMenuButtonVisibility() {
+  const isMobile = window.innerWidth <= 768;
+  const sidebarHidden = isMobile && !sidebar.classList.contains('open');
+  if (mainMenuBtn) {
+    mainMenuBtn.style.display = sidebarHidden ? 'flex' : 'none';
+  }
+}
+
+function updateSidebarToggleTitle() {
+  const isMobile = window.innerWidth <= 768;
+  if (sidebarToggle && !isMobile) {
+    sidebarToggle.title = sidebar.classList.contains('collapsed') ? 'Expand sidebar' : 'Collapse sidebar';
+    sidebarToggle.setAttribute('aria-label', sidebar.classList.contains('collapsed') ? 'Expand sidebar' : 'Collapse sidebar');
+  }
+}
+
 sidebarToggle.addEventListener('click', () => {
   const isMobile = window.innerWidth <= 768;
   if (isMobile) {
@@ -134,12 +152,47 @@ sidebarToggle.addEventListener('click', () => {
     sidebarOverlay.classList.toggle('visible');
   } else {
     sidebar.classList.toggle('collapsed');
+    updateSidebarToggleTitle();
   }
+  updateMenuButtonVisibility();
 });
+
+if (mainMenuBtn) {
+  mainMenuBtn.addEventListener('click', () => {
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile) {
+      sidebar.classList.add('open');
+      sidebarOverlay.classList.add('visible');
+    } else {
+      sidebar.classList.remove('collapsed');
+      updateSidebarToggleTitle();
+    }
+    updateMenuButtonVisibility();
+  });
+}
 
 sidebarOverlay.addEventListener('click', () => {
   sidebar.classList.remove('open');
   sidebarOverlay.classList.remove('visible');
+  updateMenuButtonVisibility();
+});
+
+window.addEventListener('resize', () => {
+  updateMenuButtonVisibility();
+  updateSidebarToggleTitle();
+});
+updateMenuButtonVisibility();
+updateSidebarToggleTitle();
+
+// When collapsed, clicking a section header expands the sidebar
+document.querySelectorAll('.sidebar__section-header').forEach((el) => {
+  el.addEventListener('click', () => {
+    if (window.innerWidth > 768 && sidebar.classList.contains('collapsed')) {
+      sidebar.classList.remove('collapsed');
+      updateSidebarToggleTitle();
+      updateMenuButtonVisibility();
+    }
+  });
 });
 
 // ── Token Toggle Visibility ──
@@ -294,6 +347,7 @@ function startConversion() {
   // Switch from hero to split view (animated)
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
+  mainHero.closest('.main')?.classList.add('split-visible');
 
   // Sync URL and framework selection to panel for "convert another"
   figmaUrlInput.value = figmaUrl;
@@ -899,3 +953,4 @@ updateCodeActionsState();
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');
 mainSplit.classList.remove('visible');
+mainHero.closest('.main')?.classList.remove('split-visible');

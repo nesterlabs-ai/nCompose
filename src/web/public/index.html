@@ -1,29 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nester Figma to Code</title>
   <link rel="stylesheet" href="/style.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ef3139'/><path d='M10 8h8a2 2 0 012 2v2a2 2 0 01-2 2h-2v6a4 4 0 01-8 0v-6h-2a2 2 0 01-2-2v-2a2 2 0 012-2h4z' fill='white' opacity='0.9'/></svg>" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ef3139'/><path d='M10 8h8a2 2 0 012 2v2a2 2 0 01-2 2h-2v6a4 4 0 01-8 0v-6h-2a2 2 0 01-2-2v-2a2 2 0 012-2h4z' fill='white' opacity='0.9'/></svg>" />
 </head>
+
 <body>
   <!-- TOP BAR -->
   <header class="topbar">
     <button class="topbar__toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-        <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
       </svg>
     </button>
     <img class="topbar__logo" src="/Nester_white.svg" alt="Nester Labs" />
     <span class="topbar__title">Figma to Code</span>
     <span class="topbar__subtitle">Convert Figma designs to production ready code</span>
-    <button class="topbar__theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
-      <svg class="theme-icon theme-icon--sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+    <button class="topbar__theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light/dark theme"
+      title="Toggle theme">
+      <svg class="theme-icon theme-icon--sun" width="18" height="18" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="4" />
+        <path
+          d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
       </svg>
-      <svg class="theme-icon theme-icon--moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      <svg class="theme-icon theme-icon--moon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
       </svg>
     </button>
   </header>
@@ -38,8 +46,9 @@
         <div class="sidebar__section">
           <div class="sidebar__section-header">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.5" />
+              <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" />
             </svg>
             <span>Profile</span>
           </div>
@@ -52,8 +61,8 @@
         <div class="sidebar__section">
           <div class="sidebar__section-header">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="3" y="7" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <rect x="3" y="7" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.5" />
+              <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
             <span>Configuration</span>
           </div>
@@ -62,8 +71,8 @@
             <input class="form-input form-input--sm" type="password" id="figma-token" placeholder="figd_xxxxxxxx..." />
             <button class="token-toggle" id="token-toggle" type="button" aria-label="Toggle visibility">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" id="eye-icon">
-                <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" stroke="currentColor" stroke-width="1.5"/>
-                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" stroke="currentColor" stroke-width="1.5" />
+                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5" />
               </svg>
             </button>
           </div>
@@ -88,205 +97,227 @@
       <div class="main-hero" id="main-hero">
         <div class="hero__gradient"></div>
         <div class="hero__center">
-        <div class="hero__content">
-          <h1 class="hero__title">What would you like to convert?</h1>
-          <p class="hero__subtitle">Paste a Figma URL to turn your design into production-ready code</p>
-          <div class="hero__error" id="hero-error"></div>
-          <form class="hero__prompt-form" id="hero-form" role="search">
-            <div class="hero__prompt">
-              <div class="hero__prompt-body">
-                <div class="hero__prompt-input-row">
-                  <input type="file" id="hero-file-upload" class="hero__file-input" accept=".fig,.figma" multiple tabindex="-1" />
-                  <div class="hero__prompt-input-wrap">
-                    <div class="hero__prompt-typewriter" id="hero-typewriter" aria-hidden="true">
-                      <span id="hero-typewriter-text"></span><span class="hero__prompt-cursor">|</span>
+          <div class="hero__content">
+            <h1 class="hero__title">What would you like to convert?</h1>
+            <p class="hero__subtitle">Paste a Figma URL to turn your design into production-ready code</p>
+            <div class="hero__error" id="hero-error"></div>
+            <form class="hero__prompt-form" id="hero-form" role="search">
+              <div class="hero__prompt">
+                <div class="hero__prompt-body">
+                  <div class="hero__prompt-input-row">
+                    <input type="file" id="hero-file-upload" class="hero__file-input" accept=".fig,.figma" multiple
+                      tabindex="-1" />
+                    <div class="hero__prompt-input-wrap">
+                      <div class="hero__prompt-typewriter" id="hero-typewriter" aria-hidden="true">
+                        <span id="hero-typewriter-text"></span><span class="hero__prompt-cursor">|</span>
+                      </div>
+                      <textarea class="hero__prompt-input" id="hero-figma-url" rows="1" placeholder=" " wrap="soft"
+                        aria-label="Paste Figma URL here (e.g. figma.com/design/...)"></textarea>
                     </div>
-                    <textarea class="hero__prompt-input" id="hero-figma-url" rows="1" placeholder=" " wrap="soft" aria-label="Paste Figma URL here (e.g. figma.com/design/...)"></textarea>
+                  </div>
+                  <div class="hero__prompt-footer">
+                    <button class="hero__prompt-add" type="button" aria-label="Attach file" id="hero-attach-btn">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    </button>
+                    <div class="hero__prompt-actions">
+                      <button class="hero__prompt-mic" type="button" aria-label="Voice input"
+                        title="Voice input (coming soon)">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          <line x1="12" y1="19" x2="12" y2="23" />
+                          <line x1="8" y1="23" x2="16" y2="23" />
+                        </svg>
+                      </button>
+                      <button class="hero__prompt-send" type="button" id="hero-convert-btn" aria-label="Convert">
+                        <span class="spinner hero-spinner" id="hero-spinner" style="display: none;"></span>
+                        <svg id="hero-send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 19V5M5 12l7-7 7 7" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div class="hero__prompt-footer">
-              <button class="hero__prompt-add" type="button" aria-label="Attach file" id="hero-attach-btn">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 5v14M5 12h14"/>
-                </svg>
-              </button>
-              <div class="hero__prompt-actions">
-                <button class="hero__prompt-mic" type="button" aria-label="Voice input" title="Voice input (coming soon)">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" y1="19" x2="12" y2="23"/>
-                    <line x1="8" y1="23" x2="16" y2="23"/>
-                  </svg>
-                </button>
-                <button class="hero__prompt-send" type="button" id="hero-convert-btn" aria-label="Convert">
-                  <span class="spinner hero-spinner" id="hero-spinner" style="display: none;"></span>
-                  <svg id="hero-send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 19V5M5 12l7-7 7 7"/>
-                  </svg>
-                </button>
               </div>
-              </div>
+            </form>
+          </div>
+          <div class="hero__prompt-controls">
+            <span class="hero__prompt-label">Frameworks</span>
+            <div class="hero__prompt-chips">
+              <label class="chip-label"><input type="checkbox" name="framework" value="react" checked /><span
+                  class="chip chip--prompt">React</span></label>
+              <label class="chip-label"><input type="checkbox" name="framework" value="vue" /><span
+                  class="chip chip--prompt">Vue</span></label>
+              <label class="chip-label"><input type="checkbox" name="framework" value="svelte" /><span
+                  class="chip chip--prompt">Svelte</span></label>
+              <label class="chip-label"><input type="checkbox" name="framework" value="angular" /><span
+                  class="chip chip--prompt">Angular</span></label>
+              <label class="chip-label"><input type="checkbox" name="framework" value="solid" /><span
+                  class="chip chip--prompt">Solid</span></label>
             </div>
-          </form>
-        </div>
-        <div class="hero__prompt-controls">
-          <span class="hero__prompt-label">Frameworks</span>
-          <div class="hero__prompt-chips">
-            <label class="chip-label"><input type="checkbox" name="framework" value="react" checked /><span class="chip chip--prompt">React</span></label>
-            <label class="chip-label"><input type="checkbox" name="framework" value="vue" /><span class="chip chip--prompt">Vue</span></label>
-            <label class="chip-label"><input type="checkbox" name="framework" value="svelte" /><span class="chip chip--prompt">Svelte</span></label>
-            <label class="chip-label"><input type="checkbox" name="framework" value="angular" /><span class="chip chip--prompt">Angular</span></label>
-            <label class="chip-label"><input type="checkbox" name="framework" value="solid" /><span class="chip chip--prompt">Solid</span></label>
           </div>
         </div>
-        </div>
       </div>
+      <!-- /main-hero -->
 
       <!-- SPLIT VIEW (after conversion) -->
       <div class="main-split" id="main-split">
-      <!-- LEFT PANEL: Chat-like -->
-      <div class="panel panel--left" id="panel-left">
-        <div class="panel__header">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M2 3h12M2 8h8M2 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <span>Import Design</span>
-        </div>
-
-        <!-- Chat body -->
-        <div class="panel__body" id="panel-body">
-          <div class="empty-state" id="empty-state">
-            <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-              <rect x="4" y="4" width="32" height="32" rx="8" stroke="currentColor" stroke-width="2" opacity="0.3"/>
-              <path d="M14 20h12M20 14v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+        <!-- LEFT PANEL: Chat-like -->
+        <div class="panel panel--left" id="panel-left">
+          <div class="panel__header">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2 3h12M2 8h8M2 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
-            <p>Enter a Figma URL and click Send to begin converting your design.</p>
+            <span>Import Design</span>
           </div>
-          <ul class="progress-list" id="progress-list"></ul>
-          <div class="error-banner" id="error-banner"></div>
-        </div>
 
-        <!-- Input bar (pinned bottom) -->
-        <div class="panel__input-bar">
-          <div class="framework-row">
-            <label class="chip-label">
-              <input type="checkbox" name="framework" value="react" checked />
-              <span class="chip">React</span>
-            </label>
-            <label class="chip-label">
-              <input type="checkbox" name="framework" value="vue" />
-              <span class="chip">Vue</span>
-            </label>
-            <label class="chip-label">
-              <input type="checkbox" name="framework" value="svelte" />
-              <span class="chip">Svelte</span>
-            </label>
-            <label class="chip-label">
-              <input type="checkbox" name="framework" value="angular" />
-              <span class="chip">Angular</span>
-            </label>
-            <label class="chip-label">
-              <input type="checkbox" name="framework" value="solid" />
-              <span class="chip">Solid</span>
-            </label>
-          </div>
-          <div class="input-row">
-            <div class="url-input-wrap">
-              <svg class="url-input-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M6.5 11.5L4 14a2.12 2.12 0 01-3-3l2.5-2.5M9.5 4.5L12 2a2.12 2.12 0 013 3l-2.5 2.5M5.5 10.5l5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <!-- Chat body -->
+          <div class="panel__body" id="panel-body">
+            <div class="empty-state" id="empty-state">
+              <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                <rect x="4" y="4" width="32" height="32" rx="8" stroke="currentColor" stroke-width="2" opacity="0.3" />
+                <path d="M14 20h12M20 14v12" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  opacity="0.3" />
               </svg>
-              <input class="form-input url-input" type="url" id="figma-url" placeholder="Paste Figma URL here..." />
+              <p>Enter a Figma URL and click Send to begin converting your design.</p>
             </div>
-            <button class="send-btn" type="button" id="convert-btn">
-              <span class="spinner" id="btn-spinner" style="display: none;"></span>
-              <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
+            <ul class="progress-list" id="progress-list"></ul>
+            <div class="error-banner" id="error-banner"></div>
           </div>
-        </div>
-      </div>
 
-      <!-- RESIZE HANDLE -->
-      <div class="resize-handle" id="resize-handle"></div>
-
-      <!-- RIGHT PANEL: Preview + Code -->
-      <div class="panel panel--right" id="panel-right">
-        <div class="panel__toolbar">
-          <div class="toolbar-tabs">
-            <button class="toolbar-btn active" id="mode-preview" data-mode="preview">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M2 6h12" stroke="currentColor" stroke-width="1.5"/>
-              </svg>
-              Preview
-            </button>
-            <button class="toolbar-btn" id="mode-code" data-mode="code">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              Code
-            </button>
-          </div>
-          <button class="btn btn--primary btn--sm" id="download-btn" style="display: none;">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M8 2v8m0 0L5 7m3 3l3-3M3 12h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Download ZIP
-          </button>
-        </div>
-
-        <!-- Preview View -->
-        <div class="panel__view" id="view-preview">
-          <div class="preview-empty" id="preview-empty">
-            <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-              <rect x="6" y="6" width="36" height="36" rx="8" stroke="currentColor" stroke-width="2" opacity="0.2"/>
-              <rect x="12" y="14" width="24" height="4" rx="2" fill="currentColor" opacity="0.1"/>
-              <rect x="12" y="22" width="16" height="4" rx="2" fill="currentColor" opacity="0.1"/>
-              <rect x="12" y="30" width="20" height="4" rx="2" fill="currentColor" opacity="0.1"/>
-            </svg>
-            <p>No preview available yet</p>
-            <span>Convert a Figma design to see the preview here</span>
-          </div>
-          <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin" style="display: none;"></iframe>
-        </div>
-
-        <!-- Code View -->
-        <div class="panel__view" id="view-code" style="display: none;">
-          <div class="code-view-layout">
-            <aside class="code-explorer" id="code-explorer">
-              <div class="explorer-header">
-                <span>Explorer</span>
-                <button class="explorer-toggle" id="explorer-toggle" aria-label="Toggle explorer">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                    <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
+          <!-- Input bar (pinned bottom) -->
+          <div class="panel__input-bar">
+            <div class="framework-row">
+              <label class="chip-label">
+                <input type="checkbox" name="framework" value="react" checked />
+                <span class="chip">React</span>
+              </label>
+              <label class="chip-label">
+                <input type="checkbox" name="framework" value="vue" />
+                <span class="chip">Vue</span>
+              </label>
+              <label class="chip-label">
+                <input type="checkbox" name="framework" value="svelte" />
+                <span class="chip">Svelte</span>
+              </label>
+              <label class="chip-label">
+                <input type="checkbox" name="framework" value="angular" />
+                <span class="chip">Angular</span>
+              </label>
+              <label class="chip-label">
+                <input type="checkbox" name="framework" value="solid" />
+                <span class="chip">Solid</span>
+              </label>
+            </div>
+            <div class="input-row">
+              <div class="url-input-wrap">
+                <svg class="url-input-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M6.5 11.5L4 14a2.12 2.12 0 01-3-3l2.5-2.5M9.5 4.5L12 2a2.12 2.12 0 013 3l-2.5 2.5M5.5 10.5l5-5"
+                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+                <input class="form-input url-input" type="url" id="figma-url" placeholder="Paste Figma URL here..." />
               </div>
-              <div class="explorer-body" id="explorer-body">
-                <div class="explorer-section">
-                  <div class="explorer-section-title">Generated Files</div>
-                  <div class="explorer-files" id="explorer-files"></div>
+              <button class="send-btn" type="button" id="convert-btn">
+                <span class="spinner" id="btn-spinner" style="display: none;"></span>
+                <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- RESIZE HANDLE -->
+        <div class="resize-handle" id="resize-handle"></div>
+
+        <!-- RIGHT PANEL: Preview + Code -->
+        <div class="panel panel--right" id="panel-right">
+          <div class="panel__toolbar">
+            <div class="toolbar-tabs">
+              <button class="toolbar-btn active" id="mode-preview" data-mode="preview">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" />
+                </svg>
+                Preview
+              </button>
+              <button class="toolbar-btn" id="mode-code" data-mode="code">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                </svg>
+                Code
+              </button>
+            </div>
+            <button class="btn btn--primary btn--sm" id="download-btn" style="display: none;">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 2v8m0 0L5 7m3 3l3-3M3 12h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+              Download ZIP
+            </button>
+          </div>
+
+          <!-- Preview View -->
+          <div class="panel__view" id="view-preview">
+            <div class="preview-empty" id="preview-empty">
+              <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                <rect x="6" y="6" width="36" height="36" rx="8" stroke="currentColor" stroke-width="2" opacity="0.2" />
+                <rect x="12" y="14" width="24" height="4" rx="2" fill="currentColor" opacity="0.1" />
+                <rect x="12" y="22" width="16" height="4" rx="2" fill="currentColor" opacity="0.1" />
+                <rect x="12" y="30" width="20" height="4" rx="2" fill="currentColor" opacity="0.1" />
+              </svg>
+              <p>No preview available yet</p>
+              <span>Convert a Figma design to see the preview here</span>
+            </div>
+            <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin"
+              style="display: none;"></iframe>
+          </div>
+
+          <!-- Code View -->
+          <div class="panel__view" id="view-code" style="display: none;">
+            <div class="code-view-layout">
+              <aside class="code-explorer" id="code-explorer">
+                <div class="explorer-header">
+                  <span>Explorer</span>
+                  <button class="explorer-toggle" id="explorer-toggle" aria-label="Toggle explorer">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                      <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                    </svg>
+                  </button>
                 </div>
-              </div>
-            </aside>
-            <div class="code-main">
-              <div class="editor-tabs" id="editor-tabs"></div>
-              <div class="code-block">
-                <div class="code-block__header">
-                  <div class="code-block__actions">
-                    <button class="code-block__btn" id="code-edit-btn">Edit</button>
-                    <button class="code-block__btn code-block__btn--primary" id="code-save-btn" style="display: none;">Save</button>
-                    <button class="code-block__copy" id="code-copy-btn">Copy</button>
+                <div class="explorer-body" id="explorer-body">
+                  <div class="explorer-section">
+                    <div class="explorer-section-title">Generated Files</div>
+                    <div class="explorer-files" id="explorer-files"></div>
                   </div>
                 </div>
-                <div class="monaco-editor-container" id="monaco-editor-container"></div>
+              </aside>
+              <div class="code-main">
+                <div class="editor-tabs" id="editor-tabs"></div>
+                <div class="code-block">
+                  <div class="code-block__header">
+                    <div class="code-block__actions">
+                      <button class="code-block__btn" id="code-edit-btn">Edit</button>
+                      <button class="code-block__btn code-block__btn--primary" id="code-save-btn"
+                        style="display: none;">Save</button>
+                      <button class="code-block__copy" id="code-copy-btn">Copy</button>
+                    </div>
+                  </div>
+                  <div class="monaco-editor-container" id="monaco-editor-container"></div>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
       </div><!-- /main-split -->
     </main>
@@ -298,4 +329,5 @@
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.min.js"></script>
   <script src="/app.js"></script>
 </body>
+
 </html>

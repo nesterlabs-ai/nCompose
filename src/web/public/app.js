@@ -15,6 +15,13 @@ function setTheme(theme) {
     document.documentElement.removeAttribute('data-theme');
   }
   localStorage.setItem(THEME_KEY, theme);
+  setMonacoTheme(theme);
+}
+
+function setMonacoTheme(appTheme) {
+  if (typeof monaco === 'undefined' || !monacoEditor) return;
+  const monacoTheme = appTheme === 'light' ? 'vs' : 'vs-dark';
+  monaco.editor.setTheme(monacoTheme);
 }
 
 if (themeToggle) {
@@ -551,11 +558,12 @@ function initMonaco(callback) {
     },
   };
   require(['vs/editor/editor.main'], function () {
+    const monacoTheme = getTheme() === 'light' ? 'vs' : 'vs-dark';
     monacoEditor = monaco.editor.create(monacoContainer, {
       value: '',
       language: 'typescript',
       readOnly: true,
-      theme: 'vs-dark',
+      theme: monacoTheme,
       minimap: { enabled: false },
       fontSize: 12,
       fontFamily: "JetBrains Mono, ui-monospace, Menlo, 'Courier New', monospace",

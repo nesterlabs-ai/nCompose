@@ -187,7 +187,15 @@
         <div class="panel__view" id="view-code" style="display: none;">
           <div class="tabs">
             <div class="tabs__header" id="tabs-header"></div>
-            <div class="tabs__content" id="tabs-content"></div>
+            <div class="tabs__content" id="tabs-content">
+              <div class="code-block">
+                <div class="code-block__header">
+                  <span class="code-block__filename" id="code-filename"></span>
+                  <button class="code-block__copy" id="code-copy-btn">Copy</button>
+                </div>
+                <div class="monaco-editor-container" id="monaco-editor-container"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -198,6 +206,7 @@
   <!-- Sidebar overlay (mobile) -->
   <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

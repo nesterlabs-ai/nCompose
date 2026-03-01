@@ -11,6 +11,18 @@ const tokenStatus = document.getElementById('token-status');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 
+// Hero
+const mainHero = document.getElementById('main-hero');
+const mainSplit = document.getElementById('main-split');
+const heroFigmaUrlInput = document.getElementById('hero-figma-url');
+const heroConvertBtn = document.getElementById('hero-convert-btn');
+const heroSpinner = document.getElementById('hero-spinner');
+const heroSendIcon = document.getElementById('hero-send-icon');
+const heroError = document.getElementById('hero-error');
+const heroForm = document.getElementById('hero-form');
+const heroAttachBtn = document.getElementById('hero-attach-btn');
+const heroFileUpload = document.getElementById('hero-file-upload');
+
 // Left panel
 const figmaUrlInput = document.getElementById('figma-url');
 const convertBtn = document.getElementById('convert-btn');
@@ -112,11 +124,29 @@ saveTokenBtn.addEventListener('click', () => {
 });
 
 // ── Convert Button ──
-convertBtn.addEventListener('click', () => {
+convertBtn.addEventListener('click', () => startConversion());
+
+heroConvertBtn.addEventListener('click', () => startConversion());
+
+// Prevent form submit, use our handler
+heroForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
   startConversion();
 });
 
-// Also allow Enter in URL input
+// Attach button opens file picker (for future file upload support)
+heroAttachBtn?.addEventListener('click', () => heroFileUpload?.click());
+
+heroFileUpload?.addEventListener('change', (e) => {
+  const files = e.target.files;
+  if (files?.length) {
+    // Placeholder: could add support for .fig files later
+    showError('File upload coming soon. Please paste a Figma URL.');
+  }
+  e.target.value = '';
+});
+
+// Enter in URL inputs
 figmaUrlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
@@ -124,22 +154,100 @@ figmaUrlInput.addEventListener('keydown', (e) => {
   }
 });
 
+heroFigmaUrlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    startConversion();
+  }
+});
+
+// Typewriter placeholder
+const heroTypewriter = document.getElementById('hero-typewriter');
+const heroTypewriterText = document.getElementById('hero-typewriter-text');
+const typewriterLines = [
+  'Convert Figma to production-ready React code',
+  'Generate clean, reusable components instantly',
+  'Export pixel-perfect Tailwind CSS layouts',
+  'Turn designs into scalable frontend systems',
+  'Build faster with AI-powered conversion',
+];
+let typewriterLineIndex = 0;
+let typewriterText = '';
+let typewriterIsDeleting = false;
+let typewriterSpeed = 50;
+let typewriterTimeoutId = null;
+
+function runTypewriter() {
+  const currentLine = typewriterLines[typewriterLineIndex];
+  typewriterTimeoutId = setTimeout(() => {
+    if (!typewriterIsDeleting) {
+      typewriterText = currentLine.substring(0, typewriterText.length + 1);
+      heroTypewriterText.textContent = typewriterText;
+      if (typewriterText === currentLine) {
+        typewriterTimeoutId = setTimeout(() => { typewriterIsDeleting = true; runTypewriter(); }, 1500);
+        return;
+      }
+    } else {
+      typewriterText = currentLine.substring(0, typewriterText.length - 1);
+      heroTypewriterText.textContent = typewriterText;
+      if (typewriterText === '') {
+        typewriterIsDeleting = false;
+        typewriterLineIndex = (typewriterLineIndex + 1) % typewriterLines.length;
+      }
+    }
+    runTypewriter();
+  }, typewriterIsDeleting ? 30 : typewriterSpeed);
+}
+
+function updateTypewriterVisibility() {
+  const hasValue = heroFigmaUrlInput.value.trim().length > 0;
+  const isFocused = document.activeElement === heroFigmaUrlInput;
+  if (hasValue || isFocused) {
+    heroTypewriter.classList.add('hidden');
+    if (typewriterTimeoutId) {
+      clearTimeout(typewriterTimeoutId);
+      typewriterTimeoutId = null;
+    }
+  } else {
+    heroTypewriter.classList.remove('hidden');
+    if (!typewriterTimeoutId) runTypewriter();
+  }
+}
+
+heroFigmaUrlInput.addEventListener('focus', updateTypewriterVisibility);
+heroFigmaUrlInput.addEventListener('blur', updateTypewriterVisibility);
+heroFigmaUrlInput.addEventListener('input', updateTypewriterVisibility);
+updateTypewriterVisibility();
+if (!heroTypewriter.classList.contains('hidden')) runTypewriter();
+
+function autoResizeTextarea(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+heroFigmaUrlInput.addEventListener('input', () => autoResizeTextarea(heroFigmaUrlInput));
+autoResizeTextarea(heroFigmaUrlInput);
+
+function getActiveUrlInput() {
+  return mainHero.classList.contains('hidden') ? figmaUrlInput : heroFigmaUrlInput;
+}
+
 function getSelectedFrameworks() {
-  const checkboxes = document.querySelectorAll('input[name="framework"]:checked');
+  const scope = mainHero.classList.contains('hidden') ? mainSplit : mainHero;
+  const checkboxes = scope.querySelectorAll('input[name="framework"]:checked');
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 
 function startConversion() {
-  const figmaUrl = figmaUrlInput.value.trim();
+  const urlInput = getActiveUrlInput();
+  const figmaUrl = urlInput.value.trim();
   const figmaToken = figmaTokenInput.value.trim();
   const frameworks = getSelectedFrameworks();
 
   if (!figmaUrl) {
-    figmaUrlInput.focus();
+    urlInput.focus();
     return;
   }
   if (!figmaToken) {
-    // Focus the sidebar token input
     if (sidebar.classList.contains('collapsed')) {
       sidebar.classList.remove('collapsed');
     }
@@ -147,6 +255,17 @@ function startConversion() {
     showError('Please enter your Figma Access Token in the sidebar.');
     return;
   }
+
+  // Switch from hero to split view (animated)
+  mainHero.classList.add('hidden');
+  mainSplit.classList.add('visible');
+
+  // Sync URL and framework selection to panel for "convert another"
+  figmaUrlInput.value = figmaUrl;
+  mainHero.querySelectorAll('input[name="framework"]').forEach((cb) => {
+    const panelCb = mainSplit.querySelector(`input[name="framework"][value="${cb.value}"]`);
+    if (panelCb) panelCb.checked = cb.checked;
+  });
   if (frameworks.length === 0) {
     showError('Please select at least one framework.');
     return;
@@ -677,17 +796,25 @@ downloadBtn.addEventListener('click', () => {
 function showError(message) {
   errorBanner.textContent = message;
   errorBanner.classList.add('visible');
+  if (heroError) {
+    heroError.textContent = message;
+    heroError.classList.add('visible');
+  }
 }
 
 function hideError() {
   errorBanner.classList.remove('visible');
+  if (heroError) heroError.classList.remove('visible');
 }
 
 // ── Loading ──
 function setLoading(loading) {
   convertBtn.disabled = loading;
+  heroConvertBtn.disabled = loading;
   btnSpinner.style.display = loading ? 'inline-block' : 'none';
   sendIcon.style.display = loading ? 'none' : 'block';
+  heroSpinner.style.display = loading ? 'inline-block' : 'none';
+  heroSendIcon.style.display = loading ? 'none' : 'block';
 }
 
 // ── Resize Handle ──
@@ -732,3 +859,7 @@ function escapeHtml(str) {
 // ── Init ──
 loadSavedToken();
 updateCodeActionsState();
+
+// Show hero on load, hide split (split has no .visible = hidden by default)
+mainHero.classList.remove('hidden');
+mainSplit.classList.remove('visible');

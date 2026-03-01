@@ -76,6 +76,67 @@
     <!-- MAIN CONTENT -->
     <main class="main">
 
+      <!-- HERO -->
+      <div class="main-hero" id="main-hero">
+        <div class="hero__gradient"></div>
+        <div class="hero__center">
+        <div class="hero__content">
+          <h1 class="hero__title">What would you like to convert?</h1>
+          <p class="hero__subtitle">Paste a Figma URL to turn your design into production-ready code</p>
+          <div class="hero__error" id="hero-error"></div>
+          <form class="hero__prompt-form" id="hero-form" role="search">
+            <div class="hero__prompt">
+              <div class="hero__prompt-body">
+                <div class="hero__prompt-input-row">
+                  <input type="file" id="hero-file-upload" class="hero__file-input" accept=".fig,.figma" multiple tabindex="-1" />
+                  <div class="hero__prompt-input-wrap">
+                    <div class="hero__prompt-typewriter" id="hero-typewriter" aria-hidden="true">
+                      <span id="hero-typewriter-text"></span><span class="hero__prompt-cursor">|</span>
+                    </div>
+                    <textarea class="hero__prompt-input" id="hero-figma-url" rows="1" placeholder=" " wrap="soft" aria-label="Paste Figma URL here (e.g. figma.com/design/...)"></textarea>
+                  </div>
+                </div>
+                <div class="hero__prompt-footer">
+              <button class="hero__prompt-add" type="button" aria-label="Attach file" id="hero-attach-btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+              </button>
+              <div class="hero__prompt-actions">
+                <button class="hero__prompt-mic" type="button" aria-label="Voice input" title="Voice input (coming soon)">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                    <line x1="8" y1="23" x2="16" y2="23"/>
+                  </svg>
+                </button>
+                <button class="hero__prompt-send" type="button" id="hero-convert-btn" aria-label="Convert">
+                  <span class="spinner hero-spinner" id="hero-spinner" style="display: none;"></span>
+                  <svg id="hero-send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 19V5M5 12l7-7 7 7"/>
+                  </svg>
+                </button>
+              </div>
+              </div>
+            </div>
+          </form>
+        </div>
+        <div class="hero__prompt-controls">
+          <span class="hero__prompt-label">Frameworks</span>
+          <div class="hero__prompt-chips">
+            <label class="chip-label"><input type="checkbox" name="framework" value="react" checked /><span class="chip chip--prompt">React</span></label>
+            <label class="chip-label"><input type="checkbox" name="framework" value="vue" /><span class="chip chip--prompt">Vue</span></label>
+            <label class="chip-label"><input type="checkbox" name="framework" value="svelte" /><span class="chip chip--prompt">Svelte</span></label>
+            <label class="chip-label"><input type="checkbox" name="framework" value="angular" /><span class="chip chip--prompt">Angular</span></label>
+            <label class="chip-label"><input type="checkbox" name="framework" value="solid" /><span class="chip chip--prompt">Solid</span></label>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <!-- SPLIT VIEW (after conversion) -->
+      <div class="main-split" id="main-split">
       <!-- LEFT PANEL: Chat-like -->
       <div class="panel panel--left" id="panel-left">
         <div class="panel__header">
@@ -219,6 +280,7 @@
         </div>
       </div>
 
+      </div><!-- /main-split -->
     </main>
   </div>
 

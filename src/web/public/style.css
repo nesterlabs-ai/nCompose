@@ -36,6 +36,10 @@
   --hero-prompt-border: rgba(255, 255, 255, 0.9);
   --chip-hover-bg: #3f3f46;
   --send-btn-bg: #374151;
+  --code-block-bg: #0a0a0a;
+  --code-block-header-bg: hsla(0, 0%, 100%, 0.02);
+  --editor-tabs-bg: hsla(0, 0%, 100%, 0.02);
+  --editor-tab-active-bg: #0a0a0a;
   --radius-pill: 999px;
   --radius-card: 18px;
   --radius-input: 10px;
@@ -69,6 +73,10 @@
   --hero-prompt-border: #e4e4e7;
   --chip-hover-bg: #e4e4e7;
   --send-btn-bg: #27272a;
+  --code-block-bg: #ffffff;
+  --code-block-header-bg: #f4f4f5;
+  --editor-tabs-bg: #f4f4f5;
+  --editor-tab-active-bg: #ffffff;
 }
 
 body {
@@ -453,8 +461,8 @@ body {
 
 .hero__prompt-add {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -596,8 +604,8 @@ body {
 
 .hero__prompt-mic {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -616,8 +624,8 @@ body {
 
 .hero__prompt-send {
   flex-shrink: 0;
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1230,7 +1238,7 @@ body {
   display: flex;
   gap: 2px;
   padding: 0 8px;
-  background: hsla(0, 0%, 100%, 0.02);
+  background: var(--editor-tabs-bg);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   flex-shrink: 0;
@@ -1260,7 +1268,7 @@ body {
 
 .editor-tab.active {
   color: var(--text);
-  background: #0a0a0a;
+  background: var(--editor-tab-active-bg);
   border-bottom-color: var(--accent);
 }
 
@@ -1304,7 +1312,7 @@ body {
 /* ── Code Block ── */
 .code-block {
   position: relative;
-  background: #0a0a0a;
+  background: var(--code-block-bg);
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1317,7 +1325,7 @@ body {
   align-items: center;
   justify-content: flex-end;
   padding: 8px 16px;
-  background: hsla(0, 0%, 100%, 0.02);
+  background: var(--code-block-header-bg);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }

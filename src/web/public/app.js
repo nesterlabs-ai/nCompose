@@ -34,6 +34,8 @@ const explorerBody = document.getElementById('explorer-body');
 const explorerFiles = document.getElementById('explorer-files');
 const editorTabs = document.getElementById('editor-tabs');
 const explorerToggle = document.getElementById('explorer-toggle');
+const codeEditBtn = document.getElementById('code-edit-btn');
+const codeSaveBtn = document.getElementById('code-save-btn');
 const codeCopyBtn = document.getElementById('code-copy-btn');
 const monacoContainer = document.getElementById('monaco-editor-container');
 
@@ -50,6 +52,7 @@ let monacoReady = false;
 let tabsData = [];
 let openFiles = [];
 let activeFile = null;
+let isEditMode = false;
 
 // ── LocalStorage ──
 const STORAGE_KEY = 'figma-to-code-token';
@@ -365,6 +368,15 @@ function getMonacoLanguage(ext) {
   return 'plaintext';
 }
 
+function setMonacoValidation(useStandardSyntax) {
+  if (typeof monaco === 'undefined') return;
+  const opts = useStandardSyntax
+    ? { noSemanticValidation: false, noSyntaxValidation: false }
+    : { noSemanticValidation: true, noSyntaxValidation: true };
+  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions(opts);
+  monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions(opts);
+}
+
 function initMonaco(callback) {
   if (monacoReady && monacoEditor) {
     callback?.();
@@ -484,6 +496,13 @@ function buildEditorTabs() {
   });
 }
 
+function setEditMode(editing) {
+  isEditMode = editing;
+  if (monacoEditor) monacoEditor.updateOptions({ readOnly: !editing });
+  codeEditBtn.style.display = editing ? 'none' : 'inline-flex';
+  codeSaveBtn.style.display = editing ? 'inline-flex' : 'none';
+}
+
 function openFile(key) {
   const tab = tabsData.find((t) => t.key === key);
   if (!tab) return;
@@ -494,6 +513,7 @@ function openFile(key) {
   }
 
   activeFile = key;
+  setEditMode(false);
 
   document.querySelectorAll('.editor-tab').forEach((el) => {
     el.classList.toggle('active', el.dataset.key === key);
@@ -505,6 +525,8 @@ function openFile(key) {
   if (monacoEditor && typeof monaco !== 'undefined') {
     monacoEditor.setValue(tab.code || '');
     monaco.editor.setModelLanguage(monacoEditor.getModel(), getMonacoLanguage(tab.ext));
+    // Mitosis .lite.tsx uses non-standard syntax; framework outputs use standard syntax
+    setMonacoValidation(key !== 'mitosis');
   }
 
   layoutMonaco();
@@ -564,6 +586,52 @@ function buildTabs(data) {
 explorerToggle.addEventListener('click', () => {
   codeExplorer.classList.toggle('collapsed');
   requestAnimationFrame(layoutMonaco);
+});
+
+// ── Edit ──
+codeEditBtn.addEventListener('click', () => {
+  setEditMode(true);
+});
+
+// ── Save ──
+codeSaveBtn.addEventListener('click', async () => {
+  if (!activeFile || !currentSessionId || !monacoEditor) return;
+
+  const content = monacoEditor.getValue();
+  const tab = tabsData.find((t) => t.key === activeFile);
+  if (!tab) return;
+
+  codeSaveBtn.disabled = true;
+  codeSaveBtn.textContent = 'Saving...';
+
+  try {
+    const res = await fetch('/api/save-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: currentSessionId, fileKey: activeFile, content }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || 'Save failed');
+    }
+
+    tab.code = content;
+    if (activeFile !== 'mitosis') {
+      currentFrameworkOutputs[activeFile] = content;
+    }
+
+    setEditMode(false);
+    codeSaveBtn.textContent = 'Saved!';
+    setTimeout(() => {
+      codeSaveBtn.textContent = 'Save';
+    }, 1500);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    codeSaveBtn.disabled = false;
+    codeSaveBtn.textContent = 'Save';
+  }
 });
 
 // ── Copy ──

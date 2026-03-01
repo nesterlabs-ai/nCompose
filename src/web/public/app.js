@@ -29,9 +29,11 @@ const viewCode = document.getElementById('view-code');
 const previewEmpty = document.getElementById('preview-empty');
 const previewFrame = document.getElementById('preview-frame');
 const downloadBtn = document.getElementById('download-btn');
-const tabsHeader = document.getElementById('tabs-header');
-const tabsContent = document.getElementById('tabs-content');
-const codeFilename = document.getElementById('code-filename');
+const codeExplorer = document.getElementById('code-explorer');
+const explorerBody = document.getElementById('explorer-body');
+const explorerFiles = document.getElementById('explorer-files');
+const editorTabs = document.getElementById('editor-tabs');
+const explorerToggle = document.getElementById('explorer-toggle');
 const codeCopyBtn = document.getElementById('code-copy-btn');
 const monacoContainer = document.getElementById('monaco-editor-container');
 
@@ -46,7 +48,8 @@ let currentComponentName = '';
 let monacoEditor = null;
 let monacoReady = false;
 let tabsData = [];
-let currentTabKey = null;
+let openFiles = [];
+let activeFile = null;
 
 // ── LocalStorage ──
 const STORAGE_KEY = 'figma-to-code-token';
@@ -161,7 +164,8 @@ function startConversion() {
   previewFrame.style.display = 'none';
   previewFrame.src = 'about:blank';
   downloadBtn.style.display = 'none';
-  tabsHeader.innerHTML = '';
+  explorerFiles.innerHTML = '';
+  editorTabs.innerHTML = '';
 
   // Start SSE request
   const body = JSON.stringify({ figmaUrl, figmaToken, frameworks });
@@ -397,6 +401,8 @@ function initMonaco(callback) {
     });
     monacoReady = true;
     window.addEventListener('resize', layoutMonaco);
+    const resizeObserver = new ResizeObserver(() => layoutMonaco());
+    resizeObserver.observe(monacoContainer);
     callback?.();
   });
 }
@@ -420,14 +426,115 @@ function switchMode(mode) {
   viewPreview.style.display = mode === 'preview' ? 'flex' : 'none';
   viewCode.style.display = mode === 'code' ? 'flex' : 'none';
   if (mode === 'code') {
-    requestAnimationFrame(layoutMonaco);
+    requestAnimationFrame(() => {
+      layoutMonaco();
+      requestAnimationFrame(layoutMonaco);
+    });
   }
 }
 
-// ── Build Tabs ──
-function buildTabs(data) {
-  tabsHeader.innerHTML = '';
+// ── File Explorer & Editor Tabs ──
+function buildExplorer() {
+  explorerFiles.innerHTML = '';
+  tabsData.forEach((tab) => {
+    const filename = currentComponentName + tab.ext;
+    const item = document.createElement('div');
+    item.className = 'explorer-file';
+    item.dataset.key = tab.key;
+    item.innerHTML = `
+      <span class="explorer-file-icon">${getFileIcon(tab.ext)}</span>
+      <span class="explorer-file-name">${escapeHtml(filename)}</span>
+    `;
+    item.addEventListener('click', () => openFile(tab.key));
+    explorerFiles.appendChild(item);
+  });
+}
 
+function getFileIcon(ext) {
+  const icons = {
+    '.lite.tsx': '📄',
+    '.jsx': '⚛',
+    '.vue': '💚',
+    '.svelte': '🟠',
+    '.ts': '🅰',
+    '.tsx': '⚛',
+  };
+  return icons[ext] || '📄';
+}
+
+function buildEditorTabs() {
+  editorTabs.innerHTML = '';
+  openFiles.forEach((key) => {
+    const tab = tabsData.find((t) => t.key === key);
+    if (!tab) return;
+    const filename = currentComponentName + tab.ext;
+    const el = document.createElement('div');
+    el.className = `editor-tab${key === activeFile ? ' active' : ''}`;
+    el.dataset.key = key;
+    el.innerHTML = `
+      <span class="editor-tab-name">${escapeHtml(filename)}</span>
+      <button class="editor-tab-close" data-key="${key}" aria-label="Close">×</button>
+    `;
+    el.querySelector('.editor-tab-name').addEventListener('click', () => openFile(key));
+    el.querySelector('.editor-tab-close').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeFile(key);
+    });
+    editorTabs.appendChild(el);
+  });
+}
+
+function openFile(key) {
+  const tab = tabsData.find((t) => t.key === key);
+  if (!tab) return;
+
+  if (!openFiles.includes(key)) {
+    openFiles.push(key);
+    buildEditorTabs();
+  }
+
+  activeFile = key;
+
+  document.querySelectorAll('.editor-tab').forEach((el) => {
+    el.classList.toggle('active', el.dataset.key === key);
+  });
+  document.querySelectorAll('.explorer-file').forEach((el) => {
+    el.classList.toggle('active', el.dataset.key === key);
+  });
+
+  if (monacoEditor && typeof monaco !== 'undefined') {
+    monacoEditor.setValue(tab.code || '');
+    monaco.editor.setModelLanguage(monacoEditor.getModel(), getMonacoLanguage(tab.ext));
+  }
+
+  layoutMonaco();
+}
+
+function closeFile(key) {
+  const idx = openFiles.indexOf(key);
+  if (idx === -1) return;
+
+  openFiles.splice(idx, 1);
+
+  if (activeFile === key) {
+    const nextIdx = Math.min(idx, openFiles.length - 1);
+    activeFile = openFiles[nextIdx] ?? null;
+  }
+
+  buildEditorTabs();
+
+  if (activeFile) {
+    openFile(activeFile);
+  } else if (monacoEditor) {
+    monacoEditor.setValue('');
+    document.querySelectorAll('.explorer-file').forEach((el) => el.classList.remove('active'));
+  }
+
+  layoutMonaco();
+}
+
+// ── Build Tabs (initial setup) ──
+function buildTabs(data) {
   const frameworks = data.frameworks || [];
 
   tabsData = [
@@ -440,46 +547,28 @@ function buildTabs(data) {
     })),
   ];
 
-  tabsData.forEach((tab, idx) => {
-    const btn = document.createElement('button');
-    btn.className = `tab-btn${idx === 0 ? ' active' : ''}`;
-    btn.textContent = tab.label;
-    btn.dataset.tab = tab.key;
-    btn.addEventListener('click', () => switchTab(tab.key));
-    tabsHeader.appendChild(btn);
-  });
-
   const firstKey = tabsData[0]?.key;
-  currentTabKey = firstKey;
+  openFiles = firstKey ? [firstKey] : [];
+  activeFile = firstKey;
+
+  buildExplorer();
+  buildEditorTabs();
 
   initMonaco(() => {
-    if (firstKey) switchTab(firstKey);
+    if (firstKey) openFile(firstKey);
     layoutMonaco();
   });
 }
 
-function switchTab(key) {
-  currentTabKey = key;
-  document.querySelectorAll('.tab-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.tab === key);
-  });
-
-  const tab = tabsData.find((t) => t.key === key);
-  if (!tab) return;
-
-  codeFilename.textContent = currentComponentName + tab.ext;
-
-  if (monacoEditor && typeof monaco !== 'undefined') {
-    monacoEditor.setValue(tab.code || '');
-    monaco.editor.setModelLanguage(monacoEditor.getModel(), getMonacoLanguage(tab.ext));
-  }
-
-  layoutMonaco();
-}
+// ── Explorer Toggle ──
+explorerToggle.addEventListener('click', () => {
+  codeExplorer.classList.toggle('collapsed');
+  requestAnimationFrame(layoutMonaco);
+});
 
 // ── Copy ──
 codeCopyBtn.addEventListener('click', () => {
-  const tab = tabsData.find((t) => t.key === currentTabKey);
+  const tab = tabsData.find((t) => t.key === activeFile);
   const code = tab?.code || (monacoEditor ? monacoEditor.getValue() : '');
   if (!code) return;
   navigator.clipboard.writeText(code).then(() => {

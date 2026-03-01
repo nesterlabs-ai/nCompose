@@ -494,9 +494,11 @@ body {
 /* ── Panel Views ── */
 .panel__view {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
 #view-preview {
@@ -687,44 +689,210 @@ body {
   color: var(--error);
 }
 
-/* ── Tabs ── */
-.tabs {
+/* ── Code View Layout ── */
+.code-view-layout {
   display: flex;
-  flex-direction: column;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
+  width: 100%;
 }
 
-.tabs__header {
+/* ── Code Explorer (VS Code style) ── */
+.code-explorer {
+  width: 220px;
+  min-width: 180px;
+  flex-shrink: 0;
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  transition: width 0.2s ease, min-width 0.2s ease;
+}
+
+.code-explorer.collapsed {
+  width: 40px;
+  min-width: 40px;
+}
+
+.code-explorer.collapsed .explorer-body,
+.code-explorer.collapsed .explorer-section-title {
+  display: none;
+}
+
+.code-explorer.collapsed .explorer-header span {
+  display: none;
+}
+
+.explorer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   border-bottom: 1px solid var(--border);
-  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.explorer-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.code-explorer.collapsed .explorer-toggle {
+  transform: rotate(-90deg);
+}
+
+.code-explorer.collapsed .explorer-header {
+  justify-content: center;
+  padding: 8px;
+}
+
+.explorer-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.explorer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.explorer-section {
+  margin-bottom: 8px;
+}
+
+.explorer-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 12px;
+  margin-bottom: 2px;
+}
+
+.explorer-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.explorer-file:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.explorer-file.active {
+  background: hsla(0, 80%, 55%, 0.12);
+  color: var(--accent);
+}
+
+.explorer-file-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.explorer-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+/* ── Editor Tabs (VS Code style) ── */
+.code-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  width: 100%;
+}
+
+.editor-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  background: hsla(0, 0%, 100%, 0.02);
+  border-bottom: 1px solid var(--border);
   overflow-x: auto;
   flex-shrink: 0;
 }
 
-.tab-btn {
-  padding: 10px 16px;
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   color: var(--text-muted);
-  font-family: var(--font-body);
+  font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   white-space: nowrap;
+  max-width: 180px;
 }
 
-.tab-btn:hover {
+.editor-tab:hover {
   color: var(--text-secondary);
 }
 
-.tab-btn.active {
-  color: var(--accent);
+.editor-tab.active {
+  color: var(--text);
+  background: #0a0a0a;
   border-bottom-color: var(--accent);
+}
+
+.editor-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-tab-close {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.editor-tab-close:hover {
+  opacity: 1;
+  background: var(--surface-hover);
 }
 
 .tabs__content {
@@ -736,28 +904,21 @@ body {
   min-height: 0;
 }
 
-.tab-panel {
-  display: none;
-  height: 100%;
-}
-
-.tab-panel.active {
-  display: block;
-}
-
 /* ── Code Block ── */
 .code-block {
   position: relative;
   background: #0a0a0a;
-  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  min-width: 0;
 }
 
 .code-block__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 8px 16px;
   background: hsla(0, 0%, 100%, 0.02);
   border-bottom: 1px solid var(--border);
@@ -810,6 +971,8 @@ body {
 .monaco-editor-container {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 
 /* ── Error Banner ── */
@@ -886,6 +1049,11 @@ body {
 
   .resize-handle {
     display: none;
+  }
+
+  .code-explorer {
+    width: 180px;
+    min-width: 140px;
   }
 
   .framework-row {

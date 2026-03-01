@@ -206,7 +206,11 @@
               <div class="editor-tabs" id="editor-tabs"></div>
               <div class="code-block">
                 <div class="code-block__header">
-                  <button class="code-block__copy" id="code-copy-btn">Copy</button>
+                  <div class="code-block__actions">
+                    <button class="code-block__btn" id="code-edit-btn">Edit</button>
+                    <button class="code-block__btn code-block__btn--primary" id="code-save-btn" style="display: none;">Save</button>
+                    <button class="code-block__copy" id="code-copy-btn">Copy</button>
+                  </div>
                 </div>
                 <div class="monaco-editor-container" id="monaco-editor-container"></div>
               </div>

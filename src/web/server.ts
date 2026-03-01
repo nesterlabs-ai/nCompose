@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import archiver from 'archiver';
+import { writeFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { convertFigmaToCode } from '../convert.js';
@@ -190,6 +191,60 @@ app.get('/api/download/:sessionId', (req, res) => {
   }
 
   archive.finalize();
+});
+
+const FILE_EXTENSIONS: Record<string, string> = {
+  mitosis: '.lite.tsx',
+  react: '.jsx',
+  vue: '.vue',
+  svelte: '.svelte',
+  angular: '.ts',
+  solid: '.tsx',
+};
+
+/**
+ * POST /api/save-file — Save edited file content
+ */
+app.post('/api/save-file', async (req, res) => {
+  const { sessionId, fileKey, content } = req.body;
+
+  if (!sessionId || !fileKey || typeof content !== 'string') {
+    res.status(400).json({ error: 'sessionId, fileKey, and content are required' });
+    return;
+  }
+
+  const result = sessions.get(sessionId);
+  if (!result) {
+    res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+
+  const ext = FILE_EXTENSIONS[fileKey];
+  if (!ext) {
+    res.status(400).json({ error: `Invalid fileKey: ${fileKey}` });
+    return;
+  }
+
+  try {
+    if (fileKey === 'mitosis') {
+      result.mitosisSource = content;
+    } else if (SUPPORTED_FRAMEWORKS.includes(fileKey as Framework)) {
+      result.frameworkOutputs[fileKey as Framework] = content;
+    } else {
+      res.status(400).json({ error: `Invalid fileKey: ${fileKey}` });
+      return;
+    }
+
+    const componentOutputDir = join('./web_output', `${result.componentName}-${sessionId}`);
+    const filename = `${result.componentName}${ext}`;
+    const filePath = join(componentOutputDir, filename);
+    await writeFile(filePath, content, 'utf-8');
+
+    res.json({ success: true, message: 'File saved' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: `Failed to save: ${message}` });
+  }
 });
 
 /**

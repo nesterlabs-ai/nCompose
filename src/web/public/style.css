@@ -950,11 +950,12 @@ body {
   color: #fff;
   cursor: pointer;
   border-radius: 50%;
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 .hero__prompt-send:hover:not(:disabled) {
-  background: var(--text);
+  background: var(--accent);
+  color: #fff;
 }
 
 .hero__prompt-send:disabled {

@@ -92,6 +92,14 @@ const monacoContainer = document.getElementById('monaco-editor-container');
 const resizeHandle = document.getElementById('resize-handle');
 const panelLeft = document.getElementById('panel-left');
 
+// Preview (WebContainer)
+const previewHeader = document.getElementById('preview-header');
+const previewLiveBadge = document.getElementById('preview-live-badge');
+const previewStatus = document.getElementById('preview-status');
+const previewLoading = document.getElementById('preview-loading');
+const previewLoadingText = document.getElementById('preview-loading-text');
+const previewReload = document.getElementById('preview-reload');
+
 // ── State ──
 let currentSessionId = null;
 let currentFrameworkOutputs = {};
@@ -102,6 +110,11 @@ let tabsData = [];
 let openFiles = [];
 let activeFile = null;
 let isEditMode = false;
+let webContainerInstance = null;
+let webContainerDevProcess = null;
+let webContainerPreviewUrl = null;
+let webContainerLastWritten = {};
+let webContainerSyncEnabled = false;
 
 // ── LocalStorage ──
 const STORAGE_KEY = 'figma-to-code-token';
@@ -383,6 +396,9 @@ function startConversion() {
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
   previewFrame.src = 'about:blank';
+  if (previewHeader) previewHeader.style.display = 'none';
+  if (previewLoading) previewLoading.style.display = 'none';
+  webContainerSyncEnabled = false;
   downloadBtn.style.display = 'none';
   const pushGithubBtnEl = document.getElementById('push-github-btn');
   if (pushGithubBtnEl) pushGithubBtnEl.style.display = 'none';
@@ -541,6 +557,189 @@ function markLastStepError() {
   }
 }
 
+// ── WebContainer ──
+const WEBCONTAINER_CDN = 'https://cdn.jsdelivr.net/npm/@webcontainer/api@1.2.4';
+
+function isWebContainerSupported() {
+  try {
+    return typeof SharedArrayBuffer !== 'undefined' && 'serviceWorker' in navigator;
+  } catch {
+    return false;
+  }
+}
+
+function setPreviewLoading(show, text) {
+  if (previewLoading) {
+    previewLoading.style.display = show ? 'flex' : 'none';
+    if (previewLoadingText) previewLoadingText.textContent = text || 'Starting preview...';
+  }
+}
+
+function setPreviewReady(url, isLive, statusText) {
+  setPreviewLoading(false);
+  previewEmpty.style.display = 'none';
+  previewFrame.style.display = 'block';
+  previewFrame.src = url;
+  if (previewHeader) previewHeader.style.display = 'flex';
+  if (previewLiveBadge) previewLiveBadge.style.display = isLive ? 'inline-block' : 'none';
+  if (previewStatus) previewStatus.textContent = isLive ? 'Live Vite preview' : (statusText || '');
+  if (previewReload) previewReload.style.display = 'inline-flex';
+}
+
+function setPreviewError(msg) {
+  setPreviewLoading(false);
+  if (previewStatus) previewStatus.textContent = msg || 'Preview failed';
+}
+
+function toFileSystemTree(files) {
+  const tree = {};
+  for (const [path, content] of Object.entries(files)) {
+    const parts = path.split('/').filter(Boolean);
+    let current = tree;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        current[name] = { file: { contents: content } };
+      } else {
+        if (!current[name]) current[name] = { directory: {} };
+        current = current[name].directory;
+      }
+    }
+  }
+  return tree;
+}
+
+function extractReactCodeAndCss(reactCode) {
+  let css = '';
+  const styleRegex = /<style>\{`([\s\S]*?)`\}<\/style>/g;
+  let m;
+  while ((m = styleRegex.exec(reactCode)) !== null) {
+    css += m[1] + '\n';
+  }
+  const code = reactCode.replace(styleRegex, '');
+  return { code, css };
+}
+
+function buildViteProjectTree(componentName, componentCode, componentCss, assets) {
+  const componentPath = `./components/${componentName}`;
+  const appTsx = `import ${componentName} from "${componentPath}";
+function App() {
+  return (
+    <div className="p-6">
+      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${componentName} Preview</h2>
+      <${componentName} />
+    </div>
+  );
+}
+export default App;
+`;
+  const packageJson = JSON.stringify({
+    name: 'preview-app',
+    private: true,
+    version: '0.0.0',
+    type: 'module',
+    scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
+    dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
+    devDependencies: {
+      '@vitejs/plugin-react': '^4.3.4',
+      autoprefixer: '^10.4.21',
+      postcss: '^8.5.6',
+      tailwindcss: '^3.4.17',
+      vite: '^5.4.19',
+    },
+  });
+  const files = {
+    'package.json': packageJson,
+    'vite.config.ts': 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });',
+    'index.html': '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Preview</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>',
+    'tailwind.config.js': 'export default { content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"], theme: { extend: {} }, plugins: [] };',
+    'postcss.config.js': 'export default { plugins: { tailwindcss: {}, autoprefixer: {} } };',
+    'src/main.tsx': 'import { createRoot } from "react-dom/client"; import App from "./App.tsx"; import "./index.css"; createRoot(document.getElementById("root")).render(<App />);',
+    'src/index.css': '@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody { margin: 0; padding: 40px; background: #0a0a0a; color: #f5f5f5; font-family: system-ui, sans-serif; min-height: 100vh; }',
+    'src/App.tsx': appTsx,
+    [`src/components/${componentName}.jsx`]: (componentCss ? `import "./${componentName}.css";\n` : '') + componentCode.replace(/\.\/assets\//g, '/assets/'),
+    [`src/components/${componentName}.css`]: componentCss || `/* ${componentName} */`,
+  };
+  if (assets && assets.length) {
+    assets.forEach((a) => {
+      files[`public/assets/${a.filename}`] = a.content;
+    });
+  }
+  return toFileSystemTree(files);
+}
+
+function getTabKeyToWcPath() {
+  if (!currentComponentName) return {};
+  return {
+    react: `src/components/${currentComponentName}.jsx`,
+    mitosis: null,
+  };
+}
+
+async function bootWebContainer(tree) {
+  if (!isWebContainerSupported()) {
+    throw new Error('WebContainers require Chrome or Edge.');
+  }
+  const mod = await import(/* webpackIgnore: true */ WEBCONTAINER_CDN + '/+esm');
+  const WebContainer = mod.WebContainer || mod.default?.WebContainer || mod.default;
+  if (!WebContainer) throw new Error('WebContainer API not loaded');
+  if (webContainerDevProcess) {
+    webContainerDevProcess.kill?.();
+    webContainerDevProcess = null;
+  }
+  if (!webContainerInstance) {
+    webContainerInstance = await WebContainer.boot();
+    webContainerInstance.on('error', (e) => {
+      setPreviewError(e.message || 'WebContainer error');
+    });
+  }
+  setPreviewLoading(true, 'Mounting project...');
+  await webContainerInstance.mount(tree);
+  setPreviewLoading(true, 'Installing dependencies...');
+  const installProc = await webContainerInstance.spawn('npm', ['install']);
+  const installExit = await installProc.exit;
+  if (installExit !== 0) throw new Error('npm install failed');
+  setPreviewLoading(true, 'Starting Vite...');
+  const devProc = await webContainerInstance.spawn('npm', ['run', 'dev']);
+  webContainerDevProcess = devProc;
+  devProc.output.pipeTo(new WritableStream({ write() {} }));
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('Dev server timeout')), 60000);
+    const unsub = webContainerInstance.on('server-ready', (port, url) => {
+      clearTimeout(t);
+      webContainerPreviewUrl = url;
+      unsub();
+      resolve(url);
+    });
+  });
+}
+
+async function writeWebContainerFiles(files) {
+  if (!webContainerInstance) return;
+  for (const [path, content] of Object.entries(files)) {
+    if (webContainerLastWritten[path] === content) continue;
+    await webContainerInstance.fs.writeFile(path, content);
+    webContainerLastWritten[path] = content;
+  }
+}
+
+function syncEditorToWebContainer() {
+  if (!webContainerSyncEnabled || !webContainerInstance || !currentComponentName || !monacoEditor || !activeFile) return;
+  if (activeFile !== 'react') return;
+  const content = monacoEditor.getValue();
+  const { code, css } = extractReactCodeAndCss(content);
+  const componentCode = code.replace(/\.\/assets\//g, '/assets/');
+  const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
+  const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
+  const wcPath = `src/components/${currentComponentName}.jsx`;
+  const cssPath = `src/components/${currentComponentName}.css`;
+  writeWebContainerFiles({
+    [wcPath]: finalCode,
+    [cssPath]: css || `/* ${currentComponentName} */`,
+  }).catch(() => {});
+}
+
 // ── Complete ──
 function handleComplete(data) {
   setLoading(false);
@@ -577,10 +776,44 @@ function handleComplete(data) {
   const pushGithubBtn = document.getElementById('push-github-btn');
   if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
 
-  // Auto-load preview
-  previewEmpty.style.display = 'none';
-  previewFrame.style.display = 'block';
-  previewFrame.src = `/api/preview/${currentSessionId}`;
+  // Preview: try WebContainer live when React available and supported
+  webContainerSyncEnabled = false;
+  webContainerLastWritten = {};
+  const frameworks = data.frameworks || [];
+  const hasReact = frameworks.includes('react');
+  const reactCode = currentFrameworkOutputs.react || '';
+
+  if (hasReact && reactCode && !reactCode.startsWith('// Error') && isWebContainerSupported()) {
+    fetch(`/api/session/${currentSessionId}/push-files`)
+      .then((r) => r.json())
+      .then((res) => {
+        const files = res.files || [];
+        const reactFile = files.find((f) => f.name.endsWith('.jsx') && f.name.includes(currentComponentName));
+        const assetFiles = files.filter((f) => f.name.startsWith('assets/'));
+        let componentCode = reactFile?.content || reactCode;
+        let componentCss = '';
+        const styleMatch = componentCode.match(/<style>\{`([\s\S]*?)`\}<\/style>/);
+        if (styleMatch) {
+          componentCss = styleMatch[1];
+          componentCode = componentCode.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
+        }
+        componentCode = componentCode.replace(/\.\/assets\//g, '/assets/');
+        const assets = assetFiles.map((f) => ({ filename: f.name.replace('assets/', ''), content: f.content }));
+        const tree = buildViteProjectTree(currentComponentName, componentCode, componentCss, assets);
+        return bootWebContainer(tree);
+      })
+      .then((url) => {
+        setPreviewReady(url, true);
+        webContainerSyncEnabled = true;
+      })
+      .catch((err) => {
+        console.warn('WebContainer failed, using static preview:', err);
+        setPreviewReady(`/api/preview/${currentSessionId}`, false, 'Static preview');
+      });
+  } else {
+    const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : '';
+    setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
+  }
 }
 
 // ── Monaco Editor ──
@@ -638,6 +871,15 @@ function initMonaco(callback) {
       padding: { top: 12 },
     });
     monacoReady = true;
+    let syncDebounce = null;
+    monacoEditor.onDidChangeModelContent(() => {
+      if (!webContainerSyncEnabled) return;
+      if (syncDebounce) clearTimeout(syncDebounce);
+      syncDebounce = setTimeout(() => {
+        syncDebounce = null;
+        syncEditorToWebContainer();
+      }, 500);
+    });
     window.addEventListener('resize', layoutMonaco);
     const resizeObserver = new ResizeObserver(() => layoutMonaco());
     resizeObserver.observe(monacoContainer);
@@ -860,6 +1102,10 @@ codeSaveBtn.addEventListener('click', async () => {
       currentFrameworkOutputs[activeFile] = content;
     }
 
+    if (webContainerSyncEnabled && activeFile === 'react') {
+      syncEditorToWebContainer();
+    }
+
     setEditMode(false);
     codeSaveBtn.textContent = 'Saved!';
     setTimeout(() => {
@@ -894,6 +1140,14 @@ downloadBtn.addEventListener('click', () => {
   if (!currentSessionId) return;
   window.location.href = `/api/download/${currentSessionId}`;
 });
+
+if (previewReload) {
+  previewReload.addEventListener('click', () => {
+    if (previewFrame.src && previewFrame.src !== 'about:blank') {
+      previewFrame.src = previewFrame.src;
+    }
+  });
+}
 
 // ── Push to GitHub ──
 const GITHUB_TOKEN_KEY = 'github_token';

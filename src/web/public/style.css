@@ -1347,6 +1347,7 @@ body {
 
 .btn--primary:hover:not(:disabled) {
   background: var(--accent-hover);
+  color: #fff;
 }
 
 .btn--primary:disabled {
@@ -1709,6 +1710,7 @@ body {
 .code-block__btn--primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+  color: #fff;
 }
 
 .code-block__btn:disabled {

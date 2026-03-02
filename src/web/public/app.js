@@ -384,6 +384,8 @@ function startConversion() {
   previewFrame.style.display = 'none';
   previewFrame.src = 'about:blank';
   downloadBtn.style.display = 'none';
+  const pushGithubBtnEl = document.getElementById('push-github-btn');
+  if (pushGithubBtnEl) pushGithubBtnEl.style.display = 'none';
   explorerFiles.innerHTML = '';
   editorTabs.innerHTML = '';
   activeFile = null;
@@ -570,8 +572,10 @@ function handleComplete(data) {
   // Build code tabs
   buildTabs(data);
 
-  // Show download button
+  // Show download and push buttons
   downloadBtn.style.display = 'inline-flex';
+  const pushGithubBtn = document.getElementById('push-github-btn');
+  if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
 
   // Auto-load preview
   previewEmpty.style.display = 'none';
@@ -890,6 +894,394 @@ downloadBtn.addEventListener('click', () => {
   if (!currentSessionId) return;
   window.location.href = `/api/download/${currentSessionId}`;
 });
+
+// ── Push to GitHub ──
+const GITHUB_TOKEN_KEY = 'github_token';
+const GITHUB_OAUTH_STATE_KEY = 'github_oauth_state';
+
+function getGitHubToken() {
+  return sessionStorage.getItem(GITHUB_TOKEN_KEY) || '';
+}
+function setGitHubToken(token) {
+  if (token?.trim()) sessionStorage.setItem(GITHUB_TOKEN_KEY, token.trim());
+  else sessionStorage.removeItem(GITHUB_TOKEN_KEY);
+}
+
+function normalizeRepoDirectory(input) {
+  const normalized = input.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, '');
+  if (!normalized || normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\0')) return null;
+  const segments = normalized.split('/').filter(Boolean);
+  const SAFE = /^[A-Za-z0-9._-]+$/;
+  if (segments.length === 0 || segments.some((s) => !SAFE.test(s))) return null;
+  return segments.join('/');
+}
+
+function buildRepoPath(directory, filePath) {
+  if (!filePath || filePath.includes('..') || filePath.includes('\\') || filePath.includes('\0')) return null;
+  const safeDir = normalizeRepoDirectory(directory);
+  if (!safeDir) return null;
+  const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  const SAFE = /^[A-Za-z0-9._-]+$/;
+  if (parts.some((p) => !SAFE.test(p))) return null;
+  return `${safeDir}/${parts.join('/')}`;
+}
+
+async function getFunctionErrorMessage(err, fallback) {
+  if (!(err instanceof Error)) return fallback;
+  const ctx = err.context;
+  if (ctx instanceof Response) {
+    try {
+      const json = await ctx.clone().json();
+      if (typeof json?.error === 'string' && json.error.trim()) return json.error;
+      if (typeof json?.message === 'string' && json.message.trim()) return json.message;
+    } catch {
+      try {
+        const text = await ctx.clone().text();
+        if (text.trim()) return text;
+      } catch {}
+    }
+  }
+  return err.message || fallback;
+}
+
+function initGitHubDialog() {
+  const overlay = document.getElementById('github-dialog-overlay');
+  const closeBtn = document.getElementById('github-dialog-close');
+  const pushGithubBtn = document.getElementById('push-github-btn');
+  const connectSection = document.getElementById('github-connect-section');
+  const connectBtn = document.getElementById('github-connect-btn');
+  const connectSpinner = document.getElementById('github-connect-spinner');
+  const connectIcon = document.getElementById('github-connect-icon');
+  const errorEl = document.getElementById('github-error');
+  const successEl = document.getElementById('github-success');
+  const successLink = document.getElementById('github-success-link');
+  const formEl = document.getElementById('github-form');
+  const usernameEl = document.getElementById('github-username');
+  const disconnectBtn = document.getElementById('github-disconnect');
+  const tabExisting = document.getElementById('github-tab-existing');
+  const tabNew = document.getElementById('github-tab-new');
+  const repoList = document.getElementById('github-repo-list');
+  const newRepoInput = document.getElementById('github-new-repo');
+  const privateCheckbox = document.getElementById('github-repo-private');
+  const directoryInput = document.getElementById('github-directory');
+  const dirError = document.getElementById('github-directory-error');
+  const commitMsgInput = document.getElementById('github-commit-msg');
+  const filesCountEl = document.getElementById('github-files-count');
+  const filesListEl = document.getElementById('github-files-list');
+  const pushBtn = document.getElementById('github-push-btn');
+  const pushSpinner = document.getElementById('github-push-spinner');
+  const pushIcon = document.getElementById('github-push-icon');
+  const pushBtnText = document.getElementById('github-push-btn-text');
+
+  let supabaseUrl = '';
+  let supabaseKey = '';
+  let githubFiles = [];
+  let repos = [];
+  let selectedRepo = null;
+  let githubTab = 'existing';
+
+  function showError(msg) {
+    errorEl.textContent = msg || '';
+    errorEl.style.display = msg ? 'block' : 'none';
+  }
+
+  function setConnectLoading(loading) {
+    connectBtn.disabled = loading;
+    connectSpinner.style.display = loading ? 'inline-block' : 'none';
+    connectIcon.style.display = loading ? 'none' : 'inline';
+  }
+
+  function setPushLoading(loading) {
+    pushBtn.disabled = loading;
+    pushSpinner.style.display = loading ? 'inline-block' : 'none';
+    pushIcon.style.display = loading ? 'none' : 'inline';
+    pushBtnText.textContent = loading ? 'Pushing...' : githubTab === 'new' ? 'Create & Push' : 'Push to Repository';
+  }
+
+  function openDialog() {
+    if (!currentSessionId || !currentComponentName) return;
+    showError('');
+    successEl.style.display = 'none';
+    githubTab = 'existing';
+    selectedRepo = null;
+    newRepoInput.value = currentComponentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    commitMsgInput.value = `feat: add ${currentComponentName} component`;
+    directoryInput.value = 'src/components';
+    dirError.style.display = 'none';
+    document.querySelectorAll('.github-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'existing'));
+    tabExisting.style.display = 'block';
+    tabNew.style.display = 'none';
+
+    overlay.setAttribute('aria-hidden', 'false');
+    overlay.classList.add('visible');
+
+    fetch(`/api/session/${currentSessionId}/push-files`)
+      .then((r) => r.json())
+      .then((data) => {
+        githubFiles = data.files || [];
+        filesCountEl.textContent = githubFiles.length;
+        filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+      })
+      .catch(() => {
+        githubFiles = [];
+        filesCountEl.textContent = '0';
+        filesListEl.innerHTML = '';
+      });
+
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        supabaseUrl = cfg.supabaseUrl || '';
+        supabaseKey = cfg.supabaseKey || '';
+        if (!cfg.githubPushConfigured) {
+          connectBtn.disabled = true;
+          showError('GitHub push is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to the server environment.');
+          connectSection.style.display = 'block';
+          formEl.style.display = 'none';
+          return;
+        }
+        connectBtn.disabled = false;
+        const token = getGitHubToken();
+        if (!token) {
+          connectSection.style.display = 'block';
+          formEl.style.display = 'none';
+          return;
+        }
+        connectSection.style.display = 'none';
+        formEl.style.display = 'block';
+        successEl.style.display = 'none';
+        fetchReposAndUser(token);
+      })
+      .catch(() => {
+        showError('Failed to load configuration.');
+        connectSection.style.display = 'block';
+        formEl.style.display = 'none';
+      });
+  }
+
+  function closeDialog() {
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.classList.remove('visible');
+  }
+
+  async function invokeSupabase(action, options = {}) {
+    const params = new URLSearchParams({ action });
+    if (options.query) {
+      Object.entries(options.query).forEach(([k, v]) => params.set(k, v));
+    }
+    const url = `${supabaseUrl}/functions/v1/github-push?${params}`;
+    const headers = {
+      Authorization: `Bearer ${supabaseKey}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+    if (options.githubToken) headers['x-github-token'] = options.githubToken;
+    const res = await fetch(url, { ...options, headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data?.error || `Request failed: ${res.status}`);
+      err.context = res;
+      throw err;
+    }
+    return data;
+  }
+
+  async function fetchReposAndUser(token) {
+    try {
+      const [reposData, userData] = await Promise.all([
+        invokeSupabase('repos', { method: 'GET', githubToken: token }),
+        invokeSupabase('user', { method: 'GET', githubToken: token }),
+      ]);
+      repos = Array.isArray(reposData) ? reposData : [];
+      usernameEl.textContent = userData?.login || 'Unknown';
+      renderRepoList();
+    } catch (e) {
+      showError(await getFunctionErrorMessage(e, 'Failed to fetch repos'));
+    }
+  }
+
+  function renderRepoList() {
+    repoList.innerHTML = repos
+      .map(
+        (r) =>
+          `<button type="button" class="github-repo-item${selectedRepo?.id === r.id ? ' selected' : ''}" data-id="${r.id}">${r.private ? '🔒' : '🌐'} ${escapeHtml(r.full_name)}</button>`
+      )
+      .join('');
+    repoList.querySelectorAll('.github-repo-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedRepo = repos.find((x) => x.id === parseInt(btn.dataset.id, 10));
+        renderRepoList();
+        updatePushState();
+      });
+    });
+  }
+
+  function updatePushState() {
+    const dir = directoryInput.value;
+    const validDir = Boolean(normalizeRepoDirectory(dir));
+    dirError.style.display = validDir ? 'none' : 'block';
+    const canPush =
+      validDir &&
+      (githubTab === 'existing' ? selectedRepo : newRepoInput.value.trim());
+    pushBtn.disabled = !canPush;
+  }
+
+  directoryInput.addEventListener('input', () => {
+    updatePushState();
+    filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+  });
+  newRepoInput.addEventListener('input', updatePushState);
+
+  document.querySelectorAll('.github-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      githubTab = btn.dataset.tab;
+      document.querySelectorAll('.github-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === githubTab));
+      tabExisting.style.display = githubTab === 'existing' ? 'block' : 'none';
+      tabNew.style.display = githubTab === 'new' ? 'block' : 'none';
+      pushBtnText.textContent = githubTab === 'new' ? 'Create & Push' : 'Push to Repository';
+      updatePushState();
+    });
+  });
+
+  connectBtn.addEventListener('click', async () => {
+    setConnectLoading(true);
+    showError('');
+    try {
+      const redirectUri = `${window.location.origin}/auth/github/callback`;
+      const data = await invokeSupabase('oauth-url', { method: 'GET', query: { redirect_uri: redirectUri } });
+      if (!data?.url || !data?.state) throw new Error('GitHub OAuth is not configured.');
+      sessionStorage.setItem(GITHUB_OAUTH_STATE_KEY, data.state);
+      const popup = window.open(data.url, 'github-oauth', 'width=620,height=720');
+      if (!popup) throw new Error('Popup blocked. Allow popups and try again.');
+      popup.focus();
+    } catch (e) {
+      showError(await getFunctionErrorMessage(e, 'Failed to start GitHub OAuth'));
+    } finally {
+      setConnectLoading(false);
+    }
+  });
+
+  window.addEventListener('message', async (e) => {
+    if (e.origin !== window.location.origin) return;
+    const p = e.data;
+    if (!p || p.type !== 'github-oauth') return;
+    if (p.error) {
+      showError(`GitHub OAuth failed: ${p.error}`);
+      return;
+    }
+    if (!p.code || !p.state) {
+      showError('OAuth callback missing required parameters.');
+      return;
+    }
+    const expected = sessionStorage.getItem(GITHUB_OAUTH_STATE_KEY);
+    sessionStorage.removeItem(GITHUB_OAUTH_STATE_KEY);
+    if (!expected || expected !== p.state) {
+      showError('OAuth state mismatch. Try connecting again.');
+      return;
+    }
+    setConnectLoading(true);
+    showError('');
+    try {
+      const data = await invokeSupabase('exchange-code', {
+        method: 'POST',
+        body: JSON.stringify({ code: p.code, redirectUri: `${window.location.origin}/auth/github/callback` }),
+      });
+      const token = data?.accessToken;
+      if (!token) throw new Error('No access token returned.');
+      setGitHubToken(token);
+      connectSection.style.display = 'none';
+      formEl.style.display = 'block';
+      successEl.style.display = 'none';
+      await fetchReposAndUser(token);
+    } catch (e) {
+      showError(await getFunctionErrorMessage(e, 'Failed to exchange OAuth code'));
+    } finally {
+      setConnectLoading(false);
+    }
+  });
+
+  disconnectBtn.addEventListener('click', () => {
+    setGitHubToken('');
+    repos = [];
+    selectedRepo = null;
+    connectSection.style.display = 'block';
+    formEl.style.display = 'none';
+  });
+
+  pushBtn.addEventListener('click', async () => {
+    const token = getGitHubToken();
+    if (!token) return;
+    setPushLoading(true);
+    showError('');
+    successEl.style.display = 'none';
+    try {
+      let owner = usernameEl.textContent;
+      let repo = '';
+      let branch = 'main';
+
+      if (githubTab === 'new') {
+        const name = newRepoInput.value.trim();
+        if (!name) throw new Error('Repository name is required');
+        const createRes = await invokeSupabase('create-repo', {
+          method: 'POST',
+          body: JSON.stringify({
+            githubToken: token,
+            repo: name,
+            repoDescription: `${currentComponentName} - Generated by Figma to Code`,
+            isPrivate: privateCheckbox.checked,
+          }),
+        });
+        owner = createRes?.owner?.login || owner;
+        repo = createRes?.name || name;
+        branch = createRes?.default_branch || 'main';
+        await new Promise((r) => setTimeout(r, 2000));
+      } else {
+        if (!selectedRepo) throw new Error('Select a repository');
+        repo = selectedRepo.name;
+        branch = selectedRepo.default_branch || 'main';
+      }
+
+      const dir = directoryInput.value;
+      const filesToPush = githubFiles.map((f) => {
+        const path = buildRepoPath(dir, f.name);
+        if (!path) throw new Error(`Invalid path: ${dir}/${f.name}`);
+        return { path, content: f.content };
+      });
+
+      const result = await invokeSupabase('push', {
+        method: 'POST',
+        body: JSON.stringify({
+          githubToken: token,
+          owner,
+          repo,
+          branch,
+          commitMessage: commitMsgInput.value.trim() || `feat: add ${currentComponentName} component`,
+          files: filesToPush,
+        }),
+      });
+
+      successEl.style.display = 'block';
+      successLink.href = result?.commitUrl || `https://github.com/${owner}/${repo}`;
+      successLink.textContent = 'View on GitHub';
+      formEl.style.display = 'none';
+    } catch (e) {
+      showError(await getFunctionErrorMessage(e, 'Push failed'));
+    } finally {
+      setPushLoading(false);
+    }
+  });
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeDialog();
+  });
+  closeBtn.addEventListener('click', closeDialog);
+
+  if (pushGithubBtn) {
+    pushGithubBtn.addEventListener('click', openDialog);
+  }
+}
+
+initGitHubDialog();
 
 // ── Error ──
 function showError(message) {

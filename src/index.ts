@@ -41,7 +41,7 @@ program
   .option(
     '--llm <provider>',
     `LLM provider (${SUPPORTED_LLM_PROVIDERS.join(', ')})`,
-    'claude',
+    'deepseek',
   )
   .option('--depth <number>', 'Figma tree depth limit', '25')
   .option('--preview', 'Set up preview app and show URL', false)

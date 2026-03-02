@@ -1803,6 +1803,342 @@ body {
   display: block;
 }
 
+/* ── Modal / GitHub Dialog ── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-overlay.visible {
+  display: flex;
+}
+
+.modal-overlay[aria-hidden="true"] {
+  display: none;
+}
+
+.modal-overlay[aria-hidden="false"] {
+  display: flex;
+}
+
+.modal-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  max-width: 480px;
+  width: 100%;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] .modal-dialog {
+  background: var(--surface);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-title-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.modal-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* GitHub dialog specific */
+.github-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.github-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.github-token-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+}
+
+.github-token-hint a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.github-token-hint a:hover {
+  text-decoration: underline;
+}
+
+.btn--block {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.github-error {
+  padding: 12px;
+  background: hsla(0, 80%, 50%, 0.1);
+  border: 1px solid hsla(0, 80%, 50%, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--error);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.github-success {
+  padding: 20px;
+  background: hsla(142, 70%, 45%, 0.1);
+  border: 1px solid hsla(142, 70%, 45%, 0.2);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.github-success svg {
+  color: var(--success);
+  margin-bottom: 8px;
+}
+
+.github-success p {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.github-success a {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.github-success a:hover {
+  text-decoration: underline;
+}
+
+.github-connect,
+.github-form {
+  margin-bottom: 0;
+}
+
+.github-form .github-label,
+.github-form .form-input,
+.github-form .github-checkbox {
+  margin-top: 12px;
+}
+
+.github-connected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--input-bg);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.github-connected strong {
+  color: var(--text);
+}
+
+.github-disconnect {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.github-disconnect:hover {
+  color: var(--text);
+}
+
+.github-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.github-tab {
+  flex: 1;
+  padding: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.github-tab:hover {
+  color: var(--text);
+}
+
+.github-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.github-tab-panel {
+  margin-bottom: 0;
+}
+
+.github-repo-list {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.github-repo-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--input-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.github-repo-item:hover {
+  border-color: var(--border);
+}
+
+.github-repo-item.selected {
+  background: hsla(239, 85%, 55%, 0.1);
+  border-color: hsla(239, 85%, 55%, 0.3);
+}
+
+.github-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-top: 10px;
+}
+
+.github-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.github-validation {
+  font-size: 12px;
+  color: var(--error);
+  margin-top: 4px;
+}
+
+.github-files-preview {
+  margin-top: 12px;
+}
+
+.github-files-list {
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--input-bg);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.github-files-list > div {
+  padding: 2px 0;
+}
+
+#github-push-btn {
+  margin-top: 16px;
+}
+
+#github-push-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .hero__prompt {

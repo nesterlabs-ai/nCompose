@@ -78,7 +78,7 @@ app.post('/api/convert', (req, res) => {
       frameworks: selectedFrameworks,
       output: './web_output',
       name: name && typeof name === 'string' ? name.trim() : undefined,
-      llm: 'claude',
+      llm: 'deepseek',
       depth: 25,
     },
     {
@@ -245,6 +245,100 @@ app.post('/api/save-file', async (req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: `Failed to save: ${message}` });
   }
+});
+
+/**
+ * GET /api/config — Returns Supabase config for GitHub push (if configured)
+ */
+app.get('/api/config', (_req, res) => {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+  res.json({
+    supabaseUrl: supabaseUrl || null,
+    supabaseKey: supabaseKey || null,
+    githubPushConfigured: Boolean(supabaseUrl && supabaseKey),
+  });
+});
+
+/**
+ * GET /api/session/:sessionId/push-files — Returns file list for GitHub push
+ */
+app.get('/api/session/:sessionId/push-files', (req, res) => {
+  const { sessionId } = req.params;
+  const result = sessions.get(sessionId);
+
+  if (!result) {
+    res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+
+  const files: { name: string; content: string }[] = [];
+
+  // Mitosis source
+  files.push({
+    name: `${result.componentName}.lite.tsx`,
+    content: result.mitosisSource,
+  });
+
+  // Framework outputs
+  for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+    if (code && !code.startsWith('// Error')) {
+      const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
+      files.push({
+        name: `${result.componentName}${ext}`,
+        content: code,
+      });
+    }
+  }
+
+  // Assets
+  if (result.assets) {
+    for (const asset of result.assets) {
+      if (asset.content) {
+        files.push({
+          name: `assets/${asset.filename}`,
+          content: asset.content,
+        });
+      }
+    }
+  }
+
+  res.json({ files });
+});
+
+/**
+ * GET /auth/github/callback — OAuth callback page (posts code to opener, then closes)
+ */
+app.get('/auth/github/callback', (_req, res) => {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>GitHub Auth</title></head>
+<body>
+  <div style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;text-align:center;">
+    <div>
+      <p style="font-weight:500;">Connecting GitHub...</p>
+      <p style="color:#71717a;font-size:12px;">If this window does not close automatically, you can close it.</p>
+    </div>
+  </div>
+  <script>
+    (function(){
+      var q = new URLSearchParams(window.location.search);
+      var payload = {
+        type: 'github-oauth',
+        code: q.get('code') || undefined,
+        state: q.get('state') || undefined,
+        error: q.get('error_description') || q.get('error') || undefined
+      };
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(payload, window.location.origin);
+        window.close();
+      }
+    })();
+  </script>
+</body>
+</html>`;
+  res.setHeader('Content-Type', 'text/html');
+  res.send(html);
 });
 
 /**

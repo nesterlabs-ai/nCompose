@@ -319,11 +319,16 @@ body {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
+  border: none;
   border-radius: var(--radius-sm);
+  background: transparent;
   font-size: 13px;
   font-weight: 500;
+  font-family: inherit;
   color: var(--text);
-  text-decoration: none;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
   transition: background 0.2s ease, color 0.2s ease;
 }
 

@@ -184,6 +184,15 @@ window.addEventListener('resize', () => {
 updateMenuButtonVisibility();
 updateSidebarToggleTitle();
 
+// Sidebar nav item selection
+document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
+    el.classList.add('active');
+  });
+});
+
 // When collapsed, clicking a section header expands the sidebar
 document.querySelectorAll('.sidebar__section-header').forEach((el) => {
   el.addEventListener('click', () => {

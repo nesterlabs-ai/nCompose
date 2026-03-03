@@ -1,43 +1,22 @@
 /**
- * Generates standalone preview HTML for React output.
+ * Generates a standalone HTML page that renders a React component
+ * using CDN-loaded React + Babel for in-browser JSX transpilation.
  *
- * Default mode (`raw`) renders exactly one component instance with default
- * Figma-driven props for fidelity. Optional `grid` mode renders metadata-driven
- * variant combos for inspection.
+ * For COMPONENT_SET results (with componentPropertyDefinitions),
+ * renders a grid of all variant combinations.
  */
-
-import { config } from '../config.js';
-
-interface VariantAxisMeta {
-  name: string;
-  values: string[];
-  default: string;
-}
-
-interface VariantMetaEntry {
-  name: string;
-  props: Record<string, string>;
-}
-
-interface VariantMetadata {
-  axes: VariantAxisMeta[];
-  variants: VariantMetaEntry[];
-}
-
-interface PreviewVariantEntry {
-  label: string;
-  props: Record<string, string | boolean>;
-}
 
 /**
  * Transform Mitosis-compiled React JSX into browser-runnable code.
  *
  * 1. Strip import lines
- * 2. Rewrite asset paths to API endpoint
- * 3. Extract and hoist <style> tag CSS
+ * 2. Add React globals
+ * 3. Rewrite asset paths to API endpoint
+ * 4. Extract and hoist <style> tag CSS
  */
 function transformReactCode(
   reactCode: string,
+  componentName: string,
   sessionId: string,
 ): { code: string; css: string } {
   const lines = reactCode.split('\n');
@@ -45,30 +24,37 @@ function transformReactCode(
   let css = '';
 
   for (const line of lines) {
+    // Skip import lines
     if (/^\s*import\s+/.test(line)) continue;
+    // Skip export default
     if (/^\s*export\s+default\s+/.test(line)) continue;
     codeLines.push(line);
   }
 
   let code = codeLines.join('\n');
 
+  // Extract CSS from style tags: <style>{`...css...`}</style>
   const styleTagRegex = /<style>\{`([\s\S]*?)`\}<\/style>/g;
   let styleMatch;
   while ((styleMatch = styleTagRegex.exec(code)) !== null) {
     css += styleMatch[1] + '\n';
   }
+  // Remove <style> tags from JSX (CSS will be in a real <style> element)
   code = code.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
 
+  // Rewrite asset paths: ./assets/foo.svg → /api/preview/:sessionId/assets/foo.svg
   code = code.replace(
     /["']\.\/assets\/([^"']+)["']/g,
     `"/api/preview/${sessionId}/assets/$1"`,
   );
 
+  // Also catch bare SVG filenames without ./assets/ prefix (LLM sometimes omits the path)
   code = code.replace(
     /src=["']([^"'/][^"']*\.svg)["']/g,
     `src="/api/preview/${sessionId}/assets/$1"`,
   );
 
+  // Also rewrite asset paths in CSS
   css = css.replace(
     /url\(["']?\.\/assets\/([^"')]+)["']?\)/g,
     `url("/api/preview/${sessionId}/assets/$1")`,
@@ -77,195 +63,172 @@ function transformReactCode(
   return { code, css };
 }
 
+/**
+ * Convert a property name to camelCase for use as a React prop.
+ * e.g. "Show Left Icon#3371:152" → "showLeftIcon"
+ */
 function toCamelCase(str: string): string {
-  const clean = str.replace(/#[\w:]+$/, '').trim();
+  const clean = str.replace(/#\d+:\d+$/, '');
   return clean
     .replace(/[-_\s]+(.)?/g, (_, c) => (c ? c.toUpperCase() : ''))
     .replace(/^[A-Z]/, (c) => c.toLowerCase());
 }
 
-function toKebabCase(str: string): string {
-  return String(str)
-    .replace(/([a-z])([A-Z])/g, '$1-$2')
-    .replace(/\s+/g, '-')
-    .replace(/[()[\]/\\'",.:;!?@#$%^&*+=|~`<>{}]/g, '')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-}
-
-function axisToPropName(axisName: string): string {
-  const lower = axisName.toLowerCase().trim();
-  if (lower === 'style' || lower === 'variant' || lower === 'appearance' || lower === 'type') {
-    return 'variant';
-  }
-  return toCamelCase(axisName);
-}
-
-const DEFAULT_STATE_VALUES = new Set(['default', 'rest', 'resting', 'normal', 'idle', 'enabled', 'base']);
-const STATE_KEYWORDS = new Set(['hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error', 'selected']);
-
-function isStateAxis(axisName: string, values: string[]): boolean {
-  if (axisName.toLowerCase().trim() === 'state') return true;
-  const lowerValues = values.map((v) => String(v).toLowerCase().trim());
-  const hits = lowerValues.filter((v) => DEFAULT_STATE_VALUES.has(v) || STATE_KEYWORDS.has(v)).length;
-  return hits >= 2;
-}
-
-function stateValueToProps(stateValue: string): Record<string, boolean> {
-  const lower = stateValue.toLowerCase().trim();
-  if (!lower || DEFAULT_STATE_VALUES.has(lower)) return {};
-
-  const props: Record<string, boolean> = {};
-  const parts = lower.split(/\s*-\s*|\s+/).filter(Boolean);
-  for (const part of parts) {
-    if (DEFAULT_STATE_VALUES.has(part)) continue;
-    props[toCamelCase(part)] = true;
-  }
-  return props;
-}
-
-function buildDefaultPropsObject(
-  propDefs?: Record<string, any>,
-): Record<string, string | boolean> {
-  if (!propDefs) return {};
-
-  const defaults: Record<string, string | boolean> = {};
-  const seen = new Set<string>();
-
-  for (const [rawName, def] of Object.entries(propDefs)) {
-    if (def?.type === 'VARIANT' && typeof def.defaultValue === 'string') {
-      const variantOptions = Array.isArray(def.variantOptions)
-        ? def.variantOptions.map((v: any) => String(v))
-        : [];
-      if (isStateAxis(rawName, variantOptions)) continue;
-
-      const propName = axisToPropName(rawName);
-      if (!propName || seen.has(propName)) continue;
-      defaults[propName] = toKebabCase(def.defaultValue);
-      seen.add(propName);
-      continue;
-    }
-
-    if (def?.type === 'TEXT' && typeof def.defaultValue === 'string') {
-      const propName = toCamelCase(rawName);
-      if (!propName || seen.has(propName)) continue;
-      defaults[propName] = def.defaultValue;
-      seen.add(propName);
-      continue;
-    }
-
-    if (def?.type === 'BOOLEAN' && typeof def.defaultValue === 'boolean') {
-      const propName = toCamelCase(rawName);
-      if (!propName || seen.has(propName)) continue;
-      defaults[propName] = def.defaultValue;
-      seen.add(propName);
-    }
-  }
-
-  return defaults;
-}
-
-function buildVariantEntries(metadata?: VariantMetadata): PreviewVariantEntry[] {
-  if (!metadata?.variants || metadata.variants.length === 0) return [];
-
-  const axisMap = new Map<string, VariantAxisMeta>();
-  for (const axis of metadata.axes ?? []) {
-    axisMap.set(axis.name, axis);
-  }
-
-  return metadata.variants.map((variant, index) => {
-    const props: Record<string, string | boolean> = {};
-
-    for (const [axisName, rawValue] of Object.entries(variant.props ?? {})) {
-      const axis = axisMap.get(axisName);
-      const value = String(rawValue ?? '');
-
-      if (axis && isStateAxis(axis.name, axis.values)) {
-        Object.assign(props, stateValueToProps(value));
-        continue;
-      }
-
-      const propName = axisToPropName(axisName);
-      if (!propName) continue;
-      props[propName] = toKebabCase(value);
-    }
-
-    const label = variant.name || `Variant ${index + 1}`;
-    return { label, props };
-  });
-}
-
-function buildRawPreviewApp(
-  componentName: string,
-  propDefs?: Record<string, any>,
-): string {
-  const defaultPropsLiteral = JSON.stringify(buildDefaultPropsObject(propDefs), null, 2);
-
-  return `
-    function App() {
-      const defaultProps = ${defaultPropsLiteral};
-      return <${componentName} {...defaultProps} />;
-    }`;
-}
-
+/**
+ * Build the JavaScript source for the variant grid App component.
+ * Reads componentPropertyDefinitions to discover axes and render all combos.
+ */
 function buildVariantGridApp(
   componentName: string,
   propDefs?: Record<string, any>,
-  variantMetadata?: VariantMetadata,
 ): string {
-  const variantEntries = buildVariantEntries(variantMetadata);
-  if (variantEntries.length === 0) {
-    return buildRawPreviewApp(componentName, propDefs);
+  if (!propDefs) {
+    // No property definitions — render a single instance
+    return `
+    function App() {
+      return (
+        <div style={{ padding: '1rem' }}>
+          <${componentName} />
+        </div>
+      );
+    }`;
   }
 
-  const defaultPropsLiteral = JSON.stringify(buildDefaultPropsObject(propDefs), null, 2);
-  const entriesLiteral = JSON.stringify(variantEntries, null, 2);
+  // Separate VARIANT axes from other properties
+  const variantAxes: Array<{ name: string; camel: string; values: string[] }> = [];
+  const booleanProps: Array<{ name: string; camel: string; defaultValue: boolean }> = [];
+  for (const [name, def] of Object.entries(propDefs)) {
+    if (def.type === 'VARIANT' && def.variantOptions) {
+      variantAxes.push({
+        name,
+        camel: toCamelCase(name),
+        values: def.variantOptions,
+      });
+    } else if (def.type === 'BOOLEAN') {
+      booleanProps.push({
+        name,
+        camel: toCamelCase(name),
+        defaultValue: def.defaultValue ?? true,
+      });
+    }
+  }
+
+  // Identify the state axis (name is "State" or contains state-like values)
+  const stateKeywords = ['default', 'hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error'];
+  const stateAxisIdx = variantAxes.findIndex((a) => {
+    if (a.name.toLowerCase() === 'state') return true;
+    const lowerVals = a.values.map((v) => v.toLowerCase());
+    return lowerVals.filter((v) => stateKeywords.includes(v)).length >= 2;
+  });
+
+  const stateAxis = stateAxisIdx >= 0 ? variantAxes.splice(stateAxisIdx, 1)[0] : null;
+  const propAxes = variantAxes; // Remaining axes are prop axes (Style, Size, etc.)
+
+  // Build the JS arrays for variant axes
+  const axisArraysJS = propAxes.map((axis) => {
+    const values = JSON.stringify(axis.values.map((v) => v.toLowerCase()));
+    return `  const ${axis.camel}Values = ${values};`;
+  }).join('\n');
+
+  // Build state entries
+  let statesJS = `  const stateEntries = [{ label: 'Default', props: {} }];`;
+  if (stateAxis) {
+    const entries = stateAxis.values.map((val) => {
+      const lower = val.toLowerCase();
+      if (lower === 'default') {
+        return `    { label: '${val}', props: {} }`;
+      }
+      // Compound states like "Error-Hover" → { error: true, hover: true }
+      const parts = val.split(/[-\s]+/).filter(Boolean);
+      const propsObj = parts.map((p) => `${toCamelCase(p)}: true`).join(', ');
+      return `    { label: '${val}', props: { ${propsObj} } }`;
+    });
+    statesJS = `  const stateEntries = [\n${entries.join(',\n')}\n  ];`;
+  }
+
+  // Build base props (boolean defaults + instance swap icons)
+  const basePropsEntries: string[] = [];
+  for (const bp of booleanProps) {
+    if (bp.defaultValue === true) {
+      basePropsEntries.push(`${bp.camel}: true`);
+    }
+  }
+  // INSTANCE_SWAP props are not passed — let the component use its own
+  // inline SVG defaults rather than overriding with <img> tags.
+  const basePropsJS = basePropsEntries.length > 0
+    ? `  const baseProps = { ${basePropsEntries.join(', ')} };`
+    : `  const baseProps = {};`;
+
+  // Determine how prop axes map to component props.
+  // Convention: first axis → "variant", second → "size", rest → camelCase of axis name
+  const propMappings = propAxes.map((axis) => {
+    // Use the axis camelCase name directly as the prop name
+    // But for "Style" → "variant" is the common convention
+    const propName = axis.name.toLowerCase() === 'style' ? 'variant'
+                   : axis.name.toLowerCase() === 'type' ? 'variant'
+                   : axis.camel;
+    return { axis, propName };
+  });
+
+  // Build cartesian product of prop axes
+  // Generate nested flatMap for all axis combinations
+  let variantBuildJS: string;
+  if (propAxes.length === 0) {
+    variantBuildJS = `
+  const allVariants = stateEntries.map((state) => ({
+    label: state.label,
+    props: { ...baseProps, ...state.props },
+  }));`;
+  } else {
+    // Build nested flatMap
+    const indent = '    ';
+    let inner = `({
+${indent}  label: [${propMappings.map((m) => m.axis.camel).join(', ')}, state.label].join(' / '),
+${indent}  props: {
+${indent}    ...baseProps,
+${indent}    ${propMappings.map((m) => {
+      const defaultVal = m.axis.values[0].toLowerCase();
+      return `...(${m.axis.camel} !== '${defaultVal}' ? { ${m.propName}: ${m.axis.camel} } : {})`;
+    }).join(`,\n${indent}    `)},
+${indent}    ...state.props,
+${indent}  },
+${indent}})`;
+
+    let expr = `stateEntries.map((state) => ${inner})`;
+
+    // Wrap in flatMaps from innermost to outermost
+    for (let i = propMappings.length - 1; i >= 0; i--) {
+      const m = propMappings[i];
+      expr = `${m.axis.camel}Values.flatMap((${m.axis.camel}) =>\n      ${expr}\n    )`;
+    }
+
+    variantBuildJS = `\n  const allVariants = ${expr};`;
+  }
 
   return `
-    function App() {
-      const defaultProps = ${defaultPropsLiteral};
-      const allVariants = ${entriesLiteral};
+    const sessionId = ${JSON.stringify('')};
 
+${axisArraysJS}
+${statesJS}
+${basePropsJS}
+${variantBuildJS}
+
+    function App() {
       return (
-        <div style={{ padding: '24px', fontFamily: 'system-ui, -apple-system, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
-          <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
-            <h1 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>
-              ${componentName}
-            </h1>
-            <p style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
-              {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
-            </p>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-              gap: '16px',
-            }}>
-              {allVariants.map((v, i) => (
-                <div key={i} style={{
-                  padding: '16px',
-                  background: '#fff',
-                  borderRadius: '10px',
-                  border: '1px solid #e5e7eb',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '10px',
-                }}>
-                  <div style={{
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    color: '#888',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.05em',
-                    textAlign: 'center',
-                  }}>
-                    {v.label}
-                  </div>
-                  <${componentName} {...defaultProps} {...v.props} />
+        <div style={{ padding: '1rem', minHeight: '100vh' }}>
+          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
+          <p style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
+            {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {allVariants.map((v, i) => (
+              <div key={i} style={{ width: '100%' }}>
+                <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
+                <div style={{ width: '100%' }}>
+                  <${componentName} {...v.props}>Button</${componentName}>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
       );
@@ -274,47 +237,16 @@ function buildVariantGridApp(
 
 /**
  * Generate a standalone HTML page that renders the React component.
+ * If componentPropertyDefinitions is provided, renders a full variant grid.
  */
 export function generatePreviewHTML(
   reactCode: string,
   componentName: string,
   sessionId: string,
   componentPropertyDefinitions?: Record<string, any>,
-  variantMetadata?: VariantMetadata,
 ): string {
-  const { code, css } = transformReactCode(reactCode, sessionId);
-  // Use grid mode when the component has multiple variants (COMPONENT_SET),
-  // or when explicitly configured via PREVIEW_MODE=grid.
-  const hasMultipleVariants = (variantMetadata?.variants?.length ?? 0) > 1;
-  // 'grid' → always grid; 'raw' → always single; 'auto' (default) → grid when component set has multiple variants
-  const useGridPreview =
-    config.preview.mode === 'grid' ||
-    (config.preview.mode === 'auto' && hasMultipleVariants);
-
-  const appCode = useGridPreview
-    ? buildVariantGridApp(componentName, componentPropertyDefinitions, variantMetadata)
-    : buildRawPreviewApp(componentName, componentPropertyDefinitions);
-
-  const previewShellCSS = useGridPreview
-    ? `
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #f8f9fa;
-      min-height: 100vh;
-    }
-    `
-    : `
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: #fff;
-    }
-    #root {
-      display: inline-block;
-    }
-    `;
+  const { code, css } = transformReactCode(reactCode, componentName, sessionId);
+  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -323,12 +255,17 @@ export function generatePreviewHTML(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Preview: ${componentName}</title>
   <style>
-    ${previewShellCSS}
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f8f9fa;
+      min-height: 100vh;
+    }
     ${css}
   </style>
-  <script src="${config.preview.cdnUrls.react}" crossorigin></script>
-  <script src="${config.preview.cdnUrls.reactDom}" crossorigin></script>
-  <script src="${config.preview.cdnUrls.babel}"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
   <div id="root"></div>

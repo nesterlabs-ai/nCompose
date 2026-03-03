@@ -914,6 +914,27 @@ body {
   transform: translateY(-1px);
 }
 
+.hero__template-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.hero__template-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
 .hero__prompt-actions {
   display: flex;
   align-items: center;
@@ -1027,6 +1048,27 @@ body {
   font-size: 13px;
   max-width: 240px;
   line-height: 1.5;
+}
+
+.empty-state__template-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.empty-state__template-btn:hover {
+  background: hsla(239, 85%, 55%, 0.15);
+  color: var(--accent);
 }
 
 /* ── Panel Input Bar (pinned bottom) ── */
@@ -1277,6 +1319,77 @@ body {
 
 .preview-empty span {
   font-size: 12px;
+}
+
+/* ── Preview Header (Live badge, reload) ── */
+#view-preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.preview-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--code-block-header-bg);
+}
+
+.preview-live-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: hsla(142, 70%, 45%, 0.15);
+  color: var(--success);
+}
+
+.preview-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.preview-reload {
+  padding: 6px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.preview-reload:hover {
+  color: var(--text);
+  border-color: var(--border-light);
+}
+
+.preview-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+}
+
+.preview-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border);
+  border-right-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+.preview-loading-text {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* ── Preview Frame ── */

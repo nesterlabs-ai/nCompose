@@ -52,6 +52,8 @@ CRITICAL — violating ANY of these causes a compilation failure:
 9. Text content goes directly in JSX — no dangerouslySetInnerHTML
 10. Use semantic HTML elements where appropriate (button, input, img, nav, header, section, footer, ul, li, a, h1-h6, p, span)
 11. All numeric CSS values MUST include units: '16px', '1.5em' — NEVER bare numbers
+12. If you need a data array or object used in `<For>` or JSX expressions, place it inside `useStore`: `const state = useStore({ items: [...] })` and reference as `state.items`. Do NOT use plain `const` for component data — Mitosis will drop it.
+13. When a container uses `flex-wrap: wrap` with children of uniform width, prefer `display: grid; grid-template-columns: repeat(N, 1fr)` where N = floor(container-width / child-width). This produces a cleaner grid than flex-wrap.
 
 ## Class Naming Rules (BEM)
 
@@ -86,6 +88,7 @@ Convert the simplified design properties to CSS rules in the `---CSS---` block:
 - `gap: "12px"` → `gap: 12px;`
 - `padding: "16px 24px"` → `padding: 16px 24px;`
 - `wrap: true` → `flex-wrap: wrap;`
+- `counterAxisSpacing: "20px"` → `row-gap: 20px;` (for wrapping layouts)
 
 ### Sizing
 - `sizing.horizontal: fill` → `flex: 1;` (inside a flex parent) or `width: 100%;`

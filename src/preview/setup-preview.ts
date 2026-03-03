@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync, unlinkSync, rmSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { config } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -180,93 +181,155 @@ export async function setupPreview(options: PreviewSetupOptions): Promise<void> 
  * Convert property name to camelCase (e.g., "Show Left Icon" -> "showLeftIcon")
  */
 function toCamelCase(str: string): string {
-  // Remove node ID suffix if present (e.g., "Show Left Icon#3371:152")
-  const cleanName = str.replace(/#\d+:\d+$/, '');
-
-  return cleanName
-    .replace(/[-_\s]+(.)?/g, (_, char) => (char ? char.toUpperCase() : ''))
-    .replace(/^[A-Z]/, (char) => char.toLowerCase());
+  const clean = str.replace(/#[\w:]+$/, '').trim();
+  return clean
+    .replace(/[-_\s]+(.)?/g, (_, c) => (c ? c.toUpperCase() : ''))
+    .replace(/^[A-Z]/, (c) => c.toLowerCase());
 }
 
-/**
- * Generate App.jsx content to display the component
- * Uses metadata.axes to dynamically generate all variant combinations
- */
-function generateAppContent(componentName: string, metadata: any, assetFiles: string[] = []): string {
-  // If no metadata, generate a simple preview
-  if (!metadata || !metadata.axes || metadata.axes.length === 0) {
-    return generateSimplePreview(componentName);
+function toKebabCase(str: string): string {
+  return String(str)
+    .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .replace(/\s+/g, '-')
+    .replace(/[()[\]/\\'",.:;!?@#$%^&*+=|~`<>{}]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+}
+
+function axisToPropName(axisName: string): string {
+  const lower = axisName.toLowerCase().trim();
+  if (lower === 'style' || lower === 'variant' || lower === 'appearance' || lower === 'type') {
+    return 'variant';
+  }
+  return toCamelCase(axisName);
+}
+
+const DEFAULT_STATE_VALUES = new Set(['default', 'rest', 'resting', 'normal', 'idle', 'enabled', 'base']);
+const STATE_KEYWORDS = new Set(['hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error', 'selected']);
+
+function isStateAxis(axisName: string, values: string[]): boolean {
+  if (axisName.toLowerCase().trim() === 'state') return true;
+  const lowerValues = values.map((v) => String(v).toLowerCase().trim());
+  const hits = lowerValues.filter((v) => DEFAULT_STATE_VALUES.has(v) || STATE_KEYWORDS.has(v)).length;
+  return hits >= 2;
+}
+
+function stateValueToProps(stateValue: string): Record<string, boolean> {
+  const lower = stateValue.toLowerCase().trim();
+  if (!lower || DEFAULT_STATE_VALUES.has(lower)) return {};
+
+  const props: Record<string, boolean> = {};
+  const parts = lower.split(/\s*-\s*|\s+/).filter(Boolean);
+  for (const part of parts) {
+    if (DEFAULT_STATE_VALUES.has(part)) continue;
+    props[toCamelCase(part)] = true;
+  }
+  return props;
+}
+
+function buildDefaultProps(metadata: any): Record<string, string | boolean> {
+  const defs = metadata?.componentPropertyDefinitions;
+  if (!defs || typeof defs !== 'object') return {};
+
+  const defaults: Record<string, string | boolean> = {};
+  const seen = new Set<string>();
+
+  for (const [rawName, def] of Object.entries(defs as Record<string, any>)) {
+    if (def?.type === 'VARIANT' && typeof def.defaultValue === 'string') {
+      const variantOptions = Array.isArray(def.variantOptions)
+        ? def.variantOptions.map((v: any) => String(v))
+        : [];
+      if (isStateAxis(rawName, variantOptions)) continue;
+
+      const propName = axisToPropName(rawName);
+      if (!propName || seen.has(propName)) continue;
+      defaults[propName] = toKebabCase(def.defaultValue);
+      seen.add(propName);
+      continue;
+    }
+    if (def?.type === 'TEXT' && typeof def.defaultValue === 'string') {
+      const propName = toCamelCase(rawName);
+      if (!propName || seen.has(propName)) continue;
+      defaults[propName] = def.defaultValue;
+      seen.add(propName);
+      continue;
+    }
+    if (def?.type === 'BOOLEAN' && typeof def.defaultValue === 'boolean') {
+      const propName = toCamelCase(rawName);
+      if (!propName || seen.has(propName)) continue;
+      defaults[propName] = def.defaultValue;
+      seen.add(propName);
+    }
   }
 
-  // Extract axes from metadata
-  const axes = metadata.axes || [];
+  return defaults;
+}
 
-  // Find specific axes
-  const styleAxis = axes.find((a: any) => a.name.toLowerCase().includes('style') || a.name.toLowerCase().includes('variant'));
-  const sizeAxis = axes.find((a: any) => a.name.toLowerCase() === 'size');
-  const stateAxis = axes.find((a: any) => a.name.toLowerCase() === 'state');
+function buildVariantEntries(metadata: any): Array<{ label: string; props: Record<string, string | boolean> }> {
+  const variants = metadata?.variants;
+  if (!Array.isArray(variants) || variants.length === 0) return [];
 
-  // Build arrays for each axis
-  const styles = styleAxis ? styleAxis.values : ['default'];
-  const sizes = sizeAxis ? sizeAxis.values : ['medium'];
-  const states = stateAxis ? stateAxis.values : ['default'];
+  const axisMap = new Map<string, { name: string; values: string[] }>();
+  if (Array.isArray(metadata?.axes)) {
+    for (const axis of metadata.axes) {
+      if (axis?.name && Array.isArray(axis?.values)) {
+        axisMap.set(axis.name, axis);
+      }
+    }
+  }
 
-  console.log(`Generating preview for ${componentName}:`);
-  console.log(`  Styles: ${styles.join(', ')}`);
-  console.log(`  Sizes: ${sizes.join(', ')}`);
-  console.log(`  States: ${states.join(', ')}`);
-  console.log(`  Total: ${styles.length} × ${sizes.length} × ${states.length} = ${styles.length * sizes.length * states.length} variants`);
+  return variants.map((variant: any, index: number) => {
+    const props: Record<string, string | boolean> = {};
+    const rawProps = variant?.props && typeof variant.props === 'object' ? variant.props : {};
+
+    for (const [axisName, rawValue] of Object.entries(rawProps)) {
+      const axis = axisMap.get(axisName);
+      const value = String(rawValue ?? '');
+
+      if (axis && isStateAxis(axis.name, axis.values)) {
+        Object.assign(props, stateValueToProps(value));
+        continue;
+      }
+
+      const propName = axisToPropName(axisName);
+      if (!propName) continue;
+      props[propName] = toKebabCase(value);
+    }
+
+    const label = typeof variant?.name === 'string' && variant.name.length > 0
+      ? variant.name
+      : `Variant ${index + 1}`;
+    return { label, props };
+  });
+}
+
+function generateRawPreview(componentName: string, defaultProps: Record<string, string | boolean>): string {
+  const defaultPropsLiteral = JSON.stringify(defaultProps, null, 2);
+  return `import ${componentName} from './components/${componentName}'
+
+const defaultProps = ${defaultPropsLiteral}
+
+function App() {
+  return <${componentName} {...defaultProps} />
+}
+
+export default App
+`;
+}
+
+function generateGridPreview(
+  componentName: string,
+  defaultProps: Record<string, string | boolean>,
+  variants: Array<{ label: string; props: Record<string, string | boolean> }>,
+): string {
+  const defaultPropsLiteral = JSON.stringify(defaultProps, null, 2);
+  const variantsLiteral = JSON.stringify(variants, null, 2);
 
   return `import ${componentName} from './components/${componentName}'
-import metadata from './components/${componentName}.meta.json'
 
-// Dynamically generate all variant combinations from metadata
-const axes = metadata.axes || []
-const styleAxis = axes.find(a => a.name.toLowerCase().includes('style') || a.name.toLowerCase().includes('variant'))
-const sizeAxis = axes.find(a => a.name === 'Size')
-const stateAxis = axes.find(a => a.name === 'State')
-
-const styles = styleAxis ? styleAxis.values : ['default']
-const sizes = sizeAxis ? sizeAxis.values : ['medium']
-const states = stateAxis ? stateAxis.values : ['default']
-
-// Normalize variant names to match CSS class naming convention
-function normalizeVariantName(name) {
-  return name
-    .replace(/[()]/g, '')  // Remove parentheses
-    .replace(/\\s+/g, '-')   // Replace spaces with dashes
-    .toLowerCase()
-}
-
-// Map state names to prop names
-function mapStateToProps(state) {
-  const stateLower = state.toLowerCase()
-  if (stateLower === 'default') return {}
-  if (stateLower === 'hover') return { hover: true }
-  if (stateLower === 'focus') return { focus: true }
-  if (stateLower === 'disabled') return { disabled: true }
-  if (stateLower === 'loading') return { loading: true }
-  if (stateLower.includes('error')) return { error: true }
-  if (stateLower.includes('filled')) return { filled: true }
-  return {}
-}
-
-// Generate all variant combinations
-const allVariants = styles.flatMap(style =>
-  sizes.flatMap(size =>
-    states.map(state => ({
-      label: \`\${style} / \${size} / \${state}\`,
-      props: {
-        variant: normalizeVariantName(style),
-        size: normalizeVariantName(size),
-        ...mapStateToProps(state)
-      }
-    }))
-  )
-)
-
-console.log('Generated variants:', allVariants.length)
-console.log('Sample:', allVariants.slice(0, 3))
+const defaultProps = ${defaultPropsLiteral}
+const allVariants = ${variantsLiteral}
 
 const labelStyle = {
   fontSize: '11px',
@@ -279,61 +342,31 @@ const labelStyle = {
 
 function App() {
   return (
-    <div style={{ padding: '40px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
-      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: '40px' }}>
-          <h1 style={{ margin: '0 0 8px', fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>
-            ${componentName}
-          </h1>
-          <p style={{ margin: '0 0 16px', color: '#666', fontSize: '16px', lineHeight: '1.5' }}>
-            Generated from Figma using figma-to-mitosis
-          </p>
-          <div style={{
-            display: 'inline-flex',
-            gap: '12px',
-            padding: '8px 12px',
-            background: '#e8f5e9',
-            borderRadius: '6px',
-            fontSize: '13px',
-            color: '#2e7d32',
-            fontWeight: 500
-          }}>
-            ✅ {allVariants.length} variants rendered dynamically from metadata
-          </div>
-        </div>
-
-        {/* All Variants Grid */}
+    <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <h1 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>
+          ${componentName}
+        </h1>
+        <p style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
+          {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
+        </p>
         <div style={{
-          background: 'white',
-          borderRadius: '12px',
-          padding: '32px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+          gap: '16px'
         }}>
-          <h2 style={{ margin: '0 0 24px', fontSize: '18px', fontWeight: 600, color: '#333' }}>
-            All Variants
-          </h2>
-
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-            gap: '24px'
-          }}>
-            {allVariants.map((v) => (
-              <div key={v.label} style={{
-                padding: '16px',
-                background: '#f8f9fa',
-                borderRadius: '8px',
-                border: '1px solid #e0e0e0'
-              }}>
-                <div style={labelStyle}>{v.label}</div>
-                <${componentName} {...v.props}>{v.props.label || 'Button'}</${componentName}>
-              </div>
-            ))}
-          </div>
+          {allVariants.map((v, idx) => (
+            <div key={idx} style={{
+              padding: '16px',
+              background: '#fff',
+              borderRadius: '10px',
+              border: '1px solid #e5e7eb'
+            }}>
+              <div style={labelStyle}>{v.label}</div>
+              <${componentName} {...defaultProps} {...v.props} />
+            </div>
+          ))}
         </div>
-
       </div>
     </div>
   )
@@ -344,114 +377,27 @@ export default App
 }
 
 /**
- * Generate simple preview for components without variant metadata
+ * Generate App.jsx content to display the component.
+ * Default mode (`raw`) renders a single exact default instance.
  */
-function generateSimplePreview(componentName: string): string {
-  return `import ${componentName} from './components/${componentName}'
+function generateAppContent(componentName: string, metadata: any, _assetFiles: string[] = []): string {
+  const defaultProps = buildDefaultProps(metadata);
 
-// Generate all variant combinations for preview
-const styles = ['subtle', 'neutral', 'primary']
-const sizes = ['medium', 'small']
-const states = [
-  { label: 'Default', props: {} },
-  { label: 'Hover', props: { hover: true } },
-  { label: 'Focus', props: { focus: true } },
-  { label: 'Disabled', props: { disabled: true } },
-  { label: 'Loading', props: { loading: true } },
-]
+  if (config.preview.mode !== 'grid') {
+    return generateRawPreview(componentName, defaultProps);
+  }
 
-// All variants: styles × sizes × states
-const allVariants = styles.flatMap((style) =>
-  sizes.flatMap((size) =>
-    states.map((state) => ({
-      label: \`\${style} / \${size} / \${state.label}\`,
-      props: {
-        ...(style !== 'subtle' ? { variant: style } : {}),
-        ...(size !== 'medium' ? { size } : {}),
-        ...state.props,
-      },
-    }))
-  )
-)
+  const variants = buildVariantEntries(metadata);
+  if (variants.length === 0) {
+    return generateRawPreview(componentName, defaultProps);
+  }
 
-const labelStyle = {
-  fontSize: '11px',
-  fontWeight: 600,
-  color: '#888',
-  textTransform: 'uppercase',
-  marginBottom: '8px',
-  letterSpacing: '0.05em',
-}
-
-function App() {
-  return (
-    <div style={{ padding: '40px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
-      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: '40px' }}>
-          <h1 style={{ margin: '0 0 8px', fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>
-            ${componentName}
-          </h1>
-          <p style={{ margin: '0 0 16px', color: '#666', fontSize: '16px', lineHeight: '1.5' }}>
-            Generated from Figma using figma-to-mitosis
-          </p>
-          <div style={{
-            display: 'inline-flex',
-            gap: '12px',
-            padding: '8px 12px',
-            background: '#e8f5e9',
-            borderRadius: '6px',
-            fontSize: '13px',
-            color: '#2e7d32',
-            fontWeight: 500
-          }}>
-            ✅ All variants rendered with component properties
-          </div>
-        </div>
-
-        {/* All Variants Grid */}
-        <div style={{
-          background: 'white',
-          borderRadius: '12px',
-          padding: '32px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
-        }}>
-          <h2 style={{ margin: '0 0 24px', fontSize: '18px', fontWeight: 600, color: '#333' }}>
-            All Variants
-          </h2>
-
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-            gap: '24px'
-          }}>
-            {allVariants.map((v) => (
-              <div key={v.label} style={{
-                padding: '16px',
-                background: '#f8f9fa',
-                borderRadius: '8px',
-                border: '1px solid #e0e0e0'
-              }}>
-                <div style={labelStyle}>{v.label}</div>
-                <${componentName}${basePropsString}{...v.props}>Button</${componentName}>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-    </div>
-  )
-}
-
-export default App
-`;
+  return generateGridPreview(componentName, defaultProps, variants);
 }
 
 /**
  * Get preview URL (assumes dev server is running)
  */
-export function getPreviewUrl(port: number = 5173): string {
+export function getPreviewUrl(port: number = config.preview.port): string {
   return `http://localhost:${port}`;
 }

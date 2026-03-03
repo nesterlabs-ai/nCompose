@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Framework, AssetEntry } from './types/index.js';
+import type { Framework, AssetEntry, FidelityReport } from './types/index.js';
 import { FRAMEWORK_EXTENSIONS } from './types/index.js';
 
 export interface WriteOutputOptions {
@@ -17,6 +17,8 @@ export interface WriteOutputOptions {
     axes: Array<{ name: string; values: string[]; default: string }>;
     variants: Array<{ name: string; props: Record<string, string> }>;
   };
+  /** Fidelity diagnostics report */
+  fidelityReport?: FidelityReport;
 }
 
 /**
@@ -26,12 +28,22 @@ export interface WriteOutputOptions {
  * - <componentName>.lite.tsx (Mitosis source)
  * - <componentName>.<ext> for each framework
  * - <componentName>.meta.json (variant metadata for preview app)
+ * - <componentName>.fidelity.json (generation fidelity diagnostics)
  * - assets/<filename>.svg for each exported SVG asset
  *
  * @returns List of file paths written
  */
 export function writeOutputFiles(options: WriteOutputOptions): string[] {
-  const { outputDir, componentName, mitosisSource, frameworkOutputs, assets, componentPropertyDefinitions, variantMetadata } = options;
+  const {
+    outputDir,
+    componentName,
+    mitosisSource,
+    frameworkOutputs,
+    assets,
+    componentPropertyDefinitions,
+    variantMetadata,
+    fidelityReport,
+  } = options;
   const writtenPaths: string[] = [];
 
   // Ensure output directory exists
@@ -64,6 +76,13 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     };
     writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     writtenPaths.push(metadataPath);
+  }
+
+  // Write fidelity diagnostics report
+  if (fidelityReport) {
+    const fidelityPath = join(outputDir, `${componentName}.fidelity.json`);
+    writeFileSync(fidelityPath, JSON.stringify(fidelityReport, null, 2), 'utf-8');
+    writtenPaths.push(fidelityPath);
   }
 
   // Write SVG assets to assets/ subdirectory

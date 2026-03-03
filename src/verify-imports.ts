@@ -4,10 +4,9 @@
  */
 
 // 1. Framelink MCP — simplification library
-import { simplifyRawFigmaObject, allExtractors, collapseSvgContainers } from 'figma-developer-mcp';
+import { simplifyRawFigmaObject, allExtractors } from 'figma-developer-mcp';
 console.log('Framelink MCP:', typeof simplifyRawFigmaObject === 'function' ? 'OK' : 'FAIL');
 console.log('  - allExtractors:', Array.isArray(allExtractors) ? `OK (${allExtractors.length} extractors)` : 'FAIL');
-console.log('  - collapseSvgContainers:', typeof collapseSvgContainers === 'function' ? 'OK' : 'FAIL');
 
 // 2. Mitosis — compiler
 import { parseJsx, componentToReact, componentToVue, componentToSvelte, componentToAngular, componentToSolid } from '@builder.io/mitosis';

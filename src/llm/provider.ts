@@ -7,6 +7,12 @@ export interface LLMProvider {
   /** Provider name for display purposes */
   name: string;
 
+  /** Total context window size in tokens (input + output) */
+  contextWindow: number;
+
+  /** Maximum output tokens reserved for the response */
+  maxOutputTokens: number;
+
   /**
    * Send a prompt to the LLM and get back a raw string response.
    * @param userPrompt - The user message (simplified Figma YAML + instructions)

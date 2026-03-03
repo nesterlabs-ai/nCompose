@@ -212,161 +212,121 @@ export default function ContactForm(props) {
   });
 
   return (
-    <form
-      css={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'stretch',
-        gap: '20px',
-        padding: '32px',
-        width: '400px',
-        backgroundColor: '#FFFFFF',
-        borderRadius: '12px',
-        boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.1), 0px 2px 4px -2px rgba(0, 0, 0, 0.1)',
-        boxSizing: 'border-box',
-      }}
-    >
-      <h2
-        css={{
-          fontFamily: 'Inter',
-          fontWeight: '700',
-          fontSize: '24px',
-          lineHeight: '1.3em',
-          color: '#111827',
-          margin: '0',
-        }}
-      >
-        Contact Us
-      </h2>
-      <div css={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' }}>
-        <label
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '500',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#374151',
-          }}
-        >
-          Full Name
-        </label>
+    <form class="contact-form">
+      <h2 class="contact-form__title">Contact Us</h2>
+      <div class="contact-form__field">
+        <label class="contact-form__label">Full Name</label>
         <input
+          class="contact-form__input"
           type="text"
           placeholder="Enter your name"
           value={state.name}
           onChange={(event) => (state.name = event.target.value)}
-          css={{
-            padding: '10px 12px',
-            width: '100%',
-            backgroundColor: '#FFFFFF',
-            border: '1px solid #D1D5DB',
-            borderRadius: '6px',
-            fontFamily: 'Inter',
-            fontWeight: '400',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#111827',
-            boxSizing: 'border-box',
-            outline: 'none',
-          }}
         />
       </div>
-      <div css={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' }}>
-        <label
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '500',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#374151',
-          }}
-        >
-          Email Address
-        </label>
+      <div class="contact-form__field">
+        <label class="contact-form__label">Email Address</label>
         <input
+          class="contact-form__input"
           type="email"
           placeholder="you@example.com"
           value={state.email}
           onChange={(event) => (state.email = event.target.value)}
-          css={{
-            padding: '10px 12px',
-            width: '100%',
-            backgroundColor: '#FFFFFF',
-            border: '1px solid #D1D5DB',
-            borderRadius: '6px',
-            fontFamily: 'Inter',
-            fontWeight: '400',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#111827',
-            boxSizing: 'border-box',
-            outline: 'none',
-          }}
         />
       </div>
-      <div css={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' }}>
-        <label
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '500',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#374151',
-          }}
-        >
-          Message
-        </label>
+      <div class="contact-form__field">
+        <label class="contact-form__label">Message</label>
         <textarea
+          class="contact-form__textarea"
           placeholder="Write your message..."
           value={state.message}
           onChange={(event) => (state.message = event.target.value)}
-          css={{
-            padding: '10px 12px',
-            width: '100%',
-            height: '120px',
-            backgroundColor: '#FFFFFF',
-            border: '1px solid #D1D5DB',
-            borderRadius: '6px',
-            fontFamily: 'Inter',
-            fontWeight: '400',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#111827',
-            boxSizing: 'border-box',
-            outline: 'none',
-            resize: 'vertical',
-          }}
         />
       </div>
-      <button
-        type="submit"
-        css={{
-          display: 'flex',
-          flexDirection: 'row',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '12px 24px',
-          width: '100%',
-          backgroundColor: '#3B82F6',
-          borderRadius: '8px',
-          border: 'none',
-          cursor: 'pointer',
-        }}
-      >
-        <span
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '600',
-            fontSize: '16px',
-            lineHeight: '1.5em',
-            color: '#FFFFFF',
-            textAlign: 'center',
-          }}
-        >
-          Send Message
-        </span>
-      </button>
+      <button class="contact-form__submit" type="submit">Send Message</button>
     </form>
   );
+}
+---CSS---
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  padding: 32px;
+  width: 400px;
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0px 4px 6px -1px rgba(0, 0, 0, 0.1), 0px 2px 4px -2px rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+}
+.contact-form__title {
+  font-family: Inter;
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1.3em;
+  color: #111827;
+  margin: 0;
+}
+.contact-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.contact-form__label {
+  font-family: Inter;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #374151;
+}
+.contact-form__input {
+  padding: 10px 12px;
+  width: 100%;
+  background-color: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #111827;
+  box-sizing: border-box;
+  outline: none;
+}
+.contact-form__textarea {
+  padding: 10px 12px;
+  width: 100%;
+  height: 120px;
+  background-color: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #111827;
+  box-sizing: border-box;
+  outline: none;
+  resize: vertical;
+}
+.contact-form__submit {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 12px 24px;
+  width: 100%;
+  background-color: #3B82F6;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.5em;
+  color: #FFFFFF;
+  text-align: center;
+  box-sizing: border-box;
 }
 ```

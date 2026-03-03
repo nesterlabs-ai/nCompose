@@ -41,6 +41,28 @@ export interface ParseResult {
   css?: string;
 }
 
+export interface FidelityCheck {
+  passed: boolean;
+  summary: string;
+}
+
+export interface FidelityReport {
+  generatedAt: string;
+  checks: {
+    semantic?: FidelityCheck;
+    bem?: FidelityCheck;
+    text?: FidelityCheck;
+    layout?: FidelityCheck & {
+      coverage: number;
+      missingElementClasses: string[];
+    };
+  };
+  metrics: {
+    expectedTextCount: number;
+  };
+  overallPassed: boolean;
+}
+
 /**
  * Output of the full pipeline for a single component.
  */
@@ -52,11 +74,15 @@ export interface ConversionResult {
   assets: AssetEntry[];
   /** Component property definitions from Figma (for preview app) */
   componentPropertyDefinitions?: Record<string, any>;
+  /** Raw CSS (internal use for page composition) */
+  css?: string;
   /** Variant axes metadata (for preview app) */
   variantMetadata?: {
     axes: Array<{ name: string; values: string[]; default: string }>;
     variants: Array<{ name: string; props: Record<string, string> }>;
   };
+  /** Fidelity diagnostics report for this generation run */
+  fidelityReport?: FidelityReport;
 }
 
 /**

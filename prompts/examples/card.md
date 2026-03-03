@@ -116,88 +116,71 @@ globalVars:
 
 **Output:**
 ```tsx
-import { useStore } from '@builder.io/mitosis';
-
 export default function Card(props) {
   return (
-    <div
-      css={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        gap: '16px',
-        width: '320px',
-        backgroundColor: '#FFFFFF',
-        borderRadius: '12px',
-        boxShadow: '0px 1px 3px 0px rgba(0, 0, 0, 0.1), 0px 1px 2px -1px rgba(0, 0, 0, 0.1)',
-        overflow: 'hidden',
-      }}
-    >
-      <div
-        css={{
-          width: '100%',
-          height: '180px',
-          backgroundColor: '#E5E7EB',
-          borderRadius: '8px',
-          objectFit: 'cover',
-        }}
-      />
-      <div css={{ padding: '0px 16px', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', boxSizing: 'border-box' }}>
-        <h3
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '700',
-            fontSize: '20px',
-            lineHeight: '1.4em',
-            color: '#111827',
-            margin: '0',
-          }}
-        >
-          Modern Dashboard
-        </h3>
-        <p
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '400',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#6B7280',
-            margin: '0',
-          }}
-        >
-          A clean and intuitive analytics dashboard for your team.
-        </p>
-      </div>
-      <div css={{ padding: '0px 16px 16px 16px', width: '100%', boxSizing: 'border-box' }}>
-        <button
-          css={{
-            display: 'flex',
-            flexDirection: 'row',
-            justifyContent: 'center',
-            alignItems: 'center',
-            padding: '10px 20px',
-            width: '100%',
-            backgroundColor: '#3B82F6',
-            borderRadius: '6px',
-            border: 'none',
-            cursor: 'pointer',
-          }}
-        >
-          <span
-            css={{
-              fontFamily: 'Inter',
-              fontWeight: '600',
-              fontSize: '14px',
-              lineHeight: '1.5em',
-              color: '#FFFFFF',
-              textAlign: 'center',
-            }}
-          >
-            Learn More
-          </span>
-        </button>
-      </div>
-    </div>
+    <article class="card">
+      <div class="card__image" />
+      <h3 class="card__title">Modern Dashboard</h3>
+      <p class="card__description">A clean and intuitive analytics dashboard for your team.</p>
+      <button class="card__button" type="button">Learn More</button>
+    </article>
   );
+}
+---CSS---
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  width: 320px;
+  padding: 0 16px 16px;
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.1), 0px 1px 2px -1px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.card__image {
+  width: calc(100% + 32px);
+  margin: 0 -16px;
+  height: 180px;
+  background-color: #E5E7EB;
+  object-fit: cover;
+}
+.card__title {
+  font-family: Inter;
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 1.4em;
+  color: #111827;
+  margin: 0;
+  width: 100%;
+}
+.card__description {
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #6B7280;
+  margin: 0;
+  width: 100%;
+}
+.card__button {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 20px;
+  width: 100%;
+  background-color: #3B82F6;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #FFFFFF;
+  text-align: center;
+  box-sizing: border-box;
 }
 ```

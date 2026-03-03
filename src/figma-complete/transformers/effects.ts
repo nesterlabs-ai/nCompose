@@ -40,7 +40,7 @@ export function effectToCss(effect: Effect): string | null {
   }
 
   if (effect.type === 'BACKGROUND_BLUR') {
-    return `backdrop-blur(${effect.radius}px)`;
+    return `blur(${effect.radius}px)`;
   }
 
   return null;
@@ -52,9 +52,11 @@ export function effectToCss(effect: Effect): string | null {
 export function effectsToCss(effects: Effect[]): {
   boxShadow?: string;
   filter?: string;
+  backdropFilter?: string;
 } {
   const boxShadows: string[] = [];
   const filters: string[] = [];
+  const backdropFilters: string[] = [];
 
   for (const effect of effects) {
     if (effect.visible === false) continue;
@@ -64,6 +66,8 @@ export function effectsToCss(effects: Effect[]): {
 
     if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
       boxShadows.push(css);
+    } else if (effect.type === 'BACKGROUND_BLUR') {
+      backdropFilters.push(css);
     } else {
       filters.push(css);
     }
@@ -77,6 +81,10 @@ export function effectsToCss(effects: Effect[]): {
 
   if (filters.length > 0) {
     result.filter = filters.join(' ');
+  }
+
+  if (backdropFilters.length > 0) {
+    result.backdropFilter = backdropFilters.join(' ');
   }
 
   return result;

@@ -38,7 +38,6 @@ const generators: Record<Framework, (component: MitosisComponent) => string> = {
 
   solid: (c) =>
     componentToSolid({
-      stateType: 'store',
       stylesType: 'style-tag',
     })({ component: c }),
 };

@@ -335,7 +335,7 @@ function buildClassNaming(data: ComponentSetData, baseClass: string): string {
     if (!cs.booleanCondition && !cs.cssSelector) continue; // skip default
 
     const parts: string[] = [];
-    if (cs.booleanCondition) parts.push(`data-${cs.booleanCondition} attribute`);
+    if (cs.booleanCondition) parts.push(`data-${toKebabCase(cs.booleanCondition)} attribute`);
     if (cs.cssSelector)      parts.push(`CSS: ${cs.cssSelector}`);
     lines.push(`State "${cs.originalValue}": ${parts.join(' + ')}`);
   }
@@ -412,10 +412,10 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
     {/* icon/checkmark img goes here if checked/indeterminate */}
   </span>
   {props.hasLabel !== false && (
-    <span class="BASE__label">{props.children || 'Label'}</span>
+    <span class="BASE__label">{props.children}</span>
   )}
   {props.hasDescription !== false && (
-    <span class="BASE__description">{props.description || 'Description'}</span>
+    <span class="BASE__description">{props.description}</span>
   )}
 </label>`,
 
@@ -424,7 +424,7 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 <label class={state.classes}>
   <input type="radio" class="BASE__input" checked={props.checked} disabled={props.disabled} />
   <span class="BASE__box" />             {/* visual radio circle */}
-  <span class="BASE__label">{props.children || 'Label'}</span>
+  <span class="BASE__label">{props.children}</span>
 </label>`,
 
   toggle: `
@@ -433,14 +433,14 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
   <span class="BASE__track">            {/* the pill track */}
     <span class="BASE__thumb" />        {/* the sliding dot */}
   </span>
-  {props.hasLabel !== false && <span class="BASE__label">{props.children || 'Label'}</span>}
+  {props.hasLabel !== false && <span class="BASE__label">{props.children}</span>}
 </button>`,
 
   switch: `
 /* SWITCH — same as toggle */
 <button class={state.classes} role="switch" aria-checked={props.checked} disabled={props.disabled}>
   <span class="BASE__track"><span class="BASE__thumb" /></span>
-  {props.hasLabel !== false && <span class="BASE__label">{props.children || 'Label'}</span>}
+  {props.hasLabel !== false && <span class="BASE__label">{props.children}</span>}
 </button>`,
 
   input: `
@@ -460,18 +460,27 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
     {props.trailingIcon && <span class="BASE__trailing-icon">{props.trailingIcon}</span>}
   </div>
   {props.hasHelperText !== false && (
-    <span class="BASE__helper">{props.helperText || 'Helper text'}</span>
+    <span class="BASE__helper">{props.helperText}</span>
   )}
 </div>`,
 
   textarea: `
-/* TEXTAREA */
+/* TEXTAREA FIELD — root wrapper with label, real <textarea>, and helper/error */
 <div class={state.classes}>
-  {props.label && <label class="BASE__label">{props.label}</label>}
-  <textarea class="BASE__input" placeholder={props.placeholder} disabled={props.disabled} rows={props.rows || 3}>
-    {props.value}
-  </textarea>
-  {props.hasHelperText !== false && <span class="BASE__helper">{props.helperText}</span>}
+  {props.showTitle !== false && <span class="BASE__title">{props.title}</span>}
+  {props.showLabel !== false && <label class="BASE__label" for="BASE-input">{props.label}</label>}
+  {props.showDescription !== false && <span class="BASE__description">{props.description}</span>}
+  <div class="BASE__field">               {/* visual textarea box — border, background */}
+    <textarea
+      id="BASE-input"
+      class="BASE__input"                 {/* REAL <textarea> — NEVER a contenteditable div */}
+      placeholder={props.placeholder}
+      value={props.body || props.value}
+      disabled={props.disabled}
+      rows={props.rows || 3}
+    />
+  </div>
+  {props.showError !== false && <span class="BASE__error">{props.error}</span>}
 </div>`,
 
   select: `
@@ -490,14 +499,14 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 /* BUTTON */
 <button class={state.classes} disabled={props.disabled || props.loading}>
   {props.leadingIcon && <span class="BASE__leading-icon">{props.leadingIcon}</span>}
-  <span class="BASE__label">{props.children || 'Label'}</span>
+  <span class="BASE__label">{props.children}</span>
   {props.trailingIcon && <span class="BASE__trailing-icon">{props.trailingIcon}</span>}
   {props.loading && <span class="BASE__spinner" aria-hidden="true" />}
 </button>`,
 
   'icon-button': `
 /* ICON BUTTON */
-<button class={state.classes} aria-label={props.label || 'action'} disabled={props.disabled}>
+<button class={state.classes} aria-label={props.label} disabled={props.disabled}>
   <span class="BASE__icon">{props.icon || <img src="./assets/icon.svg" alt="" />}</span>
 </button>`,
 
@@ -505,14 +514,14 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 /* LINK */
 <a class={state.classes} href={props.href || '#'} target={props.target}>
   {props.leadingIcon && <span class="BASE__leading-icon">{props.leadingIcon}</span>}
-  <span class="BASE__label">{props.children || 'Link'}</span>
+  <span class="BASE__label">{props.children}</span>
 </a>`,
 
   tab: `
 /* TAB */
 <button class={state.classes} role="tab" aria-selected={props.selected} disabled={props.disabled}>
   {props.icon && <span class="BASE__icon">{props.icon}</span>}
-  <span class="BASE__label">{props.children || 'Tab'}</span>
+  <span class="BASE__label">{props.children}</span>
   {props.badge && <span class="BASE__badge">{props.badge}</span>}
 </button>`,
 
@@ -520,7 +529,7 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 /* MENU ITEM */
 <li class={state.classes} role="menuitem">
   {props.leadingIcon && <span class="BASE__leading-icon">{props.leadingIcon}</span>}
-  <span class="BASE__label">{props.children || 'Item'}</span>
+  <span class="BASE__label">{props.children}</span>
   {props.trailingIcon && <span class="BASE__trailing-icon">{props.trailingIcon}</span>}
 </li>`,
 
@@ -532,7 +541,7 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 /* CHIP */
 <div class={state.classes} role="option" aria-selected={props.selected}>
   {props.leadingIcon && <span class="BASE__leading-icon">{props.leadingIcon}</span>}
-  <span class="BASE__label">{props.children || 'Chip'}</span>
+  <span class="BASE__label">{props.children}</span>
   {props.onRemove && <button class="BASE__remove" aria-label="remove">×</button>}
 </div>`,
 
@@ -610,7 +619,12 @@ function getCategorySemanticRules(
       break;
 
     case 'textarea':
-      rules.push(`MUST contain a real <textarea class="${baseClass}__input"> — not a div with contenteditable.`);
+      rules.push(`The root is a <div class="${baseClass}"> wrapper — but it MUST contain a real <textarea> element, never a div with contenteditable.`);
+      rules.push(`<textarea> goes inside the visual field box: <div class="${baseClass}__field"><textarea class="${baseClass}__input" /></div>.`);
+      rules.push(`Label text → <label> element with htmlFor pointing to the textarea id.`);
+      rules.push(`Helper/error text → <span class="${baseClass}__helper"> or <span class="${baseClass}__error">.`);
+      rules.push(`The resize handle (drag icon / notches) is purely decorative CSS — do NOT render it as a separate div tree. Use CSS \`resize: vertical\` on the <textarea> instead.`);
+      rules.push(`Do NOT reproduce Figma's nested frame hierarchy for the input area. Flatten it into: wrapper > textarea.`);
       break;
 
     case 'select':
@@ -775,28 +789,80 @@ export function buildComponentSetUserPrompt(
 
   // ── Conditional assets ───────────────────────────────────────────────────
   if (promptData.assets && promptData.assets.length > 0) {
+    const totalVariants = componentSetData?.variants.length ?? 0;
     const conditionalAssets = promptData.assets.filter(
       (a) => a.variants && a.variants.length > 0,
     );
 
     if (conditionalAssets.length > 0) {
-      const totalVariants = componentSetData?.variants.length ?? 0;
-      const conditional   = conditionalAssets.filter(
-        (a) => (a.variants?.length ?? 0) < totalVariants,
-      );
+      lines.push('### Icon / Asset Conditional Rendering');
+      lines.push('');
 
-      if (conditional.length > 0) {
-        lines.push('### Icon / Asset Conditional Rendering');
-        lines.push('Some icons only appear in specific variants or states:');
-        lines.push('');
+      // Group assets by shapeGroupId to identify color variants of the same icon
+      const shapeGroups = new Map<string, typeof conditionalAssets>();
+      for (const asset of conditionalAssets) {
+        const gid = asset.shapeGroupId || asset.filename;
+        if (!shapeGroups.has(gid)) shapeGroups.set(gid, []);
+        shapeGroups.get(gid)!.push(asset);
+      }
 
-        for (const asset of conditional) {
-          const appearsIn  = asset.variants?.length ?? 0;
+      for (const [, groupAssets] of shapeGroups) {
+        if (groupAssets.length > 1) {
+          // Multiple color variants of the same icon shape — tell LLM to switch src
+          const posLabel = groupAssets[0].parentName || 'icon';
+          const iconLabel = groupAssets[0].nodeName || 'icon';
+          lines.push(`**${posLabel} / ${iconLabel}** — ${groupAssets.length} color variants (switch \`<img src>\` by variant/state):`);
+
+          for (const asset of groupAssets) {
+            const names = asset.variants ?? [];
+            const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
+            const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
+            let hint = '';
+            if (onlyLoading) hint = '→ LOADING state only';
+            else if (onlyDisabled) hint = '→ DISABLED state only';
+            else if (names.length <= 6) hint = `→ ${names.join(', ')}`;
+            else hint = `→ ${names.length}/${totalVariants} variants`;
+            lines.push(`  - \`${asset.filename}\` ${hint}`);
+          }
+
+          // Generate explicit src-switching code hint
+          const defaultAsset = groupAssets[0]; // already sorted: default first
+          const others = groupAssets.slice(1);
+          if (others.length > 0) {
+            lines.push(`  - **Default**: \`<img src="./assets/${defaultAsset.filename}" />\``);
+            for (const other of others) {
+              const names = other.variants ?? [];
+              const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
+              const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
+              if (onlyLoading) {
+                lines.push(`  - When \`props.loading\`: switch to \`"./assets/${other.filename}"\``);
+              } else if (onlyDisabled) {
+                lines.push(`  - When \`props.disabled\`: switch to \`"./assets/${other.filename}"\``);
+              } else {
+                // Try to detect which prop axis controls this variant
+                const sampleName = names[0] || '';
+                const axisParts = sampleName.split('/').map(s => s.trim().toLowerCase());
+                const styleMatch = axisParts.find(p => !['default','hover','focus','loading','disabled','medium','small','large'].includes(p));
+                if (styleMatch) {
+                  lines.push(`  - When variant is \`"${styleMatch}"\`: switch to \`"./assets/${other.filename}"\``);
+                } else {
+                  lines.push(`  - In specific variants: switch to \`"./assets/${other.filename}"\``);
+                }
+              }
+            }
+          }
+          lines.push('');
+        } else {
+          // Single asset (no color variants) — show simple conditional
+          const asset = groupAssets[0];
+          const names = asset.variants ?? [];
+          const appearsIn = names.length;
+          if (appearsIn >= totalVariants) continue; // appears in all variants — not conditional
+
           const assetLabel = asset.filename.replace('.svg', '').replace(/-/g, ' ');
           lines.push(`**${assetLabel}** (\`${asset.filename}\`):`);
 
-          const names = asset.variants ?? [];
-          const onlyLoading  = names.every((v) => v.toLowerCase().includes('loading'));
+          const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
           if (onlyLoading) {
             lines.push(`  - Only appears in LOADING state`);
             lines.push(`  - Use: \`{props.loading && <img src="./assets/${asset.filename}" />}\``);
@@ -804,10 +870,6 @@ export function buildComponentSetUserPrompt(
             lines.push(`  - Only in: ${names.join(', ')}`);
           } else {
             lines.push(`  - Appears in ${appearsIn}/${totalVariants} variants`);
-          }
-
-          if (asset.isColorVariant) {
-            lines.push(`  - ✓ Color variant — original Figma colors preserved in SVG`);
           }
           lines.push('');
         }
@@ -849,7 +911,7 @@ export function buildComponentSetUserPrompt(
         lines.push(`  - \`${cs.originalValue}\` → base state (no modifier)`);
       } else {
         const parts: string[] = [];
-        if (cs.booleanCondition) parts.push(`data-${cs.booleanCondition}`);
+        if (cs.booleanCondition) parts.push(`data-${toKebabCase(cs.booleanCondition)}`);
         if (cs.cssSelector)      parts.push(cs.cssSelector);
         lines.push(`  - \`${cs.originalValue}\` → ${parts.join(' + ')}`);
       }
@@ -997,6 +1059,8 @@ export function buildComponentSetUserPrompt(
   reqs.push('Use `useStore` with a getter `get classes()` that builds the CSS class string from props');
   reqs.push('Bind via `class={state.classes}` — do NOT use `css={{}}`');
   reqs.push(`Accept props: ${promptData.props.map((p) => `\`${p.name}\``).join(', ')}, and \`children\``);
+  reqs.push('Preserve exact Figma text content from the structure/YAML; do NOT replace it with placeholders like "Label" or "Item"');
+  reqs.push('Preserve exact dimensions and spacing from the provided Figma data/CSS; do NOT invent responsive substitutions');
 
   // Element-specific requirements
   const el = promptData.elementType;
@@ -1026,7 +1090,7 @@ export function buildComponentSetUserPrompt(
   if (dataAttrProps.length > 0) {
     reqs.push(
       `For boolean props [${dataAttrProps.map((p) => `\`${p.name}\``).join(', ')}], ` +
-      `add \`data-{name}={true|undefined}\` to root when true`,
+      `add kebab-case data attributes from the Selector map (e.g. \`props.filledIn\` → \`data-filled-in\`)`,
     );
   }
 
@@ -1114,19 +1178,24 @@ When you see these component categories, you MUST use these elements — no exce
 2.  Use \`class\` NOT \`className\` for CSS classes
 3.  Do NOT use \`css={{}}\` — all styling is via CSS classes
 4.  Use \`useStore\` with a getter \`get classes()\` to compute the class string
-5.  Import only \`useStore\` from '@builder.io/mitosis'
+5.  Import what you need from '@builder.io/mitosis': \`useStore\`, and \`For\`/\`Show\` if used
 6.  Use string concatenation with \`+\` — no template literals
 7.  Access props directly (e.g. \`props.variant\`) — do NOT destructure
 8.  For text content: \`{props.children || 'Fallback'}\`
-9.  For boolean props (error, filled, etc.): add \`data-{name}={true || undefined}\` to root
+9.  For boolean state props (loading, error, checked, etc.): add EXACTLY the \`data-*\` attribute listed in the "Selector map" (e.g. if CSS uses \`[data-loading]\`, add \`data-loading={props.loading || undefined}\` to root). Hover and Focus are handled by native CSS pseudo-classes (\`:hover\`, \`:focus-visible\`) — do NOT add data-hover or data-focus attributes.
 10. CRITICAL: When structure says "render as: <img src='…'>" — use EXACTLY that \`<img>\`, no div/svg
 11. CRITICAL: BOOLEAN default TRUE  → \`{props.name !== false ? <el /> : null}\`
 12. CRITICAL: BOOLEAN default FALSE → \`{props.name ? <el /> : null}\`
 13. Do NOT hardcode colors listed as CSS tokens
+14. Use \`<For each={expression}>{(item, index) => (...)}</For>\` for lists — NEVER use .map()
+15. Use \`<Show when={condition}>...</Show>\` for conditional JSX elements — NEVER use ternaries to render/hide elements
+16. Event handler parameter MUST be named \`event\` (e.g. \`onChange={(event) => ...}\`)
+17. State variable MUST be named \`state\`: \`const state = useStore({...})\`
+18. All numeric CSS values MUST include units: \`'16px'\`, \`'1.5em'\` — NEVER bare numbers
 
 ## Class-Building Pattern
 \`\`\`tsx
-import { useStore } from '@builder.io/mitosis';
+import { useStore, Show } from '@builder.io/mitosis';
 
 export default function CheckboxField(props) {
   const state = useStore({
@@ -1150,12 +1219,12 @@ export default function CheckboxField(props) {
         {(props.valueType === 'checked') && <img src="./assets/check.svg" alt="" />}
         {(props.valueType === 'indeterminate') && <img src="./assets/minus.svg" alt="" />}
       </span>
-      {props.hasLabel !== false && (
-        <span class="checkbox-field__label">{props.children || 'Label'}</span>
-      )}
-      {props.hasDescription !== false && (
-        <span class="checkbox-field__description">{props.description || 'Description'}</span>
-      )}
+      <Show when={props.hasLabel !== false}>
+        <span class="checkbox-field__label">{props.children}</span>
+      </Show>
+      <Show when={props.hasDescription !== false}>
+        <span class="checkbox-field__description">{props.description}</span>
+      </Show>
     </label>
   );
 }

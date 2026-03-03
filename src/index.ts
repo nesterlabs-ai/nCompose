@@ -16,6 +16,7 @@ import {
   SUPPORTED_LLM_PROVIDERS,
 } from './types/index.js';
 import type { Framework, LLMProviderName } from './types/index.js';
+import { config } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,16 +35,16 @@ program
   .option(
     '-f, --frameworks <frameworks>',
     `Comma-separated target frameworks (${SUPPORTED_FRAMEWORKS.join(', ')})`,
-    'react',
+    config.cli.defaultFrameworks,
   )
-  .option('-o, --output <dir>', 'Output directory', './output')
+  .option('-o, --output <dir>', 'Output directory', config.cli.defaultOutput)
   .option('-n, --name <name>', 'Component name (auto-detected from Figma if omitted)')
   .option(
     '--llm <provider>',
     `LLM provider (${SUPPORTED_LLM_PROVIDERS.join(', ')})`,
-    'deepseek',
+    config.cli.defaultLLM,
   )
-  .option('--depth <number>', 'Figma tree depth limit', '25')
+  .option('--depth <number>', 'Figma tree depth limit', config.cli.defaultDepth)
   .option('--preview', 'Set up preview app and show URL', false)
   .action(async (figmaUrl: string, opts) => {
     // Validate frameworks
@@ -112,6 +113,7 @@ program
         assets: result.assets,
         componentPropertyDefinitions: result.componentPropertyDefinitions,
         variantMetadata: result.variantMetadata,
+        fidelityReport: result.fidelityReport,
       });
 
       // Print summary
@@ -153,7 +155,7 @@ program
           });
 
           // Check if dev server is running
-          const previewUrl = getPreviewUrl(5173); // Try default port first
+          const previewUrl = getPreviewUrl(config.preview.port);
           console.log(chalk.bold.cyan(`\n📱 Preview URL: ${previewUrl}\n`));
           console.log(chalk.dim('   Start preview with: cd ../preview-app && npm run dev\n'));
         }

@@ -87,7 +87,7 @@ function buildVariantGridApp(
     return `
     function App() {
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
+        <div style={{ padding: '1rem' }}>
           <${componentName} />
         </div>
       );
@@ -215,44 +215,20 @@ ${variantBuildJS}
 
     function App() {
       return (
-        <div style={{ padding: '32px', fontFamily: 'system-ui, -apple-system, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
-          <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
-            <h1 style={{ margin: '0 0 8px', fontSize: '28px', fontWeight: 700, color: '#1a1a1a' }}>
-              ${componentName}
-            </h1>
-            <p style={{ margin: '0 0 24px', color: '#666', fontSize: '14px' }}>
-              {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
-            </p>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-              gap: '20px',
-            }}>
-              {allVariants.map((v, i) => (
-                <div key={i} style={{
-                  padding: '20px',
-                  background: '#fff',
-                  borderRadius: '12px',
-                  border: '1px solid #e5e7eb',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '12px',
-                }}>
-                  <div style={{
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    color: '#888',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.05em',
-                    textAlign: 'center',
-                  }}>
-                    {v.label}
-                  </div>
+        <div style={{ padding: '1rem', minHeight: '100vh' }}>
+          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
+          <p style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
+            {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {allVariants.map((v, i) => (
+              <div key={i} style={{ width: '100%' }}>
+                <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
+                <div style={{ width: '100%' }}>
                   <${componentName} {...v.props}>Button</${componentName}>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
       );

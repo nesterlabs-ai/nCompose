@@ -1,11 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LLMProvider } from './provider.js';
+import { config, type ClaudeConfig } from '../config.js';
 
 export class ClaudeProvider implements LLMProvider {
   name = 'claude';
+  contextWindow: number;
+  maxOutputTokens: number;
   private client: Anthropic;
+  private config: ClaudeConfig;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, overrides?: Partial<ClaudeConfig>) {
     if (!apiKey) {
       throw new Error(
         'Anthropic API key is required.\n' +
@@ -13,12 +17,16 @@ export class ClaudeProvider implements LLMProvider {
       );
     }
     this.client = new Anthropic({ apiKey });
+    this.config = { ...config.llm.claude, ...overrides };
+    this.contextWindow = this.config.contextWindow;
+    this.maxOutputTokens = this.config.maxTokens;
   }
 
   async generate(userPrompt: string, systemPrompt: string): Promise<string> {
     const response = await this.client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8192,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      temperature: this.config.temperature,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     });

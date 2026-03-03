@@ -45,36 +45,31 @@ globalVars:
 
 **Output:**
 ```tsx
-import { useStore } from '@builder.io/mitosis';
-
 export default function PrimaryButton(props) {
   return (
-    <button
-      css={{
-        display: 'flex',
-        flexDirection: 'row',
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: '12px 24px',
-        backgroundColor: '#3B82F6',
-        borderRadius: '8px',
-        border: 'none',
-        cursor: 'pointer',
-      }}
-    >
-      <span
-        css={{
-          fontFamily: 'Inter',
-          fontWeight: '600',
-          fontSize: '16px',
-          lineHeight: '1.5em',
-          color: '#FFFFFF',
-          textAlign: 'center',
-        }}
-      >
-        Get Started
-      </span>
+    <button class="primary-button" type="button">
+      <span class="primary-button__label">Get Started</span>
     </button>
   );
+}
+---CSS---
+.primary-button {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  padding: 12px 24px;
+  background-color: #3B82F6;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+.primary-button__label {
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.5em;
+  color: #FFFFFF;
+  text-align: center;
 }
 ```

@@ -22,8 +22,10 @@ export function simplifyFigmaData(
   rawApiResponse: GetFileResponse | GetFileNodesResponse,
   options?: { maxDepth?: number },
 ): SimplifiedDesign {
+  // `figma-developer-mcp` currently carries its own rest-api-spec dependency,
+  // so we bridge the structurally compatible payload through `unknown`.
   return simplifyRawFigmaObject(
-    rawApiResponse,
+    rawApiResponse as unknown as Parameters<typeof simplifyRawFigmaObject>[0],
     allExtractors,
     {
       maxDepth: options?.maxDepth ?? 25,

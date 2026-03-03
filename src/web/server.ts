@@ -10,18 +10,19 @@ import { generateSessionId } from '../utils/session-id.js';
 import { generatePreviewHTML } from './preview.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
 import type { Framework, ConversionResult } from '../types/index.js';
+import { config } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = config.server.port;
 
 // In-memory session storage
 const sessions = new Map<string, ConversionResult>();
 
 // Middleware
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: config.server.jsonLimit }));
 
 // Serve static files
 app.use(express.static(join(__dirname, 'public')));
@@ -32,7 +33,7 @@ app.use(express.static(join(__dirname, 'public')));
  * Accepts JSON body: { figmaUrl, figmaToken, frameworks }
  * Streams progress via Server-Sent Events, then sends completion data.
  */
-app.post('/api/convert', (req, res) => {
+app.post('/api/convert', (req: any, res: any) => {
   const { figmaUrl, figmaToken, frameworks, name } = req.body;
 
   // Validate inputs
@@ -76,10 +77,10 @@ app.post('/api/convert', (req, res) => {
     figmaUrl,
     {
       frameworks: selectedFrameworks,
-      output: './web_output',
+      output: config.server.outputDir,
       name: name && typeof name === 'string' ? name.trim() : undefined,
-      llm: 'deepseek',
-      depth: 25,
+      llm: config.server.defaultLLM as any,
+      depth: config.server.defaultDepth,
     },
     {
       onStep: (step) => {
@@ -95,7 +96,7 @@ app.post('/api/convert', (req, res) => {
       sessions.set(sessionId, result);
 
       // Write output files to disk (same as CLI)
-      const componentOutputDir = join('./web_output', `${result.componentName}-${sessionId}`);
+      const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
       try {
         writeOutputFiles({
           outputDir: componentOutputDir,
@@ -105,6 +106,7 @@ app.post('/api/convert', (req, res) => {
           assets: result.assets,
           componentPropertyDefinitions: result.componentPropertyDefinitions,
           variantMetadata: result.variantMetadata,
+          fidelityReport: result.fidelityReport,
         });
         sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
       } catch (writeErr) {
@@ -120,6 +122,14 @@ app.post('/api/convert', (req, res) => {
         frameworkOutputs: result.frameworkOutputs,
         mitosisSource: result.mitosisSource,
         assetCount: result.assets?.length ?? 0,
+        fidelity: result.fidelityReport
+          ? {
+              overallPassed: result.fidelityReport.overallPassed,
+              checks: Object.fromEntries(
+                Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
+              ),
+            }
+          : undefined,
       });
 
       res.end();
@@ -147,7 +157,7 @@ app.post('/api/convert', (req, res) => {
 /**
  * GET /api/download/:sessionId — Zip download
  */
-app.get('/api/download/:sessionId', (req, res) => {
+app.get('/api/download/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = sessions.get(sessionId);
 
@@ -205,7 +215,7 @@ const FILE_EXTENSIONS: Record<string, string> = {
 /**
  * POST /api/save-file — Save edited file content
  */
-app.post('/api/save-file', async (req, res) => {
+app.post('/api/save-file', async (req: any, res: any) => {
   const { sessionId, fileKey, content } = req.body;
 
   if (!sessionId || !fileKey || typeof content !== 'string') {
@@ -235,7 +245,7 @@ app.post('/api/save-file', async (req, res) => {
       return;
     }
 
-    const componentOutputDir = join('./web_output', `${result.componentName}-${sessionId}`);
+    const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
     const filename = `${result.componentName}${ext}`;
     const filePath = join(componentOutputDir, filename);
     await writeFile(filePath, content, 'utf-8');
@@ -250,7 +260,7 @@ app.post('/api/save-file', async (req, res) => {
 /**
  * GET /api/config — Returns Supabase config for GitHub push (if configured)
  */
-app.get('/api/config', (_req, res) => {
+app.get('/api/config', (_req: any, res: any) => {
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
   const supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
   res.json({
@@ -263,7 +273,7 @@ app.get('/api/config', (_req, res) => {
 /**
  * GET /api/session/:sessionId/push-files — Returns file list for GitHub push
  */
-app.get('/api/session/:sessionId/push-files', (req, res) => {
+app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = sessions.get(sessionId);
 
@@ -309,7 +319,7 @@ app.get('/api/session/:sessionId/push-files', (req, res) => {
 /**
  * GET /auth/github/callback — OAuth callback page (posts code to opener, then closes)
  */
-app.get('/auth/github/callback', (_req, res) => {
+app.get('/auth/github/callback', (_req: any, res: any) => {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>GitHub Auth</title></head>
@@ -344,7 +354,7 @@ app.get('/auth/github/callback', (_req, res) => {
 /**
  * GET /api/preview/:sessionId — Standalone preview HTML
  */
-app.get('/api/preview/:sessionId', (req, res) => {
+app.get('/api/preview/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = sessions.get(sessionId);
 
@@ -364,6 +374,7 @@ app.get('/api/preview/:sessionId', (req, res) => {
     result.componentName,
     sessionId,
     result.componentPropertyDefinitions,
+    result.variantMetadata,
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);
@@ -372,7 +383,7 @@ app.get('/api/preview/:sessionId', (req, res) => {
 /**
  * GET /api/preview/:sessionId/assets/:filename — Serve SVG assets for preview
  */
-app.get('/api/preview/:sessionId/assets/:filename', (req, res) => {
+app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
   const { sessionId, filename } = req.params;
   const result = sessions.get(sessionId);
 

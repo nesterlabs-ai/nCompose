@@ -2,7 +2,14 @@ import { dump } from 'js-yaml';
 import { parseFigmaUrl } from './utils/figma-url-parser.js';
 import { FigmaClient } from './figma/fetch.js';
 import { extractCompleteDesign, allExtractors } from './figma-complete/index.js';
-import { parseComponentSet, buildVariantCSS } from './figma/component-set-parser.js';
+import {
+  parseComponentSet,
+  buildVariantCSS,
+  detectComponentCategory,
+  CATEGORY_HTML_TAGS,
+  CATEGORY_ARIA_ROLES,
+} from './figma/component-set-parser.js';
+import type { ComponentCategory } from './figma/component-set-parser.js';
 import {
   buildVariantPromptData,
   buildComponentSetUserPrompt,
@@ -16,12 +23,23 @@ import {
   buildAssetMap,
   buildDimensionMap,
 } from './figma/asset-export.js';
+import { extractPageLayoutCSS } from './figma/page-layout.js';
 import { injectCSS } from './compile/inject-css.js';
+import { stitchPageComponent } from './compile/stitch.js';
+import type { SectionOutput } from './compile/stitch.js';
 import { createLLMProvider } from './llm/index.js';
-import { assembleSystemPrompt, assembleUserPrompt } from './prompt/index.js';
+import {
+  assembleSystemPrompt,
+  assembleUserPrompt,
+  assemblePageSectionSystemPrompt,
+  assemblePageSectionUserPrompt,
+} from './prompt/index.js';
 import { generateWithRetry } from './compile/retry.js';
+import { parseMitosisCode } from './compile/parse-and-validate.js';
+import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
-import type { ConvertOptions, ConversionResult, Framework } from './types/index.js';
+import { config } from './config.js';
+import type { ConvertOptions, ConversionResult, Framework, AssetEntry } from './types/index.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
@@ -39,27 +57,301 @@ function isComponentSet(enhanced: any): boolean {
 }
 
 /**
- * Extracts a trimmed YAML representation of the default variant's Figma node.
- * Only includes structural info relevant for the LLM prompt.
+ * Detects if the Figma node is a multi-section page (PATH C).
+ *
+ * A page is identified when the root is a FRAME with 3+ sizeable child frames
+ * (each >50% parent width and >60px tall by default).
+ */
+export function isMultiSectionPage(enhanced: any): boolean {
+  const root = enhanced?.nodes?.[0];
+  if (!root || root.type !== 'FRAME') return false;
+  const children: any[] = root.children || [];
+  if (children.length < config.page.minSections) return false;
+
+  const parentWidth = root.absoluteBoundingBox?.width
+    ?? root.dimensions?.width
+    ?? root.size?.x
+    ?? 0;
+  if (parentWidth === 0) return false;
+
+  let sizeableCount = 0;
+  for (const child of children) {
+    if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
+    const w = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? 0;
+    const h = child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y ?? 0;
+    if (w >= parentWidth * config.page.minChildWidthRatio && h >= config.page.minChildHeight) {
+      sizeableCount++;
+    }
+  }
+  return sizeableCount >= config.page.minSections;
+}
+
+/**
+ * Extracts a CSS-friendly YAML representation of the default variant's Figma node.
+ * Includes all visual/layout properties so the LLM can generate accurate code.
  */
 function extractDefaultVariantYaml(node: any): string {
   if (!node) return '';
-  const trimmed = trimNodeForPrompt(node);
-  return dump(trimmed, { lineWidth: 120, noRefs: true });
+  const serialized = serializeNodeForPrompt(node);
+  return dump(serialized, { lineWidth: 120, noRefs: true });
 }
 
-function trimNodeForPrompt(node: any): any {
-  // Skip internal metadata nodes (Figma convention: _prefix)
+/**
+ * Converts a Figma RGBA color {r,g,b,a} (0-1 range) to a CSS color string.
+ */
+function figmaColorToCSS(c: any, paintOpacity?: number): string {
+  const r = Math.round(c.r * 255);
+  const g = Math.round(c.g * 255);
+  const b = Math.round(c.b * 255);
+  const a = paintOpacity ?? c.a ?? 1;
+  if (a >= 1) return `rgb(${r}, ${g}, ${b})`;
+  return `rgba(${r}, ${g}, ${b}, ${parseFloat(a.toFixed(2))})`;
+}
+
+/**
+ * Comprehensive node serializer for LLM prompts.
+ *
+ * Converts raw Figma/CompleteNode properties into CSS-friendly YAML that the
+ * LLM can directly use to generate accurate code. Includes:
+ * - Auto-layout (flex direction, gap, padding, alignment, wrap)
+ * - Dimensions and sizing mode (fill / hug / fixed)
+ * - Fills → CSS colors/gradients
+ * - Strokes → CSS border
+ * - Effects → box-shadow, filter, backdrop-filter
+ * - Border radius, opacity, overflow, absolute positioning, rotation
+ * - Text content and styling
+ */
+function serializeNodeForPrompt(node: any): any {
+  if (!node) return null;
   if (node.name?.startsWith('_')) return null;
 
   const result: any = { name: node.name, type: node.type };
-  if (node.text) result.text = node.text;
-  if (node.textStyle) result.textStyle = node.textStyle;
-  if (node.fills) result.fills = node.fills;
-  if (node.borderRadius) result.borderRadius = node.borderRadius;
-  if (node.children) {
-    result.children = node.children.map(trimNodeForPrompt).filter(Boolean);
+
+  // ── Text content ────────────────────────────────────────────────────
+  if (node.characters) result.text = node.characters;
+  else if (node.text) result.text = node.text;
+
+  // ── Auto-layout → CSS flex ─────────────────────────────────────────
+  if (node.layoutMode === 'HORIZONTAL' || node.layoutMode === 'VERTICAL') {
+    const layout: any = {
+      direction: node.layoutMode === 'HORIZONTAL' ? 'row' : 'column',
+    };
+
+    // Alignment
+    const justifyMap: Record<string, string> = {
+      MIN: 'flex-start', CENTER: 'center', MAX: 'flex-end', SPACE_BETWEEN: 'space-between',
+    };
+    const alignMap: Record<string, string> = {
+      MIN: 'flex-start', CENTER: 'center', MAX: 'flex-end',
+    };
+    if (node.primaryAxisAlignItems) {
+      layout.justifyContent = justifyMap[node.primaryAxisAlignItems] || node.primaryAxisAlignItems;
+    }
+    if (node.counterAxisAlignItems) {
+      layout.alignItems = alignMap[node.counterAxisAlignItems] || 'stretch';
+    }
+
+    // Gap
+    if (node.itemSpacing) layout.gap = `${node.itemSpacing}px`;
+    if (node.counterAxisSpacing) layout.rowGap = `${node.counterAxisSpacing}px`;
+
+    // Padding (from extracted object or raw individual props)
+    const pt = node.padding?.top ?? node.paddingTop ?? 0;
+    const pr = node.padding?.right ?? node.paddingRight ?? 0;
+    const pb = node.padding?.bottom ?? node.paddingBottom ?? 0;
+    const pl = node.padding?.left ?? node.paddingLeft ?? 0;
+    if (pt || pr || pb || pl) {
+      if (pt === pr && pr === pb && pb === pl) {
+        layout.padding = `${pt}px`;
+      } else {
+        layout.padding = `${pt}px ${pr}px ${pb}px ${pl}px`;
+      }
+    }
+
+    // Wrap
+    if (node.layoutWrap === 'WRAP') layout.wrap = true;
+
+    result.layout = layout;
   }
+
+  // ── Sizing ─────────────────────────────────────────────────────────
+  if (node.layoutSizing) {
+    if (node.layoutSizing.horizontal === 'FILL') result.widthMode = 'fill';
+    else if (node.layoutSizing.horizontal === 'HUG') result.widthMode = 'hug';
+    if (node.layoutSizing.vertical === 'FILL') result.heightMode = 'fill';
+    else if (node.layoutSizing.vertical === 'HUG') result.heightMode = 'hug';
+  }
+  if (node.layoutGrow) result.flexGrow = node.layoutGrow;
+
+  // Dimensions
+  const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+  const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+  if (w) result.width = `${Math.round(w)}px`;
+  if (h) result.height = `${Math.round(h)}px`;
+
+  // ── Fills → CSS colors / gradients ─────────────────────────────────
+  if (node.fills && Array.isArray(node.fills)) {
+    const visible = node.fills.filter((f: any) => f.visible !== false);
+    if (visible.length > 0) {
+      result.fills = visible.map((f: any) => {
+        if (f.type === 'SOLID' && f.color) {
+          return figmaColorToCSS(f.color, f.opacity);
+        }
+        if (f.type?.startsWith('GRADIENT') && f.gradientStops) {
+          const stops = f.gradientStops
+            .map((s: any) => `${figmaColorToCSS(s.color)} ${Math.round(s.position * 100)}%`)
+            .join(', ');
+          if (f.type === 'GRADIENT_LINEAR') {
+            let angle = 180;
+            if (f.gradientHandlePositions?.length >= 2) {
+              const [h0, h1] = f.gradientHandlePositions;
+              angle = Math.round(Math.atan2(h1.x - h0.x, -(h1.y - h0.y)) * (180 / Math.PI));
+            }
+            return `linear-gradient(${angle}deg, ${stops})`;
+          }
+          if (f.type === 'GRADIENT_RADIAL') {
+            if (f.gradientHandlePositions?.length >= 1) {
+              const cx = Math.round(f.gradientHandlePositions[0].x * 100);
+              const cy = Math.round(f.gradientHandlePositions[0].y * 100);
+              return `radial-gradient(circle at ${cx}% ${cy}%, ${stops})`;
+            }
+            return `radial-gradient(${stops})`;
+          }
+          if (f.type === 'GRADIENT_ANGULAR') return `conic-gradient(from 0deg, ${stops})`;
+        }
+        return f.type; // IMAGE, EMOJI, etc.
+      });
+    }
+  }
+
+  // ── Strokes → CSS border ───────────────────────────────────────────
+  if (node.strokes && Array.isArray(node.strokes) && node.strokes.length > 0) {
+    const s = node.strokes.find((st: any) => st.visible !== false);
+    if (s?.color) {
+      const border: any = {
+        color: figmaColorToCSS(s.color, s.opacity),
+        width: `${node.strokeWeight ?? 1}px`,
+      };
+      if (node.strokeAlign) border.position = node.strokeAlign.toLowerCase();
+      if (node.strokeDashes?.length > 0) border.style = 'dashed';
+      if (node.individualStrokeWeights) {
+        const isw = node.individualStrokeWeights;
+        border.widths = `${isw.top}px ${isw.right}px ${isw.bottom}px ${isw.left}px`;
+      }
+      result.border = border;
+    }
+  }
+
+  // ── Effects → box-shadow / filter / backdrop-filter ────────────────
+  if (node.effects && Array.isArray(node.effects)) {
+    const visible = node.effects.filter((e: any) => e.visible !== false);
+    for (const effect of visible) {
+      if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
+        if (!result.shadows) result.shadows = [];
+        const c = effect.color;
+        const color = c
+          ? `rgba(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)}, ${parseFloat((c.a ?? 1).toFixed(2))})`
+          : 'rgba(0,0,0,0.25)';
+        const inset = effect.type === 'INNER_SHADOW' ? 'inset ' : '';
+        result.shadows.push(
+          `${inset}${effect.offset?.x ?? 0}px ${effect.offset?.y ?? 0}px ${effect.radius ?? 0}px ${effect.spread ?? 0}px ${color}`,
+        );
+      } else if (effect.type === 'LAYER_BLUR') {
+        result.filter = `blur(${effect.radius}px)`;
+      } else if (effect.type === 'BACKGROUND_BLUR') {
+        result.backdropFilter = `blur(${effect.radius}px)`;
+      }
+    }
+  }
+
+  // ── Text styling → CSS font properties ─────────────────────────────
+  if (node.style && node.type === 'TEXT') {
+    const ts: any = {};
+    if (node.style.fontFamily) ts.fontFamily = `"${node.style.fontFamily}", sans-serif`;
+    if (node.style.fontSize) ts.fontSize = `${node.style.fontSize}px`;
+    if (node.style.fontWeight) ts.fontWeight = node.style.fontWeight;
+    if (node.style.lineHeightPx) ts.lineHeight = `${Math.round(node.style.lineHeightPx * 100) / 100}px`;
+    if (node.style.letterSpacing) ts.letterSpacing = `${Math.round(node.style.letterSpacing * 100) / 100}px`;
+    if (node.style.italic) ts.fontStyle = 'italic';
+    if (node.style.textCase && node.style.textCase !== 'ORIGINAL') {
+      const caseMap: Record<string, string> = { UPPER: 'uppercase', LOWER: 'lowercase', TITLE: 'capitalize' };
+      ts.textTransform = caseMap[node.style.textCase];
+    }
+    if (node.style.textDecoration && node.style.textDecoration !== 'NONE') {
+      ts.textDecoration = node.style.textDecoration.toLowerCase();
+    }
+    // Text color is stored in node.fills (Paint[]), NOT node.style.fills.
+    // Figma's .style object contains typography only; the fill color is always
+    // on the top-level node.fills array.
+    const textFill = Array.isArray(node.fills)
+      ? node.fills.find((f: any) => f.visible !== false && f.type === 'SOLID' && f.color)
+      : null;
+    if (textFill?.color) {
+      ts.color = figmaColorToCSS(textFill.color, textFill.opacity);
+    } else if (node.style.fills?.[0]?.color) {
+      // Fallback: Framelink-simplified nodes may embed fills inside .style
+      ts.color = figmaColorToCSS(node.style.fills[0].color, node.style.fills[0].opacity);
+    }
+    if (Object.keys(ts).length > 0) result.textStyle = ts;
+  } else if (node.textStyle && typeof node.textStyle === 'string') {
+    // Keep ref-style textStyle from Framelink simplified output
+    result.textStyle = node.textStyle;
+  }
+
+  // ── Border radius ──────────────────────────────────────────────────
+  if (node.rectangleCornerRadii) {
+    const r = node.rectangleCornerRadii;
+    if (r[0] === r[1] && r[1] === r[2] && r[2] === r[3]) {
+      if (r[0] > 0) result.borderRadius = `${r[0]}px`;
+    } else {
+      result.borderRadius = `${r[0]}px ${r[1]}px ${r[2]}px ${r[3]}px`;
+    }
+  } else if (node.cornerRadius && node.cornerRadius > 0) {
+    result.borderRadius = `${node.cornerRadius}px`;
+  } else if (node.borderRadius) {
+    result.borderRadius = node.borderRadius;
+  }
+
+  // ── Opacity ────────────────────────────────────────────────────────
+  if (node.opacity !== undefined && node.opacity < 1) {
+    result.opacity = node.opacity;
+  }
+
+  // ── Overflow ───────────────────────────────────────────────────────
+  if (node.clipsContent === true) {
+    result.overflow = 'hidden';
+  }
+
+  // ── Absolute positioning ───────────────────────────────────────────
+  if (node.layoutPositioning === 'ABSOLUTE') {
+    result.position = 'absolute';
+    if (node.relativeTransform) {
+      result.left = `${Math.round(node.relativeTransform[0][2])}px`;
+      result.top = `${Math.round(node.relativeTransform[1][2])}px`;
+    }
+  }
+
+  // ── Rotation ───────────────────────────────────────────────────────
+  if (node.rotation && node.rotation !== 0) {
+    result.rotation = `${node.rotation}deg`;
+  }
+
+  // ── Visibility (for conditional rendering hints) ───────────────────
+  if (node.visible === false) {
+    result.visible = false;
+  }
+
+  // ── Blend mode ─────────────────────────────────────────────────────
+  if (node.blendMode && node.blendMode !== 'PASS_THROUGH' && node.blendMode !== 'NORMAL') {
+    result.blendMode = node.blendMode.toLowerCase().replace(/_/g, '-');
+  }
+
+  // ── Children (recursive) ───────────────────────────────────────────
+  if (node.children && Array.isArray(node.children)) {
+    const mapped = node.children.map(serializeNodeForPrompt).filter(Boolean);
+    if (mapped.length > 0) result.children = mapped;
+  }
+
   return result;
 }
 
@@ -103,7 +395,7 @@ export async function convertFigmaToCode(
   onStep?.('Extracting complete design data...');
   const enhanced = extractCompleteDesign(rawData, allExtractors, {
     maxDepth: options.depth,
-    preserveHiddenNodes: false,
+    preserveHiddenNodes: config.figma.preserveHiddenNodes,
     includeAbsoluteBounds: true,
     includeRelativeTransform: true,
   });
@@ -114,6 +406,11 @@ export async function convertFigmaToCode(
   // --- PATH A: Component Set (variant-aware) ---
   if (isComponentSet(enhanced)) {
     return convertComponentSet(enhanced, yamlContent, fileKey, client, options, callbacks);
+  }
+
+  // --- PATH C: Multi-section page ---
+  if (isMultiSectionPage(enhanced)) {
+    return convertPage(enhanced, fileKey, client, options, callbacks);
   }
 
   // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
@@ -201,7 +498,7 @@ async function convertComponentSet(
     // Log which icons appear in which variants (helpful for debugging)
     for (const asset of assets) {
       if (asset.variants && asset.variants.length > 0 && asset.variants.length < componentSetData.variants.length) {
-        onStep?.(`  - ${asset.filename} appears in ${asset.variants.length}/${componentSetData.variants.length} variants${asset.isColorVariant ? ' (recolorable via CSS)' : ''}`);
+        onStep?.(`  - ${asset.filename} appears in ${asset.variants.length}/${componentSetData.variants.length} variants`);
       }
     }
   }
@@ -219,7 +516,11 @@ async function convertComponentSet(
   // Step A4: LLM generates Mitosis component with class bindings
   const llm = createLLMProvider(options.llm);
   onStep?.(`Generating Mitosis component via ${llm.name} (class-based)...`);
-  const parseResult = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt, variantCSS);
+  const expectedTextLiterals = collectExpectedTextsFromComponentSet(componentSetData);
+  const parseResult = await generateWithRetry(
+    llm, systemPrompt, userPrompt, onAttempt, variantCSS,
+    promptData.elementType, promptData.componentCategory, expectedTextLiterals, true,
+  );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
 
@@ -266,10 +567,27 @@ async function convertComponentSet(
       }] : [])
     ],
     variants: componentSetData.variants.map((v) => ({
-      name: v.name,
+      name: componentSetData.axes
+        .map((axis) => v.props[axis.name])
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .join(', '),
       props: v.props,
     })),
   };
+
+  const fidelityReport = buildFidelityReport({
+    rawCode: parseResult.rawCode,
+    css: variantCSS,
+    componentCategory: promptData.componentCategory,
+    expectedTextLiterals,
+    includeLayoutCheck: true,
+  });
+  if (config.fidelity.requireReportPass && !fidelityReport.overallPassed) {
+    throw new Error(
+      `Fidelity report failed for component set generation.\n` +
+      `${formatFidelityFailures(fidelityReport)}`,
+    );
+  }
 
   return {
     componentName,
@@ -278,7 +596,187 @@ async function convertComponentSet(
     assets,
     componentPropertyDefinitions: componentSetData.componentPropertyDefinitions,
     variantMetadata,
+    fidelityReport,
   };
+}
+
+// ── PATH B: Semantic HTML detection ──────────────────────────────────────
+
+/**
+ * Collects child node names from the enhanced design tree, limited to maxDepth
+ * levels. Prevents deep-walking a large page tree and misclassifying it based
+ * on deeply-nested component names (e.g. finding "Button" instances inside cards
+ * and labelling the whole page as a button component).
+ */
+function collectChildNames(rootNode: any, maxDepth = 2): string[] {
+  if (!rootNode?.children || !Array.isArray(rootNode.children)) return [];
+  const names: string[] = [];
+  const walk = (node: any, depth: number) => {
+    if (node.name) names.push(node.name);
+    if (depth < maxDepth && node.children && Array.isArray(node.children)) {
+      for (const child of node.children) walk(child, depth + 1);
+    }
+  };
+  for (const child of rootNode.children) walk(child, 1);
+  return names;
+}
+
+/**
+ * Counts total descendants in a node tree.
+ */
+function countDescendants(node: any): number {
+  if (!node?.children || !Array.isArray(node.children)) return 0;
+  let count = node.children.length;
+  for (const child of node.children) count += countDescendants(child);
+  return count;
+}
+
+/**
+ * Collect expected text literals from PATH A component set data.
+ * Used by retry quality-gates to reject generic placeholder copy.
+ */
+function collectExpectedTextsFromComponentSet(componentSetData: any): string[] {
+  const seen = new Set<string>();
+
+  for (const prop of componentSetData?.textContentProperties ?? []) {
+    const value = typeof prop?.defaultValue === 'string' ? prop.defaultValue.trim() : '';
+    if (value) seen.add(value);
+  }
+
+  for (const layer of componentSetData?.childLayers ?? []) {
+    if (!layer?.isText) continue;
+    const value = typeof layer?.characters === 'string' ? layer.characters.trim() : '';
+    if (value) seen.add(value);
+  }
+
+  return [...seen];
+}
+
+/**
+ * Collect expected text literals from a generic design tree (PATH B/C).
+ */
+function collectExpectedTextsFromNode(rootNode: any): string[] {
+  const seen = new Set<string>();
+
+  const walk = (node: any) => {
+    if (!node) return;
+    const textValue =
+      typeof node.characters === 'string' ? node.characters.trim()
+      : typeof node.text === 'string' ? node.text.trim()
+      : '';
+    if (textValue) seen.add(textValue);
+
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) walk(child);
+    }
+  };
+
+  walk(rootNode);
+  return [...seen];
+}
+
+function formatFidelityFailures(report: any): string {
+  const failed: string[] = [];
+  for (const [name, check] of Object.entries(report?.checks ?? {})) {
+    if (check && typeof check === 'object' && (check as any).passed === false) {
+      const summary = typeof (check as any).summary === 'string' ? (check as any).summary : '';
+      failed.push(`[${name}] ${summary || 'failed'}`);
+    }
+  }
+  return failed.join('\n\n');
+}
+
+/**
+ * Detects component category from the root node name and child names,
+ * then builds a semantic HTML hint string for the LLM user prompt.
+ * Returns null if category is 'unknown'.
+ *
+ * Skips child-name-based heuristics for large trees (>20 descendants)
+ * to avoid misclassifying page-level layout frames as specific component
+ * types (e.g. labelling a card grid page as "button" because it contains
+ * button instances deep inside).
+ */
+function buildSemanticHint(rootNode: any): string | null {
+  const name = rootNode?.name ?? '';
+
+  // Try name-based detection first
+  let category: ComponentCategory = detectComponentCategory(name);
+
+  // Only scan child names for small trees — large trees are likely page layouts,
+  // not individual components, so child-name heuristics would misfire.
+  if (category === 'unknown') {
+    const descendantCount = countDescendants(rootNode);
+    if (descendantCount <= 20) {
+      const childNames = collectChildNames(rootNode);
+      if (childNames.length > 0) {
+        const lower = childNames.map((n) => n.toLowerCase());
+        const childHints: Array<[RegExp, ComponentCategory]> = [
+          [/checkbox|check[-\s]?box|check[-\s]?mark/, 'checkbox'],
+          [/radio|radio[-\s]?button/, 'radio'],
+          [/toggle|switch|thumb|track/, 'toggle'],
+          [/\binput\b|text[-\s]?field/, 'input'],
+          [/\bslider\b|range/, 'slider'],
+          [/\bnav\b|navigation/, 'navigation'],
+          [/\bbutton\b|\bbtn\b/, 'button'],
+        ];
+        for (const [pattern, cat] of childHints) {
+          if (lower.some((c) => pattern.test(c))) {
+            category = cat;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (category === 'unknown') return null;
+
+  const htmlTag = CATEGORY_HTML_TAGS[category] ?? 'div';
+  const ariaRole = CATEGORY_ARIA_ROLES[category] ?? '';
+
+  let hint = `## Semantic HTML Hint\n`;
+  hint += `Detected component category: **${category}**\n`;
+  hint += `Root element: \`<${htmlTag}>\``;
+  if (ariaRole) hint += ` with \`role="${ariaRole}"\``;
+  hint += `\n`;
+
+  // Add category-specific guidance
+  const guidance: Partial<Record<ComponentCategory, string>> = {
+    'button': 'Use `<button type="button">` as root. Include `<span>` for label text. Add `disabled` attribute support.',
+    'icon-button': 'Use `<button type="button">` as root with `aria-label`. Place icon inside `<span>`.',
+    'input': 'Wrapper `<div>` is OK, but MUST contain a real `<input>` element — never a contenteditable div.',
+    'textarea': 'Wrapper `<div>` is OK, but MUST contain a real `<textarea>` element.',
+    'select': 'Wrapper `<div>` is OK, but MUST contain a real `<select>` element.',
+    'checkbox': 'Root MUST be `<label>`. MUST contain `<input type="checkbox">` + visual `<span>` for the box.',
+    'radio': 'Root MUST be `<label>`. MUST contain `<input type="radio">` + visual `<span>` for the circle.',
+    'toggle': 'Use `<button role="switch">` as root. Include track `<span>` and thumb `<span>`.',
+    'switch': 'Use `<button role="switch">` as root. Include track `<span>` and thumb `<span>`.',
+    'link': 'Use `<a href="...">` as root — never a `<div>` or `<button>`.',
+    'navigation': 'Use `<nav>` as root. Wrap links in `<ul>` > `<li>` > `<a>` structure.',
+    'card': 'Use `<article>` as root. Use semantic children: `<h2>`/`<h3>` for title, `<p>` for description.',
+    'dialog': 'Use `<dialog>` as root.',
+    'tab': 'Use `<button role="tab">` with `aria-selected` attribute.',
+    'menu': 'Use `<ul role="menu">` as root with `<li role="menuitem">` children.',
+    'menu-item': 'Use `<li role="menuitem">` as root.',
+    'header': 'Use `<header>` as root.',
+    'footer': 'Use `<footer>` as root.',
+    'sidebar': 'Use `<aside>` as root.',
+    'badge': 'Use `<span>` as root — keep it simple.',
+    'chip': 'Use `<div role="option">` as root with label `<span>` and optional remove `<button>`.',
+    'slider': 'Wrapper `<div>` MUST contain `<input type="range">` — never a custom slider div.',
+    'accordion': 'Use `<details>` / `<summary>` or `<div>` with `aria-expanded` toggle.',
+    'breadcrumb': 'Use `<nav aria-label="breadcrumb">` with `<ol>` > `<li>` > `<a>` structure.',
+    'divider': 'Use `<hr>` — no extra divs.',
+    'list': 'Use `<ul>` or `<ol>` as root with `<li>` children.',
+    'list-item': 'Use `<li>` as root.',
+    'table': 'Use `<table>` with `<thead>`, `<tbody>`, `<tr>`, `<th>`, `<td>`.',
+  };
+
+  if (guidance[category]) {
+    hint += `\n**Required structure:** ${guidance[category]}`;
+  }
+
+  return hint;
 }
 
 /**
@@ -304,15 +802,48 @@ async function convertSingleComponent(
     onStep?.(`Exported ${assets.length} SVG asset(s): ${assets.map((a) => a.filename).join(', ')}`);
   }
 
+  // Detect semantic category for better HTML output
+  const rootNode = enhanced?.nodes?.[0];
+  const semanticHint = rootNode ? buildSemanticHint(rootNode) : null;
+  const hintedCategory = semanticHint
+    ? (semanticHint.match(/category: \*\*(.+?)\*\*/)?.[1] as ComponentCategory | undefined)
+    : undefined;
+  if (semanticHint) {
+    const category = hintedCategory ?? 'unknown';
+    onStep?.(`Detected component category: ${category}`);
+  }
+
   // Assemble prompts
   onStep?.('Assembling prompts...');
   const systemPrompt = assembleSystemPrompt();
-  const userPrompt = assembleUserPrompt(yamlContent, options.name);
+  // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
+  // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
+  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode) : null;
+  const llmYaml = cssReadyNode
+    ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
+    : yamlContent;
+  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined);
 
   // Generate Mitosis code via LLM with retry
   const llm = createLLMProvider(options.llm);
   onStep?.(`Generating Mitosis code via ${llm.name}...`);
-  const parseResult = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt);
+
+  // Extract category + expected tag for semantic validation.
+  // Only apply semantic enforcement for actual components (small trees).
+  // Large layout frames (>20 descendants) should not get root-tag auto-fix
+  // or semantic validation — they're page layouts, not individual components.
+  const descendantCount = rootNode ? countDescendants(rootNode) : 0;
+  const pathBCategory = descendantCount <= 20
+    ? (hintedCategory ?? detectComponentCategory(rootNode?.name ?? ''))
+    : 'unknown' as ComponentCategory;
+  const pathBExpectedTag = pathBCategory !== 'unknown'
+    ? CATEGORY_HTML_TAGS[pathBCategory] : undefined;
+  const expectedTextLiterals = rootNode ? collectExpectedTextsFromNode(rootNode) : [];
+
+  const parseResult = await generateWithRetry(
+    llm, systemPrompt, userPrompt, onAttempt, undefined,
+    pathBExpectedTag, pathBCategory !== 'unknown' ? pathBCategory : undefined, expectedTextLiterals,
+  );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
 
@@ -339,10 +870,241 @@ async function convertSingleComponent(
     }
   }
 
+  const fidelityReport = buildFidelityReport({
+    rawCode: parseResult.rawCode,
+    css: parseResult.css,
+    componentCategory: pathBCategory !== 'unknown' ? pathBCategory : undefined,
+    expectedTextLiterals,
+    includeLayoutCheck: false,
+  });
+  if (config.fidelity.requireReportPass && !fidelityReport.overallPassed) {
+    throw new Error(
+      `Fidelity report failed for single component generation.\n` +
+      `${formatFidelityFailures(fidelityReport)}`,
+    );
+  }
+
   return {
     componentName,
     mitosisSource: parseResult.rawCode,
     frameworkOutputs: frameworkOutputs as Record<Framework, string>,
     assets,
+    fidelityReport,
+  };
+}
+
+// ── PATH C: Multi-section page ──────────────────────────────────────────
+
+/**
+ * Build a mini CompleteFigmaDesign wrapping a single child section.
+ * Preserves parent-level metadata (globalVars, components, styles) while
+ * substituting the nodes array with just the one child.
+ */
+function buildSectionDesign(parentDesign: any, child: any): any {
+  return {
+    ...parentDesign,
+    nodes: [child],
+  };
+}
+
+/**
+ * Convert a Figma node name to PascalCase for use as a component name.
+ */
+function toPascalCase(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9\s-_]/g, '')
+    .split(/[\s\-_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join('');
+}
+
+/**
+ * PATH C: Multi-section page → per-section LLM calls → stitch → compile.
+ *
+ * 1. Extract deterministic page layout CSS from Figma auto-layout data
+ * 2. For each child section: build section-specific prompt → LLM → collect raw output
+ * 3. Stitch all section JSX + CSS into one Mitosis page component
+ * 4. Parse + compile the stitched component through Mitosis
+ * 5. Inject merged CSS into each framework output
+ */
+async function convertPage(
+  enhanced: any,
+  fileKey: string,
+  client: FigmaClient,
+  options: ConvertOptions,
+  callbacks?: ConvertCallbacks,
+): Promise<ConversionResult> {
+  const { onStep, onAttempt } = callbacks ?? {};
+  const rootNode = enhanced.nodes[0];
+  const children: any[] = rootNode.children || [];
+
+  // Step C1: Extract page layout CSS
+  onStep?.('Detected multi-section page — extracting layout...');
+  const layoutResult = extractPageLayoutCSS(rootNode, children);
+  const { sections, pageBaseClass } = layoutResult;
+  const pageName = toPascalCase(rootNode.name || 'Page');
+
+  onStep?.(`Page "${pageName}" with ${sections.length} sections: ${sections.map((s) => s.name).join(', ')}`);
+
+  // Step C2: Generate each section via LLM
+  const llm = createLLMProvider(options.llm);
+  const sectionSystemPrompt = assemblePageSectionSystemPrompt();
+  const sectionOutputs: SectionOutput[] = [];
+  const allAssets: AssetEntry[] = [];
+
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const sectionInfo = sections[i];
+    if (!sectionInfo) continue;
+
+    onStep?.(`[${i + 1}/${children.length}] Generating section "${sectionInfo.name}"...`);
+
+    try {
+      // Check if section is a COMPONENT_SET (use PATH A prompt chain)
+      if (child.type === 'COMPONENT_SET') {
+        const sectionDesign = buildSectionDesign(enhanced, child);
+        const componentSetData = parseComponentSet(sectionDesign);
+        if (!componentSetData) throw new Error('Failed to parse COMPONENT_SET');
+
+        const variantNodes = child.children || [];
+        const variantContexts = collectAssetNodesFromAllVariants(
+          variantNodes.map((vn: any) => ({ node: vn, variantName: vn.name || 'unknown' }))
+        );
+        const totalNodes = variantContexts.reduce((sum: number, ctx: any) => sum + ctx.allNodes.length, 0);
+        const assets = totalNodes > 0
+          ? await exportAssetsFromAllVariants(variantContexts, fileKey, client).catch(() => [])
+          : [];
+        const assetMap = buildAssetMap(assets);
+        const dimensionMap = buildDimensionMap(assets);
+        const variantCSS = buildVariantCSS(componentSetData, dimensionMap);
+        const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
+        const defaultVariantYaml = extractDefaultVariantYaml(componentSetData.defaultVariantNode);
+        const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS);
+        const systemPrompt = buildComponentSetSystemPrompt();
+
+        const parseResult = await generateWithRetry(
+          llm, systemPrompt, userPrompt, onAttempt, variantCSS,
+          promptData.elementType, promptData.componentCategory,
+          collectExpectedTextsFromComponentSet(componentSetData),
+          true,
+        );
+        allAssets.push(...assets);
+        sectionOutputs.push({
+          info: sectionInfo,
+          rawCode: parseResult.rawCode,
+          css: variantCSS,
+          failed: !parseResult.success,
+        });
+      } else {
+        // Regular section: use compact serializer for manageable YAML size.
+        // Raw dump of a section with 3 cards can be 300K+ chars (~90K tokens)
+        // which overwhelms the LLM. serializeNodeForPrompt keeps only
+        // CSS-relevant properties, reducing it to ~10K tokens.
+        const compactSection = serializeNodeForPrompt(child);
+        const sectionYaml = dump(compactSection, { lineWidth: 120, noRefs: true });
+
+        // Export any SVG assets from this section
+        const iconNodes = collectAssetNodes(child);
+        if (iconNodes.length > 0) {
+          const assets = await exportAssets(iconNodes, fileKey, client).catch(() => []);
+          allAssets.push(...assets);
+        }
+
+        const userPrompt = assemblePageSectionUserPrompt(
+          sectionYaml,
+          sectionInfo.name,
+          i + 1,
+          children.length,
+        );
+
+        const parseResult = await generateWithRetry(llm, sectionSystemPrompt, userPrompt, onAttempt);
+        sectionOutputs.push({
+          info: sectionInfo,
+          rawCode: parseResult.rawCode,
+          css: parseResult.css ?? '',
+          failed: !parseResult.success,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onStep?.(`  Section "${sectionInfo.name}" failed: ${msg}`);
+      sectionOutputs.push({
+        info: sectionInfo,
+        rawCode: '',
+        css: '',
+        failed: true,
+      });
+    }
+  }
+
+  const successCount = sectionOutputs.filter((s) => !s.failed).length;
+  onStep?.(`Generated ${successCount}/${sections.length} sections successfully.`);
+
+  // Step C3: Stitch into one page component
+  onStep?.('Stitching sections into page component...');
+  const { mitosisSource, mergedCSS } = stitchPageComponent(
+    pageName,
+    pageBaseClass,
+    layoutResult.css,
+    sectionOutputs,
+  );
+
+  // Step C4: Parse the stitched component through Mitosis
+  onStep?.('Parsing stitched page component...');
+  const pageParseResult = parseMitosisCode(mitosisSource);
+  if (!pageParseResult.success || !pageParseResult.component) {
+    throw new Error(
+      `Failed to parse stitched page component.\n` +
+      `Error: ${pageParseResult.error}\n` +
+      `Source:\n${mitosisSource.substring(0, 500)}...`,
+    );
+  }
+
+  // Step C5: Compile to target frameworks
+  const componentName = options.name ?? pageName;
+  onStep?.(`Compiling page to: ${options.frameworks.join(', ')}...`);
+  const rawFrameworkOutputs = generateFrameworkCode(pageParseResult.component, options.frameworks);
+
+  // Step C6: Inject merged CSS into each framework output
+  onStep?.('Injecting page CSS...');
+  const frameworkOutputs: Record<string, string> = {};
+  for (const fw of options.frameworks) {
+    const rawCode = rawFrameworkOutputs[fw as Framework];
+    if (rawCode && !rawCode.startsWith('// Error')) {
+      frameworkOutputs[fw] = injectCSS(rawCode, mergedCSS, fw as Framework);
+    } else {
+      frameworkOutputs[fw] = rawCode;
+    }
+  }
+
+  // Deduplicate assets by nodeId
+  const seenNodeIds = new Set<string>();
+  const dedupedAssets = allAssets.filter((a) => {
+    if (seenNodeIds.has(a.nodeId)) return false;
+    seenNodeIds.add(a.nodeId);
+    return true;
+  });
+
+  const fidelityReport = buildFidelityReport({
+    rawCode: mitosisSource,
+    css: mergedCSS,
+    expectedTextLiterals: collectExpectedTextsFromNode(rootNode),
+    includeLayoutCheck: false,
+  });
+  if (config.fidelity.requireReportPass && !fidelityReport.overallPassed) {
+    throw new Error(
+      `Fidelity report failed for page generation.\n` +
+      `${formatFidelityFailures(fidelityReport)}`,
+    );
+  }
+
+  return {
+    componentName,
+    mitosisSource,
+    frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+    assets: dedupedAssets,
+    css: mergedCSS,
+    fidelityReport,
   };
 }

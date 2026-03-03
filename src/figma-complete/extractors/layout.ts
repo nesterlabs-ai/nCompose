@@ -41,6 +41,11 @@ export const layoutExtractor: ExtractorFn = (node, result, context) => {
     result.layoutMode = node.layoutMode;
   }
 
+  // Layout wrap (wrapping auto layout)
+  if (node.layoutWrap) {
+    result.layoutWrap = node.layoutWrap;
+  }
+
   // Layout sizing
   if (node.primaryAxisSizingMode || node.counterAxisSizingMode) {
     result.layoutSizing = {
@@ -185,6 +190,16 @@ function buildSimplifiedLayout(node: any): any {
       layout.gap = `${node.itemSpacing}px`;
     }
 
+    // Wrapping
+    if (node.layoutWrap === 'WRAP') {
+      layout['flex-wrap'] = 'wrap';
+    }
+
+    // Counter-axis spacing (row-gap for wrapping layouts)
+    if (node.counterAxisSpacing) {
+      layout['row-gap'] = `${node.counterAxisSpacing}px`;
+    }
+
     // Padding
     if (
       node.paddingLeft ||
@@ -251,8 +266,8 @@ function buildSimplifiedLayout(node: any): any {
     const width = node.absoluteBoundingBox.width;
     const height = node.absoluteBoundingBox.height;
     if (width > 0 && height > 0) {
-      // Use decimal format for better precision
-      const ratio = (width / height).toFixed(3);
+      // parseFloat strips trailing zeros: "1.500" → 1.5
+      const ratio = parseFloat((width / height).toFixed(3));
       layout['aspect-ratio'] = ratio;
     }
   }

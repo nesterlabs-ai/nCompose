@@ -13,6 +13,7 @@
 
 import type { FigmaClient } from './fetch.js';
 import { toKebabCase } from './component-set-parser.js';
+import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,10 +34,10 @@ export interface AssetEntry {
   parentName?: string;
   /** Variants where this icon appears (e.g. ["subtle/default", "subtle/hover"]) */
   variants?: string[];
-  /** If true, this SVG can be recolored via CSS (identical shape to other variants) */
-  isColorVariant?: boolean;
   /** SVG path signature for deduplication (hash of path data) */
   pathSignature?: string;
+  /** Shape group ID — icons with same position+shape but different colors share this ID */
+  shapeGroupId?: string;
   /** Original Figma styling data */
   figmaStyles?: {
     fills?: any[];
@@ -125,7 +126,7 @@ function getNodeDimensions(node: any): { width: number; height: number } | undef
 }
 
 /** Max icon dimension for asset detection (px). */
-const MAX_ICON_SIZE = 80;
+const MAX_ICON_SIZE = config.figma.maxIconSize;
 
 /** Leaf vector node types (SVG shapes without children). */
 const LEAF_VECTOR_TYPES = new Set([
@@ -147,20 +148,22 @@ export function isAssetNode(node: any): boolean {
 
   const dims = getNodeDimensions(node);
 
+  // Aspect ratio check: allow rectangular icons up to 2:3 ratio (e.g. hamburger, bell)
+  const isIconAspectRatio = (d: { width: number; height: number }) =>
+    Math.max(d.width, d.height) / Math.min(d.width, d.height) <= 1.5;
+
   // Small FRAME with only vector/instance content → icon container
   if (node.type === 'FRAME' && node.id && dims) {
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
-    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
     const hasVecContent = node.children?.length > 0 && hasOnlyVectorContent(node);
-    if (isSmall && isSquareish && hasVecContent) return true;
+    if (isSmall && isIconAspectRatio(dims) && hasVecContent) return true;
   }
 
   // INSTANCE nodes — icon component references (e.g. "check-icon", "arrow-right")
-  // Only small, roughly-square instances qualify (avoids treating entire button instances as icons).
+  // Only small, reasonable-aspect-ratio instances qualify (avoids treating entire button instances as icons).
   if (node.type === 'INSTANCE' && node.id && dims) {
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
-    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
-    if (isSmall && isSquareish) return true;
+    if (isSmall && isIconAspectRatio(dims)) return true;
   }
 
   // Standalone VECTOR / BOOLEAN_OPERATION / LINE / ELLIPSE / STAR / REGULAR_POLYGON
@@ -173,9 +176,8 @@ export function isAssetNode(node: any): boolean {
   // GROUP containing only vector content
   if (node.type === 'GROUP' && node.id && dims) {
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
-    const isSquareish = Math.abs(dims.width - dims.height) <= 4;
     const hasVecContent = node.children?.length > 0 && hasOnlyVectorContent(node);
-    if (isSmall && isSquareish && hasVecContent) return true;
+    if (isSmall && isIconAspectRatio(dims) && hasVecContent) return true;
   }
 
   return false;
@@ -307,85 +309,20 @@ function extractSVGPathSignature(svgContent: string): string {
 }
 
 /**
- * Checks if SVG content contains only grayscale/neutral colors that can be replaced with currentColor.
- * Returns true if the SVG can be safely recolored via CSS.
+ * Extracts a deterministic color signature from SVG fill/stroke attributes.
+ * Used together with path signature to distinguish same-shape icons with different colors.
  */
-function canBeRecoloredWithCSS(svgContent: string): boolean {
-  // Extract all color values
-  const colorMatches = svgContent.matchAll(/(fill|stroke)="(?!none|currentColor)([^"]+)"/g);
+function extractSVGColorSignature(svgContent: string): string {
+  const colors: string[] = [];
 
+  const colorMatches = svgContent.matchAll(/(fill|stroke)="((?!none)[^"]+)"/g);
   for (const match of colorMatches) {
-    const color = match[2];
-
-    // Skip if already using currentColor
-    if (color === 'currentColor') continue;
-
-    // For now, assume any solid color can be replaced with currentColor
-    // This works for icons that use a single color or grayscale
-    // More complex logic could check if all colors are the same
-    return true;
+    colors.push(`${match[1]}:${match[2].toLowerCase().replace(/\s+/g, '')}`);
   }
 
-  return false;
-}
-
-/**
- * Deduplicates SVG assets by comparing path signatures.
- * Groups identical shapes together and marks them as color variants.
- */
-function deduplicateSVGAssets(assets: AssetEntry[]): AssetEntry[] {
-  const signatureMap = new Map<string, AssetEntry[]>();
-
-  // Group assets by path signature
-  for (const asset of assets) {
-    if (!asset.content) continue;
-
-    const signature = extractSVGPathSignature(asset.content);
-    asset.pathSignature = signature;
-
-    if (!signatureMap.has(signature)) {
-      signatureMap.set(signature, []);
-    }
-    signatureMap.get(signature)!.push(asset);
-  }
-
-  const deduplicated: AssetEntry[] = [];
-
-  // For each unique shape
-  for (const [signature, group] of signatureMap.entries()) {
-    if (group.length === 1) {
-      // Unique shape - keep as is
-      deduplicated.push(group[0]);
-    } else {
-      // Multiple assets with same shape - deduplicate
-      // Use the first one as the canonical version
-      const canonical = group[0];
-
-      // Check if this shape can be recolored with CSS
-      const canRecolor = canonical.content ? canBeRecoloredWithCSS(canonical.content) : false;
-
-      if (canRecolor) {
-        // Mark as color variant (preserve original colors for <img> tag compatibility)
-        canonical.isColorVariant = true;
-
-        // Merge variant lists from all duplicates
-        const allVariants = new Set<string>();
-        for (const asset of group) {
-          if (asset.variants) {
-            asset.variants.forEach(v => allVariants.add(v));
-          }
-        }
-        canonical.variants = Array.from(allVariants);
-
-        deduplicated.push(canonical);
-      } else {
-        // Cannot recolor safely - keep all variants as separate files
-        deduplicated.push(...group);
-      }
-    }
-  }
-
-  return deduplicated;
+  // Sort for determinism (fill/stroke order may vary)
+  colors.sort();
+  return colors.join('|');
 }
 
 // ---------------------------------------------------------------------------
@@ -612,9 +549,11 @@ export async function exportAssetsFromAllVariants(
           // Preserve original SVG colors — currentColor doesn't work with <img> tags
           // (SVGs in <img> are sandboxed and can't inherit CSS `color` from parent)
 
-          // TODO: Fix viewBox sizing (see OPEN_ISSUES.md)
-          // For now, use SVGs as-is from Figma
-          content = adjustViewBoxToPathBounds(content);
+          // Keep raw Figma SVG viewBox by default for exact fidelity.
+          // Optional normalization can be enabled via config.
+          if (config.figma.adjustSvgViewBox) {
+            content = adjustViewBoxToPathBounds(content);
+          }
 
           entry.content = content;
           downloadedUrls.set(entry.url, content);
@@ -640,10 +579,16 @@ export async function exportAssetsFromAllVariants(
   for (const entry of entries) {
     if (!entry.content) continue; // Skip if download failed
 
-    // Group by: position (Left Icon, Right Icon) + SVG path signature
+    // Group by: position + SVG path shape + SVG colors
+    // Including color ensures different-colored icons with the same shape
+    // are kept as separate files (CSS color can't inherit into <img> tags)
     const position = entry.parentName || 'icon';
     const contentSignature = extractSVGPathSignature(entry.content);
-    const groupKey = `${position}::${contentSignature}`;
+    const colorSignature = extractSVGColorSignature(entry.content);
+    const groupKey = `${position}::${contentSignature}::${colorSignature}`;
+
+    // Track shape group (position + shape WITHOUT color) for color-variant grouping
+    entry.shapeGroupId = `${position}::${contentSignature}`;
 
     if (!groups.has(groupKey)) {
       groups.set(groupKey, []);
@@ -651,11 +596,22 @@ export async function exportAssetsFromAllVariants(
     groups.get(groupKey)!.push(entry);
   }
 
-  // Create one file per unique (position, content) group
+  // Create one file per unique (position, content) group.
+  // Sort groups so the DEFAULT variant's icon gets the clean filename (no -2 suffix).
+  // This ensures left-icon-star.svg has the default-state color, not disabled gray.
+  const DEFAULT_STATE_PATTERN = /\bdefault\b|\brest\b|\bnormal\b|\bidle\b|\bbase\b|\benabled\b/i;
+  const sortedGroupEntries = [...groups.entries()].sort((a, b) => {
+    const aHasDefault = a[1].some(e => e.variants?.some(v => DEFAULT_STATE_PATTERN.test(v)));
+    const bHasDefault = b[1].some(e => e.variants?.some(v => DEFAULT_STATE_PATTERN.test(v)));
+    if (aHasDefault && !bHasDefault) return -1;
+    if (!aHasDefault && bHasDefault) return 1;
+    return b[1].length - a[1].length; // fallback: most variants first
+  });
+
   const deduplicated: AssetEntry[] = [];
   const usedFilenames = new Set<string>();
 
-  for (const [groupKey, group] of groups.entries()) {
+  for (const [groupKey, group] of sortedGroupEntries) {
     const canonical = group[0];
 
     // Merge all variant lists from the group
@@ -753,60 +709,172 @@ function extractSVGDimensions(svgContent: string): { width: number; height: numb
 }
 
 /**
- * Replaces hardcoded stroke and fill colors in SVG with currentColor
- * so the icon inherits color from CSS (matches text color).
+ * Adjusts SVG viewBox to tightly fit the actual path content.
  *
- * Preserves fill="none" and doesn't touch opacity.
+ * Figma exports SVGs with viewBox matching the frame dimensions, but the
+ * path content may not fill the entire frame (e.g. an icon in a 24×24 frame
+ * might only occupy 16×16 of actual path area). This causes icons to render
+ * smaller than expected. This function:
  *
- * SMART BEHAVIOR: If the SVG contains multiple distinct colors (e.g. a
- * checkbox with a colored background AND a white checkmark), the colors
- * are preserved as-is so the icon renders correctly. Single-color SVGs
- * (typical monochrome icons) get currentColor for CSS recoloring.
+ * 1. Extracts the existing viewBox from the SVG
+ * 2. Parses all path `d` attributes to compute a bounding box
+ * 3. If the path bbox is significantly smaller than viewBox, tightens the viewBox
+ *    with a small padding to eliminate dead space
  */
-function makeColorInheritable(svgContent: string): string {
-  // Collect all distinct fill/stroke colors (excluding "none", "white"/"#fff" mask fills)
-  const colorPattern = /(?:fill|stroke)="((?:#[0-9A-Fa-f]{3,8}|rgb[^"]*))"?/g;
-  const colors = new Set<string>();
-  let match;
-  while ((match = colorPattern.exec(svgContent)) !== null) {
-    const color = match[1].toLowerCase().replace(/\s+/g, '');
-    // Normalize common white representations
-    const isWhite = /^(#fff|#ffffff|#ffffffff|rgb\(255,255,255\)|rgba\(255,255,255,[^)]*\))$/.test(color);
-    if (!isWhite) {
-      colors.add(color);
+function adjustViewBoxToPathBounds(svgContent: string): string {
+  // Extract existing viewBox
+  const vbMatch = svgContent.match(/viewBox="([\d.\-\s]+)"/);
+  if (!vbMatch) return svgContent;
+
+  const [vbX, vbY, vbW, vbH] = vbMatch[1].trim().split(/\s+/).map(Number);
+  if (!vbW || !vbH || isNaN(vbW) || isNaN(vbH)) return svgContent;
+
+  // Compute bounding box from all path d-attributes
+  const bbox = computePathBBox(svgContent);
+  if (!bbox) return svgContent;
+
+  // Only tighten if path content is significantly smaller than viewBox (>15% dead space)
+  const pathW = bbox.maxX - bbox.minX;
+  const pathH = bbox.maxY - bbox.minY;
+  if (pathW <= 0 || pathH <= 0) return svgContent;
+
+  const fillRatioW = pathW / vbW;
+  const fillRatioH = pathH / vbH;
+
+  // If paths already fill >85% of viewBox in both dimensions, leave it alone
+  if (fillRatioW > 0.85 && fillRatioH > 0.85) return svgContent;
+
+  // Add small padding (5% of content size, min 0.5px)
+  const padX = Math.max(pathW * 0.05, 0.5);
+  const padY = Math.max(pathH * 0.05, 0.5);
+
+  const newX = Math.floor((bbox.minX - padX) * 100) / 100;
+  const newY = Math.floor((bbox.minY - padY) * 100) / 100;
+  const newW = Math.ceil((pathW + padX * 2) * 100) / 100;
+  const newH = Math.ceil((pathH + padY * 2) * 100) / 100;
+
+  // Replace viewBox
+  let result = svgContent.replace(
+    /viewBox="[\d.\-\s]+"/,
+    `viewBox="${newX} ${newY} ${newW} ${newH}"`,
+  );
+
+  // Also update width/height attributes to match new aspect ratio
+  // Keep the larger dimension, scale the smaller one
+  const widthMatch = result.match(/\bwidth="(\d+(?:\.\d+)?)"/);
+  const heightMatch = result.match(/\bheight="(\d+(?:\.\d+)?)"/);
+  if (widthMatch && heightMatch) {
+    const origW = parseFloat(widthMatch[1]);
+    const origH = parseFloat(heightMatch[1]);
+    const aspect = newW / newH;
+    if (origW >= origH) {
+      const adjH = Math.round(origW / aspect);
+      result = result.replace(/\bheight="\d+(?:\.\d+)?"/, `height="${adjH}"`);
+    } else {
+      const adjW = Math.round(origH * aspect);
+      result = result.replace(/\bwidth="\d+(?:\.\d+)?"/, `width="${adjW}"`);
     }
   }
-
-  // If SVG has multiple distinct non-white colors, preserve original colors
-  // (e.g. checkbox with blue background + white checkmark stroke)
-  if (colors.size > 1) {
-    return svgContent;
-  }
-
-  // Single-color SVG — safe to replace with currentColor for CSS control
-  let result = svgContent;
-
-  // Replace stroke="#..." with stroke="currentColor"
-  result = result.replace(/stroke="[^"]*(?:#[0-9A-Fa-f]{3,8}|rgb[^"]*)"/g, 'stroke="currentColor"');
-
-  // Replace fill="#..." with fill="currentColor" (but preserve fill="none")
-  result = result.replace(/fill="(?!none)[^"]*(?:#[0-9A-Fa-f]{3,8}|rgb[^"]*)"/g, 'fill="currentColor"');
 
   return result;
 }
 
 /**
- * Placeholder for future viewBox adjustment logic.
- * Currently just returns SVG as-is from Figma.
- *
- * TODO: Fix icon sizing issue where path content doesn't fill viewBox.
- * See OPEN_ISSUES.md for details.
+ * Computes a bounding box from all SVG path `d` attributes.
+ * Handles M, L, H, V, C, S, Q, T, A, Z commands (absolute and relative).
+ * Returns null if no paths found or parsing fails.
  */
-function adjustViewBoxToPathBounds(svgContent: string): string {
-  // Return SVG unchanged for now
-  // Icons will render slightly smaller than frame, but this is acceptable
-  // until we find a proper solution that works for all icon sizes
-  return svgContent;
+function computePathBBox(svgContent: string): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const pathMatches = svgContent.matchAll(/<path[^>]+d="([^"]+)"/g);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let found = false;
+
+  const updateBBox = (x: number, y: number) => {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+    found = true;
+  };
+
+  for (const match of pathMatches) {
+    const d = match[1];
+    // Tokenize: split into commands and numbers
+    const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g);
+    if (!tokens) continue;
+
+    let curX = 0, curY = 0;
+    let startX = 0, startY = 0;
+    let cmd = '';
+    let i = 0;
+
+    const num = () => {
+      if (i >= tokens.length) return 0;
+      const val = parseFloat(tokens[i]);
+      i++;
+      return isNaN(val) ? 0 : val;
+    };
+
+    while (i < tokens.length) {
+      const token = tokens[i];
+      if (/[A-Za-z]/.test(token)) {
+        cmd = token;
+        i++;
+      }
+
+      switch (cmd) {
+        case 'M': curX = num(); curY = num(); startX = curX; startY = curY; updateBBox(curX, curY); cmd = 'L'; break;
+        case 'm': curX += num(); curY += num(); startX = curX; startY = curY; updateBBox(curX, curY); cmd = 'l'; break;
+        case 'L': curX = num(); curY = num(); updateBBox(curX, curY); break;
+        case 'l': curX += num(); curY += num(); updateBBox(curX, curY); break;
+        case 'H': curX = num(); updateBBox(curX, curY); break;
+        case 'h': curX += num(); updateBBox(curX, curY); break;
+        case 'V': curY = num(); updateBBox(curX, curY); break;
+        case 'v': curY += num(); updateBBox(curX, curY); break;
+        case 'C': {
+          const x1 = num(), y1 = num(), x2 = num(), y2 = num();
+          curX = num(); curY = num();
+          updateBBox(x1, y1); updateBBox(x2, y2); updateBBox(curX, curY);
+          break;
+        }
+        case 'c': {
+          const dx1 = num(), dy1 = num(), dx2 = num(), dy2 = num();
+          const dx = num(), dy = num();
+          updateBBox(curX + dx1, curY + dy1); updateBBox(curX + dx2, curY + dy2);
+          curX += dx; curY += dy; updateBBox(curX, curY);
+          break;
+        }
+        case 'S': { num(); num(); curX = num(); curY = num(); updateBBox(curX, curY); break; }
+        case 's': { num(); num(); const dx = num(), dy = num(); curX += dx; curY += dy; updateBBox(curX, curY); break; }
+        case 'Q': { const qx = num(), qy = num(); curX = num(); curY = num(); updateBBox(qx, qy); updateBBox(curX, curY); break; }
+        case 'q': { const dqx = num(), dqy = num(); const qdx = num(), qdy = num(); updateBBox(curX + dqx, curY + dqy); curX += qdx; curY += qdy; updateBBox(curX, curY); break; }
+        case 'T': curX = num(); curY = num(); updateBBox(curX, curY); break;
+        case 't': curX += num(); curY += num(); updateBBox(curX, curY); break;
+        case 'A': case 'a': {
+          // Arc: rx ry xrot largeArc sweep x y
+          num(); num(); num(); num(); num();
+          if (cmd === 'A') { curX = num(); curY = num(); }
+          else { curX += num(); curY += num(); }
+          updateBBox(curX, curY);
+          break;
+        }
+        case 'Z': case 'z': curX = startX; curY = startY; break;
+        default: i++; break; // Unknown command, skip
+      }
+    }
+  }
+
+  // Also check circle, rect, ellipse elements
+  for (const m of svgContent.matchAll(/<circle[^>]*\bcx="([\d.]+)"[^>]*\bcy="([\d.]+)"[^>]*\br="([\d.]+)"/g)) {
+    const cx = parseFloat(m[1]), cy = parseFloat(m[2]), r = parseFloat(m[3]);
+    updateBBox(cx - r, cy - r); updateBBox(cx + r, cy + r);
+  }
+  for (const m of svgContent.matchAll(/<rect[^>]*\bx="([\d.]+)"[^>]*\by="([\d.]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/g)) {
+    const x = parseFloat(m[1]), y = parseFloat(m[2]), w = parseFloat(m[3]), h = parseFloat(m[4]);
+    updateBBox(x, y); updateBBox(x + w, y + h);
+  }
+
+  return found ? { minX, minY, maxX, maxY } : null;
 }
 
 /**

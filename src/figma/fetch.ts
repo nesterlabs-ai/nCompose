@@ -1,6 +1,5 @@
 import type { GetFileResponse, GetFileNodesResponse } from '@figma/rest-api-spec';
-
-const FIGMA_API_BASE = 'https://api.figma.com/v1';
+import { config } from '../config.js';
 
 /**
  * Simple Figma REST API client.
@@ -28,7 +27,7 @@ export class FigmaClient {
     const params = new URLSearchParams();
     if (depth !== undefined) params.set('depth', String(depth));
 
-    const url = `${FIGMA_API_BASE}/files/${fileKey}${params.size ? `?${params}` : ''}`;
+    const url = `${config.figma.apiBase}/files/${fileKey}${params.size ? `?${params}` : ''}`;
     return this.request<GetFileResponse>(url);
   }
 
@@ -40,7 +39,7 @@ export class FigmaClient {
     const params = new URLSearchParams({ ids: nodeId });
     if (depth !== undefined) params.set('depth', String(depth));
 
-    const url = `${FIGMA_API_BASE}/files/${fileKey}/nodes?${params}`;
+    const url = `${config.figma.apiBase}/files/${fileKey}/nodes?${params}`;
     return this.request<GetFileNodesResponse>(url);
   }
 
@@ -60,7 +59,7 @@ export class FigmaClient {
       scale: String(scale),
     });
 
-    const url = `${FIGMA_API_BASE}/images/${fileKey}?${params}`;
+    const url = `${config.figma.apiBase}/images/${fileKey}?${params}`;
     const data = await this.request<{ images: Record<string, string | null> }>(url);
     return data.images;
   }

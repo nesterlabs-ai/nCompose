@@ -5,6 +5,7 @@ export { OpenAIProvider } from './openai.js';
 
 import type { LLMProvider } from './provider.js';
 import type { LLMProviderName } from '../types/index.js';
+import { config } from '../config.js';
 import { DeepSeekProvider } from './deepseek.js';
 import { ClaudeProvider } from './claude.js';
 import { OpenAIProvider } from './openai.js';
@@ -15,11 +16,11 @@ import { OpenAIProvider } from './openai.js';
 export function createLLMProvider(name: LLMProviderName): LLMProvider {
   switch (name) {
     case 'deepseek':
-      return new DeepSeekProvider(process.env.DEEPSEEK_API_KEY ?? '');
+      return new DeepSeekProvider(process.env.DEEPSEEK_API_KEY ?? '', config.llm.deepseek);
     case 'claude':
-      return new ClaudeProvider(process.env.ANTHROPIC_API_KEY ?? '');
+      return new ClaudeProvider(process.env.ANTHROPIC_API_KEY ?? '', config.llm.claude);
     case 'openai':
-      return new OpenAIProvider(process.env.OPENAI_API_KEY ?? '');
+      return new OpenAIProvider(process.env.OPENAI_API_KEY ?? '', config.llm.openai);
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown LLM provider: ${exhaustive}`);

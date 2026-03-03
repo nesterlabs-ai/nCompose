@@ -1,11 +1,15 @@
 import OpenAI from 'openai';
 import type { LLMProvider } from './provider.js';
+import { config, type OpenAIConfig } from '../config.js';
 
 export class OpenAIProvider implements LLMProvider {
   name = 'openai';
+  contextWindow: number;
+  maxOutputTokens: number;
   private client: OpenAI;
+  private config: OpenAIConfig;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, overrides?: Partial<OpenAIConfig>) {
     if (!apiKey) {
       throw new Error(
         'OpenAI API key is required.\n' +
@@ -13,17 +17,20 @@ export class OpenAIProvider implements LLMProvider {
       );
     }
     this.client = new OpenAI({ apiKey });
+    this.config = { ...config.llm.openai, ...overrides };
+    this.contextWindow = this.config.contextWindow;
+    this.maxOutputTokens = this.config.maxTokens;
   }
 
   async generate(userPrompt: string, systemPrompt: string): Promise<string> {
     const response = await this.client.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.config.model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.1,
-      max_tokens: 8192,
+      temperature: this.config.temperature,
+      max_tokens: this.config.maxTokens,
     });
 
     const content = response.choices[0]?.message?.content;

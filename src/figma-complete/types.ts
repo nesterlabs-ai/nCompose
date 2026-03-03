@@ -468,6 +468,7 @@ export interface CompleteNode {
 
   // Layout (COMPLETE - all properties)
   layoutMode?: LayoutMode;
+  layoutWrap?: 'NO_WRAP' | 'WRAP';
   layoutSizing?: LayoutSizing;
   layoutAlign?: LayoutAlign;
   layoutGrow?: number;

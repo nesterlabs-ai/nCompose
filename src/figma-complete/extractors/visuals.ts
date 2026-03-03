@@ -378,6 +378,7 @@ function buildSimplifiedStroke(node: any): any {
 function buildSimplifiedEffects(effects: any[]): any {
   const boxShadows: string[] = [];
   const filters: string[] = [];
+  const backdropFilters: string[] = [];
 
   for (const effect of effects) {
     if (effect.visible === false) continue;
@@ -394,7 +395,7 @@ function buildSimplifiedEffects(effects: any[]): any {
     } else if (effect.type === 'LAYER_BLUR') {
       filters.push(`blur(${effect.radius}px)`);
     } else if (effect.type === 'BACKGROUND_BLUR') {
-      filters.push(`backdrop-blur(${effect.radius}px)`);
+      backdropFilters.push(`blur(${effect.radius}px)`);
     }
   }
 
@@ -406,6 +407,10 @@ function buildSimplifiedEffects(effects: any[]): any {
 
   if (filters.length > 0) {
     result.filter = filters;
+  }
+
+  if (backdropFilters.length > 0) {
+    result.backdropFilter = backdropFilters;
   }
 
   return result;
@@ -442,12 +447,24 @@ function buildGradientString(fill: any): string {
     .join(', ');
 
   switch (fill.type) {
-    case 'GRADIENT_LINEAR':
-      return `linear-gradient(${stops})`;
-    case 'GRADIENT_RADIAL':
+    case 'GRADIENT_LINEAR': {
+      let angle = 180;
+      if (fill.gradientHandlePositions?.length >= 2) {
+        const [h0, h1] = fill.gradientHandlePositions;
+        angle = Math.round(Math.atan2(h1.x - h0.x, -(h1.y - h0.y)) * (180 / Math.PI));
+      }
+      return `linear-gradient(${angle}deg, ${stops})`;
+    }
+    case 'GRADIENT_RADIAL': {
+      if (fill.gradientHandlePositions?.length >= 1) {
+        const cx = Math.round(fill.gradientHandlePositions[0].x * 100);
+        const cy = Math.round(fill.gradientHandlePositions[0].y * 100);
+        return `radial-gradient(circle at ${cx}% ${cy}%, ${stops})`;
+      }
       return `radial-gradient(${stops})`;
+    }
     case 'GRADIENT_ANGULAR':
-      return `conic-gradient(${stops})`;
+      return `conic-gradient(from 0deg, ${stops})`;
     default:
       return `linear-gradient(${stops})`;
   }

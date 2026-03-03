@@ -120,79 +120,66 @@ globalVars:
 
 **Output:**
 ```tsx
-import { useStore } from '@builder.io/mitosis';
-
 export default function Navbar(props) {
   return (
-    <nav
-      css={{
-        display: 'flex',
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '16px 32px',
-        width: '100%',
-        backgroundColor: '#FFFFFF',
-        borderBottom: '1px solid #E5E7EB',
-        boxSizing: 'border-box',
-      }}
-    >
-      <span
-        css={{
-          fontFamily: 'Inter',
-          fontWeight: '700',
-          fontSize: '20px',
-          lineHeight: '1.4em',
-          color: '#111827',
-        }}
-      >
-        Acme Inc
-      </span>
-      <div
-        css={{
-          display: 'flex',
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: '32px',
-        }}
-      >
-        <a css={{ fontFamily: 'Inter', fontWeight: '500', fontSize: '16px', lineHeight: '1.5em', color: '#4B5563', textDecoration: 'none' }}>
-          Features
-        </a>
-        <a css={{ fontFamily: 'Inter', fontWeight: '500', fontSize: '16px', lineHeight: '1.5em', color: '#4B5563', textDecoration: 'none' }}>
-          Pricing
-        </a>
-        <a css={{ fontFamily: 'Inter', fontWeight: '500', fontSize: '16px', lineHeight: '1.5em', color: '#4B5563', textDecoration: 'none' }}>
-          About
-        </a>
+    <nav class="navbar">
+      <span class="navbar__logo">Acme Inc</span>
+      <div class="navbar__links">
+        <a class="navbar__link">Features</a>
+        <a class="navbar__link">Pricing</a>
+        <a class="navbar__link">About</a>
       </div>
-      <button
-        css={{
-          display: 'flex',
-          flexDirection: 'row',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '8px 16px',
-          backgroundColor: '#111827',
-          borderRadius: '6px',
-          border: 'none',
-          cursor: 'pointer',
-        }}
-      >
-        <span
-          css={{
-            fontFamily: 'Inter',
-            fontWeight: '600',
-            fontSize: '14px',
-            lineHeight: '1.5em',
-            color: '#FFFFFF',
-            textAlign: 'center',
-          }}
-        >
-          Sign Up
-        </span>
-      </button>
+      <button class="navbar__cta" type="button">Sign Up</button>
     </nav>
   );
+}
+---CSS---
+.navbar {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 32px;
+  width: 100%;
+  background-color: #FFFFFF;
+  border-bottom: 1px solid #E5E7EB;
+  box-sizing: border-box;
+}
+.navbar__logo {
+  font-family: Inter;
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 1.4em;
+  color: #111827;
+}
+.navbar__links {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 32px;
+}
+.navbar__link {
+  font-family: Inter;
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 1.5em;
+  color: #4B5563;
+  text-decoration: none;
+}
+.navbar__cta {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 16px;
+  background-color: #111827;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.5em;
+  color: #FFFFFF;
+  text-align: center;
 }
 ```

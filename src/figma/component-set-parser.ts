@@ -56,6 +56,8 @@
  * ============================================================================
  */
 
+import { config } from '../config.js';
+
 // ============================================================================
 // SECTION 1: TYPES & INTERFACES
 // ============================================================================
@@ -208,6 +210,8 @@ export interface BuildVariantCSSOptions {
   cssLayer?: string;
   emitTokens?: boolean;
   maxDepth?: number;
+  preserveExactDimensions?: boolean;
+  injectBehavioralStyles?: boolean;
 }
 
 // ============================================================================
@@ -222,28 +226,30 @@ const KNOWN_STATE_SELECTORS: Record<string, string> = {
   'idle':        '',
   'base':        '',
   'enabled':     '',
-  'active':      ':active',
-  'pressed':     ':active',
+  'hover':       ':hover:not([disabled])',
+  'hovered':     ':hover:not([disabled])',
+  'focus':       ':focus-visible',
+  'focused':     ':focus-visible',
+  'active':      ':active:not([disabled])',
+  'pressed':     ':active:not([disabled])',
   'disabled':    '[disabled]',
   'visited':     ':visited',
   'placeholder': '::placeholder',
 };
 
+// NOTE: data-attribute names MUST match the booleanCondition key exactly,
+// because the LLM prompt tells the LLM to use `data-{booleanCondition}`.
+// If the CSS selector doesn't match → state styles never apply.
 const KNOWN_BOOLEAN_STATES: Record<string, string> = {
-  'loading':        '.loading',
-  'hover':          '[data-hover]',
-  'hovered':        '[data-hover]',
-  'focus':          '[data-focus]',
-  'focused':        '[data-focus]',
-  'focus-visible':  ':focus-visible',
+  'loading':        '[data-loading]',
   'focus-within':   ':focus-within',
   'checked':        '[data-checked]',
   'unchecked':      '[data-unchecked]',
   'selected':       '[data-selected]',
   'unselected':     '[data-unselected]',
   'filled':         '[data-filled]',
-  'filled-in':      '[data-filled]',
-  'filledin':       '[data-filled]',
+  'filled-in':      '[data-filled-in]',
+  'filledin':       '[data-filled-in]',
   'typing':         '[data-typing]',
   'error':          '[data-error]',
   'invalid':        '[data-invalid]',
@@ -412,8 +418,8 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
   [/\bfooter\b/, 'footer'],
 ];
 
-const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
-  'button': 'button', 'icon-button': 'button', 'input': 'input', 'textarea': 'textarea',
+export const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
+  'button': 'button', 'icon-button': 'button', 'input': 'div', 'textarea': 'div',
   'select': 'div', 'checkbox': 'label', 'radio': 'label', 'toggle': 'button', 'switch': 'button',
   'badge': 'span', 'chip': 'div', 'tag': 'span', 'label': 'label', 'avatar': 'div',
   'card': 'article', 'dialog': 'dialog', 'modal': 'dialog', 'drawer': 'aside',
@@ -427,9 +433,9 @@ const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
   'unknown': 'div',
 };
 
-const CATEGORY_ARIA_ROLES: Record<ComponentCategory, string> = {
-  'button': 'button', 'icon-button': 'button', 'input': 'textbox', 'textarea': 'textbox',
-  'select': 'combobox', 'checkbox': 'checkbox', 'radio': 'radio', 'toggle': 'switch', 'switch': 'switch',
+export const CATEGORY_ARIA_ROLES: Record<ComponentCategory, string> = {
+  'button': 'button', 'icon-button': 'button', 'input': '', 'textarea': '',
+  'select': '', 'checkbox': 'checkbox', 'radio': 'radio', 'toggle': 'switch', 'switch': 'switch',
   'badge': 'status', 'chip': 'option', 'tag': 'listitem', 'label': '', 'avatar': 'img',
   'card': 'article', 'dialog': 'dialog', 'modal': 'dialog', 'drawer': 'dialog',
   'tooltip': 'tooltip', 'popover': 'dialog', 'toast': 'alert', 'alert': 'alert', 'banner': 'banner',
@@ -447,7 +453,7 @@ const INTERACTIVE_CATEGORIES = new Set<ComponentCategory>([
   'toggle', 'switch', 'chip', 'tab', 'menu-item', 'slider', 'link', 'accordion',
 ]);
 
-function detectComponentCategory(name: string): ComponentCategory {
+export function detectComponentCategory(name: string): ComponentCategory {
   const n = name.toLowerCase();
   for (const [pattern, cat] of CATEGORY_PATTERNS) {
     if (pattern.test(n)) return cat;
@@ -906,7 +912,7 @@ function collectNamedChildStyles(
     if (!child?.name || child.name.startsWith('_')) continue;
     if (child.visible === false) continue;
 
-    const key      = prefix ? `${prefix}__${toKebabCase(child.name)}` : toKebabCase(child.name);
+    const key      = buildBemKey(prefix, toKebabCase(child.name));
     const childCSS = resolveNodeCSS(child, globalStyles, variables, depth);
 
     if (child.type === 'TEXT') {
@@ -930,9 +936,22 @@ function collectNamedChildStyles(
 
     if (Object.keys(childCSS).length > 0) out[key] = childCSS;
 
-    // Walk into ALL children including INSTANCE nodes — CSS inside
-    // component instances (button text, icons) must be collected.
-    if (child.children) {
+    // ICON GUARD: Do NOT recurse into icon containers — their internals
+    // (VECTOR paths, nested INSTANCE frames) are SVG assets rendered via
+    // <img> tags, not DOM elements that need CSS rules.
+    const isIconContainer = isIconKey(key) || (
+      ['FRAME', 'GROUP', 'INSTANCE', 'COMPONENT'].includes(child.type) &&
+      child.absoluteBoundingBox &&
+      child.absoluteBoundingBox.width <= 48 &&
+      child.absoluteBoundingBox.height <= 48 &&
+      child.children?.every((c: any) =>
+        ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'LINE', 'ELLIPSE', 'INSTANCE', 'COMPONENT', 'FRAME', 'GROUP'].includes(c.type)
+      )
+    );
+
+    // Walk into children — but skip icon internals.
+    // Text labels and layout children inside non-icon containers still need CSS.
+    if (child.children && !isIconContainer) {
       collectNamedChildStyles(child.children, globalStyles, variables, out, key, depth + 1, maxDepth);
     }
   }
@@ -950,7 +969,7 @@ function extractChildLayers(
     if (depth > 6) return;
     for (const child of children) {
       if (!child?.name || child.name.startsWith('_')) continue;
-      const key = prefix ? `${prefix}__${toKebabCase(child.name)}` : toKebabCase(child.name);
+      const key = buildBemKey(prefix, toKebabCase(child.name));
       const css = resolveNodeCSS(child, globalStyles, variables, depth);
 
       // Inline text runs for mixed-style TEXT nodes
@@ -987,9 +1006,22 @@ function extractChildLayers(
         imageScaleMode,
         characters: child.type === 'TEXT' ? (child.characters ?? undefined) : undefined,
       });
-      // Walk into ALL children including INSTANCE nodes — we need to see
-      // text labels and icon frames inside component instances (e.g. Button).
-      if (child.children) walk(child.children, key, depth + 1);
+      // ICON GUARD: Stop recursion at icon containers — their SVG internals
+      // (VECTOR paths, nested INSTANCE/COMPONENT frames) are exported as assets,
+      // not rendered as separate DOM elements.
+      const childIsIcon = isIconKey(key) || (
+        ['FRAME', 'GROUP', 'INSTANCE', 'COMPONENT'].includes(child.type) &&
+        child.absoluteBoundingBox &&
+        child.absoluteBoundingBox.width <= 48 &&
+        child.absoluteBoundingBox.height <= 48 &&
+        child.children?.every((c: any) =>
+          ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'LINE', 'ELLIPSE', 'INSTANCE', 'COMPONENT', 'FRAME', 'GROUP'].includes(c.type)
+        )
+      );
+
+      // Walk into non-icon children (button text, layout wrappers) but
+      // skip icon internals to reduce prompt noise.
+      if (child.children && !childIsIcon) walk(child.children, key, depth + 1);
     }
   }
 
@@ -1394,9 +1426,9 @@ function resolveNodeCSS(
   const cursor = heuristicCursor(node);
   if (cursor) css['cursor'] = cursor;
 
-  if (node.transitionNodeID || node.transitionEasing) {
-    css['transition'] = buildTransitionHint(node);
-  }
+  // NOTE: node.transitionNodeID and node.transitionEasing are Figma PROTOTYPE
+  // properties (page-to-page navigation), NOT CSS transitions. Do not emit them.
+  // CSS transitions for interactive states are added in buildVariantCSS() instead.
 
   if (node.rotation && Math.abs(node.rotation) > 0.1) {
     css['transform'] = `rotate(${parseFloat((-node.rotation).toFixed(2))}deg)`;
@@ -1556,20 +1588,23 @@ function resolvePositioning(node: any, css: Record<string, string>) {
   css['position'] = 'absolute';
 
   if (!node.constraints) {
-    if (node.x !== undefined) css['left'] = `${node.x}px`;
-    if (node.y !== undefined) css['top']  = `${node.y}px`;
+    // Use relative position within parent (node.x/y), NOT absoluteBoundingBox
+    // which is relative to the canvas root and gives huge values in COMPONENT_SETs
+    if (node.x !== undefined) css['left'] = `${Math.round(node.x)}px`;
+    if (node.y !== undefined) css['top']  = `${Math.round(node.y)}px`;
     return;
   }
 
   const { horizontal: h, vertical: v } = node.constraints;
-  const bb = node.absoluteBoundingBox;
 
-  if (h === 'LEFT' || h === 'MIN')            { if (bb) css['left'] = `${bb.x}px`; }
+  // Use node.x/y (relative to parent) for positioning, NOT absoluteBoundingBox
+  // absoluteBoundingBox gives canvas-root-relative coords that are wrong in COMPONENT_SETs
+  if (h === 'LEFT' || h === 'MIN')            { if (node.x !== undefined) css['left'] = `${Math.round(node.x)}px`; }
   else if (h === 'RIGHT' || h === 'MAX')      { css['right'] = '0'; }
   else if (h === 'CENTER')                    { css['left'] = '50%'; css['transform'] = (css['transform'] ? css['transform'] + ' ' : '') + 'translateX(-50%)'; }
   else if (h === 'STRETCH' || h === 'SCALE')  { css['left'] = '0'; css['right'] = '0'; }
 
-  if (v === 'TOP' || v === 'MIN')             { if (bb) css['top'] = `${bb.y}px`; }
+  if (v === 'TOP' || v === 'MIN')             { if (node.y !== undefined) css['top'] = `${Math.round(node.y)}px`; }
   else if (v === 'BOTTOM' || v === 'MAX')     { css['bottom'] = '0'; }
   else if (v === 'CENTER')                    { css['top'] = '50%'; css['transform'] = (css['transform'] ? css['transform'] + ' ' : '') + 'translateY(-50%)'; }
   else if (v === 'STRETCH' || v === 'SCALE')  { css['top'] = '0'; css['bottom'] = '0'; }
@@ -1880,7 +1915,7 @@ function heuristicCursor(node: any): string | null {
 
 function buildTransitionHint(node: any): string {
   const dur = node.transitionDuration ?? 200;
-  const ms  = typeof dur === 'number' ? `${dur}ms` : dur;
+  const ms  = typeof dur === 'number' ? `${Math.round(dur)}ms` : dur;
   const EASING: Record<string, string> = {
     EASE_IN: 'ease-in', EASE_OUT: 'ease-out', EASE_IN_AND_OUT: 'ease-in-out', LINEAR: 'linear',
     EASE_IN_BACK: 'cubic-bezier(0.36, 0, 0.66, -0.56)', EASE_OUT_BACK: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
@@ -1913,6 +1948,21 @@ function collectCSSTokens(styles: VariantStyles): string[] {
 
 function rgbToHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+/**
+ * Build a flat BEM element key from parent prefix and child name.
+ * Limits nesting to max 1 __ separator (e.g. "parent__child").
+ * Deeper children use hyphenation: "parent__child-grandchild".
+ * This keeps CSS selectors like `.base__parent__child-grandchild`
+ * instead of deeply nested `.base__parent__child__grandchild__deep`.
+ */
+function buildBemKey(prefix: string, childKebab: string): string {
+  if (!prefix) return childKebab;
+  if (!prefix.includes('__')) return `${prefix}__${childKebab}`;
+  // Already has __ — flatten deeper children with hyphen
+  const [firstSegment, ...rest] = prefix.split('__');
+  return `${firstSegment}__${[...rest, childKebab].join('-')}`;
 }
 
 function isIconKey(key: string): boolean {
@@ -1961,9 +2011,8 @@ function inferSemanticKey(node: any): string {
  * Applies a semantic rename map to a child key using prefix substitution.
  *
  * First tries an exact match, then replaces the longest known prefix segment.
- * This handles variant-specific nodes that don't exist in the default variant —
- * e.g. if `frame-123__frame-456` → `row__icon`, then
- * `frame-123__frame-456__warning` becomes `row__icon__warning`.
+ * Keys use flat BEM format (max 1 __ separator), e.g. if `frame-123` → `row`,
+ * then `frame-123__icon-warning` stays `row__icon-warning`.
  */
 function applyRenameMap(key: string, renameMap: Map<string, string>): string {
   const exact = renameMap.get(key);
@@ -2012,8 +2061,8 @@ function buildSemanticRenameMap(rootNode: any): Map<string, string> {
       usedSemKeys.set(semKey, count + 1);
       const finalSemKey = count > 0 ? `${semKey}-${count + 1}` : semKey;
 
-      const fullOrigPath = origParentPath ? `${origParentPath}__${origKey}` : origKey;
-      const fullSemPath  = semParentPath  ? `${semParentPath}__${finalSemKey}` : finalSemKey;
+      const fullOrigPath = buildBemKey(origParentPath, origKey);
+      const fullSemPath  = buildBemKey(semParentPath, finalSemKey);
 
       if (fullOrigPath !== fullSemPath) {
         renameMap.set(fullOrigPath, fullSemPath);
@@ -2068,6 +2117,8 @@ export function buildVariantCSS(
     emitFocusReset   = true,
     cssLayer,
     emitTokens       = false,
+    preserveExactDimensions = config.css.preserveExactDimensions,
+    injectBehavioralStyles = config.css.injectBehavioralStyles,
   } = options;
 
   const base  = toKebabCase(data.name);
@@ -2122,14 +2173,33 @@ export function buildVariantCSS(
   const semanticRenameMap = buildSemanticRenameMap(data.defaultVariantNode);
 
   // 1. Base container
+  // Keep exact Figma dimensions by default for visual fidelity.
+  const rootContainer = { ...defaultContainer };
+  if (!preserveExactDimensions) {
+    if (rootContainer['width']?.endsWith('px') && rootContainer['width'] !== '100%') {
+      if (!rootContainer['min-width']) rootContainer['min-width'] = rootContainer['width'];
+      delete rootContainer['width'];
+    }
+    if (rootContainer['height']?.endsWith('px')) {
+      if (!rootContainer['min-height']) rootContainer['min-height'] = rootContainer['height'];
+      delete rootContainer['height'];
+    }
+  }
+
   if (sourceComments) lines.push(`/* ${data.name} | ${data.componentCategory} | <${data.suggestedHtmlTag}> */`);
   lines.push(`.${base} {`);
-  for (const [p, v] of Object.entries(defaultContainer)) lines.push(`  ${p}: ${v};`);
+  for (const [p, v] of Object.entries(rootContainer)) lines.push(`  ${p}: ${v};`);
   if (!defaultContainer['border']) { lines.push(`  border: none !important;`); lines.push(`  outline: none;`); }
-  if (emitFocusReset && data.isInteractive) lines.push(`  outline-offset: 2px;`);
+  // Behavioral CSS for interactive components (cursor, transition, user-select)
+  if (injectBehavioralStyles && data.isInteractive) {
+    if (!rootContainer['cursor']) lines.push(`  cursor: pointer;`);
+    lines.push(`  user-select: none;`);
+    lines.push(`  transition: background-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, color 0.15s ease;`);
+  }
+  if (injectBehavioralStyles && emitFocusReset && data.isInteractive) lines.push(`  outline-offset: 2px;`);
   lines.push('}');
 
-  if (emitFocusReset && data.isInteractive) {
+  if (injectBehavioralStyles && emitFocusReset && data.isInteractive) {
     lines.push('', `.${base}:focus-visible {`, `  outline: 2px solid currentColor;`, `  outline-offset: 2px;`, '}');
   }
 
@@ -2164,39 +2234,90 @@ export function buildVariantCSS(
         ?? data.stateAxis.values[0])
     : undefined;
 
-  // 3. Prop-axis modifier rules
+  // 3. Single-axis modifier rules + per-axis-value state overrides
+  // Emit BEM modifier diffs for every non-default axis value, then immediately
+  // emit state overrides scoped to that same modifier selector — so every axis
+  // (Style, Size, Type, …) gets its own :hover/:focus/:disabled rules.
   for (const axis of data.propAxes) {
     for (const value of axis.values) {
-      if (value === (data.defaultVariant.props[axis.name] ?? axis.values[0])) continue;
-
+      const isDefault = value === (data.defaultVariant.props[axis.name] ?? axis.values[0]);
       const lookup = { ...defaultLookup, [axis.name]: value };
       if (data.stateAxis && defaultStateName) lookup[data.stateAxis.name] = defaultStateName;
 
       const variant = findVariant(lookup);
       if (!variant) continue;
 
-      if (sourceComments) lines.push('', `/* prop: ${axis.name}=${value} */`);
-      emitDiffRules(lines, base, `.${base}--${toKebabCase(value)}`, data.defaultVariant.styles, variant.styles, emittedFPs, semanticRenameMap);
+      const selector = `.${base}--${toKebabCase(value)}`;
+
+      // Emit modifier diff for non-default values only (base class covers default)
+      if (!isDefault) {
+        if (sourceComments) lines.push('', `/* prop: ${axis.name}=${value} */`);
+        emitDiffRules(lines, base, selector, data.defaultVariant.styles, variant.styles, emittedFPs, semanticRenameMap);
+      }
+
+      // State overrides for every axis value (including the default value so that
+      // the explicitly-tagged default modifier class also gets :hover/:focus rules)
+      if (data.stateAxis && data.classifiedStates.length > 0) {
+        emitStateOverrides(data, lines, base, selector, lookup, variant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
+      }
     }
   }
 
-  // 4. State override rules
+  // 4. Base-class state overrides
+  // When there are no prop axes, emit :hover etc. directly on .button.
+  // When prop axes exist, also emit them on the base class as a safe fallback for
+  // any variant that doesn't add an explicit modifier class.
   if (data.stateAxis && data.classifiedStates.length > 0) {
-    if (data.propAxes.length > 0) {
-      for (const axis of data.propAxes) {
-        for (const axisValue of axis.values) {
-          const stateLookup = { ...defaultLookup, [axis.name]: axisValue };
-          if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
-          const baseVariant = findVariant(stateLookup);
-          if (!baseVariant) continue;
-          emitStateOverrides(data, lines, base, `.${base}--${toKebabCase(axisValue)}`, stateLookup, baseVariant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
-        }
-        break;
-      }
-    } else {
+    if (data.propAxes.length === 0) {
       const stateLookup: Record<string, string> = {};
       if (defaultStateName) stateLookup[data.stateAxis.name] = defaultStateName;
       emitStateOverrides(data, lines, base, `.${base}`, stateLookup, findVariant(stateLookup) ?? data.defaultVariant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
+    } else {
+      // Base fallback (default prop combination)
+      const defaultPropLookup = { ...defaultLookup };
+      if (defaultStateName) defaultPropLookup[data.stateAxis.name] = defaultStateName;
+      const defaultPropVariant = findVariant(defaultPropLookup) ?? data.defaultVariant;
+      emitStateOverrides(data, lines, base, `.${base}`, defaultPropLookup, defaultPropVariant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
+    }
+  }
+
+  // 5. Cross-axis combination rules
+  // When a component has 2+ prop axes (e.g. Style × Size), diff-based single-axis
+  // modifiers cannot capture variant-specific cross-axis styles.  For example,
+  // "Secondary + Large + Hover" might have a unique background that neither
+  // `.button--secondary:hover` nor `.button--large:hover` covers exactly.
+  // Solution: generate selectors like `.button--secondary.button--large:hover`
+  // with an explicit diff taken against the single-axis base.
+  if (data.propAxes.length >= 2) {
+    const crossCombos = generateCrossAxisCombos(data.propAxes, defaultLookup);
+    for (const combo of crossCombos) {
+      const lookup = { ...defaultLookup, ...combo };
+      if (data.stateAxis && defaultStateName) lookup[data.stateAxis.name] = defaultStateName;
+
+      const variant = findVariant(lookup);
+      if (!variant) continue;
+
+      // Compound selector: .button--secondary.button--large
+      const selector = Object.values(combo)
+        .map((val) => `.${base}--${toKebabCase(val)}`)
+        .join('');
+
+      // Diff against the "first-axis only" variant so we emit only the
+      // additional properties that differ because of the second (or third) axis.
+      const firstKey = Object.keys(combo)[0];
+      const firstLookup = { ...defaultLookup, [firstKey]: combo[firstKey] };
+      if (data.stateAxis && defaultStateName) firstLookup[data.stateAxis.name] = defaultStateName;
+      const baseForCombo = findVariant(firstLookup) ?? data.defaultVariant;
+
+      if (sourceComments) {
+        lines.push('', `/* cross-axis: ${Object.entries(combo).map(([k, v]) => `${k}=${v}`).join(', ')} */`);
+      }
+      emitDiffRules(lines, base, selector, baseForCombo.styles, variant.styles, emittedFPs, semanticRenameMap);
+
+      // State overrides for this exact cross-axis combination
+      if (data.stateAxis && data.classifiedStates.length > 0) {
+        emitStateOverrides(data, lines, base, selector, lookup, variant, findVariant, sourceComments, emittedFPs, semanticRenameMap);
+      }
     }
   }
 
@@ -2207,6 +2328,48 @@ export function buildVariantCSS(
 // ============================================================================
 // SECTION 15: DIFF & EMISSION
 // ============================================================================
+
+/**
+ * Generate all combinations of prop-axis values where at least 2 axes
+ * have non-default values.  Used to emit explicit cross-axis CSS rules
+ * (e.g. `.button--secondary.button--large`) so every variant combination
+ * gets exact styles rather than relying on CSS cascade to merge diffs.
+ */
+function generateCrossAxisCombos(
+  axes: VariantAxis[],
+  defaultLookup: Record<string, string>,
+): Record<string, string>[] {
+  // Collect only axes that actually have non-default values
+  const nonDefaultAxes = axes
+    .map((a) => ({
+      name: a.name,
+      nonDefaults: a.values.filter((v) => v !== (defaultLookup[a.name] ?? a.values[0])),
+    }))
+    .filter((a) => a.nonDefaults.length > 0);
+
+  if (nonDefaultAxes.length < 2) return [];
+
+  const result: Record<string, string>[] = [];
+
+  function recurse(index: number, current: Record<string, string>): void {
+    // Only collect combinations involving at least 2 axes
+    if (Object.keys(current).length >= 2) {
+      result.push({ ...current });
+    }
+    if (index >= nonDefaultAxes.length) return;
+
+    const axis = nonDefaultAxes[index];
+    // Branch 1: skip this axis (leave it at default for this combo)
+    recurse(index + 1, current);
+    // Branch 2: include each non-default value of this axis
+    for (const val of axis.nonDefaults) {
+      recurse(index + 1, { ...current, [axis.name]: val });
+    }
+  }
+
+  recurse(0, {});
+  return result;
+}
 
 function emitDiffRules(
   lines: string[],

@@ -56,9 +56,14 @@ export const componentExtractor: ExtractorFn = (node, result, context) => {
       result.componentProperties = extractComponentProperties(node.componentProperties);
     }
 
-    // Component property references (which child nodes are affected by properties)
+    // Component property references — resolve node IDs to names/types for
+    // downstream consumers (LLM prompt, code generation) so they know which
+    // child element each property controls.
     if (node.componentPropertyReferences) {
-      result.componentPropertyReferences = { ...node.componentPropertyReferences };
+      result.componentPropertyReferences = resolvePropertyReferences(
+        node.componentPropertyReferences,
+        node,
+      );
     }
 
     // Main component reference (if available)
@@ -110,6 +115,47 @@ export const componentExtractor: ExtractorFn = (node, result, context) => {
     result.transitionEasing = node.transitionEasing;
   }
 };
+
+/**
+ * Find a node by ID in the raw Figma tree (pre-extraction).
+ */
+function findNodeById(root: any, targetId: string): any | null {
+  if (root.id === targetId) return root;
+  if (root.children && Array.isArray(root.children)) {
+    for (const child of root.children) {
+      const found = findNodeById(child, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve component property references from raw node IDs to enriched objects
+ * with node name, type, and the property aspects they control.
+ */
+function resolvePropertyReferences(
+  refs: Record<string, string>,
+  instanceNode: any,
+): Record<string, any> {
+  const resolved: Record<string, any> = {};
+
+  for (const [propName, nodeId] of Object.entries(refs)) {
+    const targetNode = findNodeById(instanceNode, nodeId);
+    if (targetNode) {
+      resolved[propName] = {
+        nodeId,
+        nodeName: targetNode.name,
+        nodeType: targetNode.type,
+      };
+    } else {
+      // Node not found in subtree — store raw ID
+      resolved[propName] = { nodeId };
+    }
+  }
+
+  return resolved;
+}
 
 /**
  * Extract component properties (preserve all metadata)

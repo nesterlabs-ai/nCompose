@@ -487,6 +487,7 @@ export interface CompleteNode {
   characters?: string;
   textStyle?: string; // Reference to globalVars
   namedTextStyle?: string; // Reference to styles.text
+  namedTextStyleName?: string; // Resolved style name (e.g., "Heading/H1")
   styledTextSegments?: StyledTextSegment[]; // From FigmaToCode
   style?: TypeStyle; // Inline text style
   textAlignHorizontal?: TextAlignHorizontal;
@@ -541,7 +542,7 @@ export interface CompleteNode {
   mainComponent?: any; // Reference to main component node
 
   componentProperties?: Record<string, ComponentProperty>; // Instance overrides
-  componentPropertyReferences?: Record<string, string>; // Property → node mapping
+  componentPropertyReferences?: Record<string, string | { nodeId: string; nodeName?: string; nodeType?: string }>;
 
   // Hierarchy
   children?: CompleteNode[];

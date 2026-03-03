@@ -150,7 +150,7 @@ export const config = {
 
     deepseek: {
       baseURL: envStr('DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
-      model: envStr('DEEPSEEK_MODEL', 'deepseek-coder'),
+      model: envStr('DEEPSEEK_MODEL', 'deepseek-chat'),
       temperature: envFloat('DEEPSEEK_TEMPERATURE', 0.1),
       maxTokens: envInt('DEEPSEEK_MAX_TOKENS', 8192),
       contextWindow: envInt('DEEPSEEK_CONTEXT_WINDOW', 131072),
@@ -171,7 +171,7 @@ export const config = {
 
   css: {
     preserveExactDimensions: envBool('CSS_PRESERVE_EXACT_DIMENSIONS', true),
-    injectBehavioralStyles: envBool('CSS_INJECT_BEHAVIORAL_STYLES', false),
+    injectBehavioralStyles: envBool('CSS_INJECT_BEHAVIORAL_STYLES', true),
   } as CSSConfig,
 
   fidelity: {

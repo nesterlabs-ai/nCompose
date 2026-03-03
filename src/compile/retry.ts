@@ -1,6 +1,7 @@
 import type { LLMProvider } from '../llm/provider.js';
 import type { ParseResult } from '../types/index.js';
 import { parseMitosisCode } from './parse-and-validate.js';
+import { extractJSXBody } from './stitch.js';
 import { validateAccessibility } from './a11y-validate.js';
 import { validateBEMConsistency } from './bem-validate.js';
 import { getExpectedElement, validateSemanticElement } from './semantic-validate.js';
@@ -15,9 +16,18 @@ interface ValidationSummary {
   advisory: string[];
 }
 
-/** Rough token estimate: ~3.5 chars per token for mixed YAML/code content. */
+/**
+ * Token estimate using tiktoken-like heuristic.
+ * ~4 chars per token for English prose, ~3 chars for code/YAML.
+ * We use a weighted average based on content composition.
+ */
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5);
+  // Count YAML/code fences to estimate code ratio
+  const codeMatches = text.match(/```/g);
+  const codeFenceCount = codeMatches ? codeMatches.length : 0;
+  // Rough heuristic: more code fences → more code → lower chars/token
+  const charsPerToken = codeFenceCount > 2 ? 3.2 : 3.8;
+  return Math.ceil(text.length / charsPerToken);
 }
 
 /**
@@ -26,8 +36,9 @@ function estimateTokens(text: string): number {
  * Returns at least the provider's configured maxOutputTokens, up to a cap.
  */
 function scaleOutputTokens(userPromptChars: number, baseMax: number): number {
-  // Heuristic: ~1 output token per 8 input chars, minimum baseMax
-  const estimated = Math.ceil(userPromptChars / 8);
+  // Heuristic: scale with input size. Larger designs produce more code.
+  // ~1 output token per 6 input chars for complex designs (many nodes/styles).
+  const estimated = Math.ceil(userPromptChars / 6);
   // Cap at 4x the base to stay within provider limits
   const cap = baseMax * 4;
   return Math.min(Math.max(estimated, baseMax), cap);
@@ -61,31 +72,49 @@ function truncateToFit(
     return userPrompt; // System prompt alone exceeds budget — send anyway and let API error
   }
 
-  // Try to find the yaml code fence to truncate intelligently
+  // Find the first YAML block (design data — highest priority to preserve).
+  // Since defaultVariantYaml is now placed first in the prompt, we want to
+  // keep it intact and truncate the instruction text that follows.
   const yamlStart = userPrompt.indexOf('```yaml\n');
-  const yamlEnd = userPrompt.lastIndexOf('\n```');
+  let yamlBlockEnd = -1;
+  if (yamlStart !== -1) {
+    yamlBlockEnd = userPrompt.indexOf('\n```', yamlStart + 8);
+  }
 
-  if (yamlStart !== -1 && yamlEnd > yamlStart) {
-    // We have a yaml block — truncate within it
-    const before = userPrompt.slice(0, yamlStart + '```yaml\n'.length);
-    const after = userPrompt.slice(yamlEnd);
-    const yamlContent = userPrompt.slice(yamlStart + '```yaml\n'.length, yamlEnd);
+  if (yamlStart !== -1 && yamlBlockEnd > yamlStart) {
+    const beforeYaml = userPrompt.slice(0, yamlStart);
+    const yamlBlock = userPrompt.slice(yamlStart, yamlBlockEnd + 4); // includes closing ```
+    const afterYaml = userPrompt.slice(yamlBlockEnd + 4);
 
-    const availableForYaml = maxUserChars - before.length - after.length - 100;
-    if (availableForYaml > 0 && availableForYaml < yamlContent.length) {
-      // Truncate YAML at the last complete line within budget
-      const truncated = yamlContent.slice(0, availableForYaml);
-      const lastNewline = truncated.lastIndexOf('\n');
-      const cleanCut = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated;
-      return before + cleanCut + '\n# [TRUNCATED — remaining design layers omitted to fit context window]\n' + after;
+    const availableForAfter = maxUserChars - beforeYaml.length - yamlBlock.length - 80;
+
+    if (availableForAfter > 0) {
+      // YAML fits — truncate instruction text after it
+      if (afterYaml.length <= availableForAfter) {
+        return userPrompt; // fits after all
+      }
+      const cut = afterYaml.slice(0, availableForAfter);
+      const nl = cut.lastIndexOf('\n');
+      return beforeYaml + yamlBlock + (nl > 0 ? cut.slice(0, nl) : cut) +
+        '\n\n[... instructions truncated to fit context window ...]';
+    }
+
+    // YAML itself is too large — truncate within it
+    const yamlContent = userPrompt.slice(yamlStart + 8, yamlBlockEnd);
+    const availableForYaml = maxUserChars - beforeYaml.length - 200;
+    if (availableForYaml > 0) {
+      const cut = yamlContent.slice(0, availableForYaml);
+      const nl = cut.lastIndexOf('\n');
+      return beforeYaml + '```yaml\n' + (nl > 0 ? cut.slice(0, nl) : cut) +
+        '\n# [TRUNCATED — remaining design layers omitted]\n```';
     }
   }
 
-  // Fallback: simple character truncation
+  // Fallback: simple truncation from end
   const truncated = userPrompt.slice(0, maxUserChars);
   const lastNewline = truncated.lastIndexOf('\n');
   return (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated) +
-    '\n\n[... DESIGN DATA TRUNCATED to fit context window ...]';
+    '\n\n[... PROMPT TRUNCATED to fit context window ...]';
 }
 
 async function validateGeneratedOutput(
@@ -109,13 +138,14 @@ async function validateGeneratedOutput(
     // Don't block on a11y validator runtime issues
   }
 
-  // BEM consistency directly affects style fidelity, treat as blocking.
+  // BEM consistency — advisory, not blocking. The LLM may produce valid visual
+  // output with slightly different class names than the deterministic CSS.
   const cssForValidation = css || parseResult.css;
   if (cssForValidation) {
     try {
       const bemResult = validateBEMConsistency(parseResult.rawCode, cssForValidation);
       if (!bemResult.passed && bemResult.summary) {
-        blocking.push(bemResult.summary);
+        advisory.push(bemResult.summary);
       }
     } catch {
       // Don't fail hard if validator itself crashes
@@ -219,6 +249,23 @@ export async function generateWithRetry(
       lastError = result.error ?? 'Unknown parse error';
       onAttempt?.(attempt, MAX_RETRIES, lastError);
       continue;
+    }
+
+    // Detect empty JSX: if the main component's return body is empty after
+    // extraction, the LLM may have generated helper functions with tags but
+    // left the main `export default` component's return as `<></>`.
+    // Using extractJSXBody here ensures we check the same path as stitchPageComponent.
+    if (attempt < MAX_RETRIES) {
+      const body = extractJSXBody(result.rawCode);
+      if (!body.trim()) {
+        lastError =
+          'CRITICAL: Your component returns empty JSX.\n' +
+          'The exported default function must render all UI elements from the design data.\n' +
+          'Do NOT return an empty fragment `<></>` or a bare wrapper div with no children.\n' +
+          'Include every container, text node, button, icon, and input from the YAML.';
+        onAttempt?.(attempt, MAX_RETRIES, 'Empty JSX body — retrying');
+        continue;
+      }
     }
 
     const validation = await validateGeneratedOutput(

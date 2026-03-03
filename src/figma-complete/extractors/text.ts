@@ -47,9 +47,14 @@ export const textExtractor: ExtractorFn = (node, result, context) => {
     result.maxLines = node.maxLines;
   }
 
-  // Extract named text style reference
+  // Extract named text style reference and resolve it
   if (node.styles?.text) {
     result.namedTextStyle = node.styles.text;
+    // Resolve the style reference to get actual typography values
+    const resolvedStyle = context.styles?.text?.[node.styles.text];
+    if (resolvedStyle?.name) {
+      result.namedTextStyleName = resolvedStyle.name;
+    }
   }
 
   // Extract inline text style
@@ -217,7 +222,7 @@ function buildSimplifiedTextStyle(node: any): any {
     if (node.style.fills && Array.isArray(node.style.fills) && node.style.fills.length > 0) {
       const fill = node.style.fills[0];
       if (fill.type === 'SOLID' && fill.color) {
-        style.color = rgbaToString(fill.color);
+        style.color = rgbaToString(fill.color, fill.opacity);
       }
     }
   }
@@ -243,15 +248,15 @@ function buildSimplifiedTextStyle(node: any): any {
 }
 
 /**
- * Convert RGBA color to CSS string
+ * Convert RGBA color to CSS string, multiplying in paint-level opacity.
  */
-function rgbaToString(color: { r: number; g: number; b: number; a: number }): string {
+function rgbaToString(color: { r: number; g: number; b: number; a: number }, paintOpacity?: number): string {
   const r = Math.round(color.r * 255);
   const g = Math.round(color.g * 255);
   const b = Math.round(color.b * 255);
-  const a = color.a;
+  const a = parseFloat(((color.a ?? 1) * (paintOpacity ?? 1)).toFixed(3));
 
-  if (a === 1) {
+  if (a >= 0.999) {
     return `rgb(${r}, ${g}, ${b})`;
   }
 

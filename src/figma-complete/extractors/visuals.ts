@@ -331,7 +331,7 @@ function buildSimplifiedFills(fills: any[]): any[] {
       }
 
       if (fill.type === 'SOLID' && fill.color) {
-        simplified.color = rgbaToString(fill.color);
+        simplified.color = rgbaToString(fill.color, fill.opacity);
       } else if (fill.type.startsWith('GRADIENT') && fill.gradientStops) {
         simplified.gradient = buildGradientString(fill);
       } else if (fill.type === 'IMAGE' && fill.imageRef) {
@@ -343,33 +343,52 @@ function buildSimplifiedFills(fills: any[]): any[] {
 }
 
 /**
- * Build simplified stroke for CSS
+ * Build simplified stroke(s) for CSS.
+ *
+ * Iterates ALL visible strokes (not just the first) so that multi-stroke
+ * designs are preserved.  Returns an object with a `layers` array when
+ * multiple strokes exist, or a flat object for single strokes.
  */
 function buildSimplifiedStroke(node: any): any {
   if (!node.strokes || node.strokes.length === 0) {
     return {};
   }
 
-  const stroke = node.strokes[0]; // Use first stroke
-  const simplified: any = {};
+  const visibleStrokes = node.strokes.filter((s: any) => s.visible !== false);
+  if (visibleStrokes.length === 0) return {};
 
-  if (stroke.type === 'SOLID' && stroke.color) {
-    simplified.color = rgbaToString(stroke.color);
-  }
+  const buildOne = (stroke: any): any => {
+    const entry: any = {};
+    if (stroke.type === 'SOLID' && stroke.color) {
+      entry.color = rgbaToString(stroke.color, stroke.opacity);
+    }
+    return entry;
+  };
+
+  // Common properties (shared across all strokes)
+  const base: any = {};
 
   if (node.strokeWeight !== undefined) {
-    simplified.width = node.strokeWeight;
+    base.width = node.strokeWeight;
   }
 
   if (node.strokeDashes && node.strokeDashes.length > 0) {
-    simplified.style = 'dashed';
+    base.style = 'dashed';
   }
 
   if (node.strokeAlign) {
-    simplified.position = node.strokeAlign;
+    base.position = node.strokeAlign;
   }
 
-  return simplified;
+  if (visibleStrokes.length === 1) {
+    return { ...buildOne(visibleStrokes[0]), ...base };
+  }
+
+  // Multiple strokes — store as array so downstream CSS can emit stacked box-shadows
+  return {
+    ...base,
+    layers: visibleStrokes.map(buildOne),
+  };
 }
 
 /**
@@ -417,15 +436,19 @@ function buildSimplifiedEffects(effects: any[]): any {
 }
 
 /**
- * Convert RGBA color to CSS string
+ * Convert RGBA color to CSS string, multiplying in paint-level opacity.
+ *
+ * Figma has two opacity sources: color.a (alpha channel) and paint.opacity
+ * (the fill/stroke layer opacity). Both must be multiplied to get the
+ * correct visual alpha.
  */
-function rgbaToString(color: { r: number; g: number; b: number; a: number }): string {
+function rgbaToString(color: { r: number; g: number; b: number; a: number }, paintOpacity?: number): string {
   const r = Math.round(color.r * 255);
   const g = Math.round(color.g * 255);
   const b = Math.round(color.b * 255);
-  const a = color.a;
+  const a = parseFloat(((color.a ?? 1) * (paintOpacity ?? 1)).toFixed(3));
 
-  if (a === 1) {
+  if (a >= 0.999) {
     return `rgb(${r}, ${g}, ${b})`;
   }
 

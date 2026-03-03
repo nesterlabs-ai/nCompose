@@ -33,8 +33,10 @@ import {
   assembleUserPrompt,
   assemblePageSectionSystemPrompt,
   assemblePageSectionUserPrompt,
+  type PageSectionContext,
 } from './prompt/index.js';
 import { generateWithRetry } from './compile/retry.js';
+import { generateCompoundSection } from './compile/component-gen.js';
 import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
@@ -59,8 +61,21 @@ function isComponentSet(enhanced: any): boolean {
 /**
  * Detects if the Figma node is a multi-section page (PATH C).
  *
- * A page is identified when the root is a FRAME with 3+ sizeable child frames
- * (each >50% parent width and >60px tall by default).
+ * Detection uses three complementary signals — any one is sufficient:
+ *
+ * 1. **Name heuristics** — root frame name contains page-like keywords
+ *    ("page", "landing", "home", "layout", "screen", "view").
+ *
+ * 2. **Vertical auto-layout with fill-width children** — root is a vertical
+ *    auto-layout frame AND has ≥ minSections children whose horizontal sizing
+ *    is FILL (span the full page width).
+ *
+ * 3. **Size-based threshold** (original) — ≥ minSections children each cover
+ *    ≥ minChildWidthRatio of the parent width and ≥ minChildHeight px.
+ *
+ * All three signals also require at least one child whose name suggests a
+ * semantic section role (header, hero, footer, nav, section, feature, etc.)
+ * to avoid false-positives from e.g. multi-column card grids.
  */
 export function isMultiSectionPage(enhanced: any): boolean {
   const root = enhanced?.nodes?.[0];
@@ -68,10 +83,34 @@ export function isMultiSectionPage(enhanced: any): boolean {
   const children: any[] = root.children || [];
   if (children.length < config.page.minSections) return false;
 
-  const parentWidth = root.absoluteBoundingBox?.width
-    ?? root.dimensions?.width
-    ?? root.size?.x
-    ?? 0;
+  // Helper: does any child name suggest a semantic page section?
+  const SECTION_PATTERNS = /header|hero|footer|navbar|nav|section|feature|testimonial|pricing|cta|banner|content|main|intro|about|contact|faq/i;
+  const hasSectionLikeChild = children.some(
+    (c: any) => c.name && SECTION_PATTERNS.test(c.name),
+  );
+
+  // ── Signal 1: name-based ─────────────────────────────────────────────────
+  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template/i;
+  if (PAGE_NAME_PATTERNS.test(root.name ?? '') && hasSectionLikeChild) {
+    return true;
+  }
+
+  // ── Signal 2: vertical auto-layout with fill-width children ─────────────
+  const layoutMode = root.layoutMode ?? root.layout?.mode;
+  if ((layoutMode === 'VERTICAL' || layoutMode === 'column') && hasSectionLikeChild) {
+    const fillCount = children.filter((c: any) => {
+      const hSizing = c.layoutSizing?.horizontal ?? c.layoutSizingHorizontal;
+      return (
+        (c.type === 'FRAME' || c.type === 'COMPONENT' || c.type === 'INSTANCE') &&
+        (hSizing === 'FILL' || hSizing === 'STRETCH')
+      );
+    }).length;
+    if (fillCount >= config.page.minSections) return true;
+  }
+
+  // ── Signal 3: size-based threshold (original) ────────────────────────────
+  const parentWidth =
+    root.absoluteBoundingBox?.width ?? root.dimensions?.width ?? root.size?.x ?? 0;
   if (parentWidth === 0) return false;
 
   let sizeableCount = 0;
@@ -83,7 +122,21 @@ export function isMultiSectionPage(enhanced: any): boolean {
       sizeableCount++;
     }
   }
-  return sizeableCount >= config.page.minSections;
+  if (sizeableCount >= config.page.minSections && hasSectionLikeChild) return true;
+
+  // ── Signal 4: vertical auto-layout with ≥3 wide children (name-agnostic) ──
+  // Catches pages with children named "Block 1", "Block 2", etc.
+  if (layoutMode === 'VERTICAL' || layoutMode === 'column') {
+    let wideChildCount = 0;
+    for (const child of children) {
+      if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
+      const w = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? 0;
+      if (parentWidth > 0 && w >= parentWidth * 0.8) wideChildCount++;
+    }
+    if (wideChildCount >= 3) return true;
+  }
+
+  return false;
 }
 
 /**
@@ -124,6 +177,9 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
 function serializeNodeForPrompt(node: any): any {
   if (!node) return null;
   if (node.name?.startsWith('_')) return null;
+  // Prune invisible subtrees entirely — they bloat the YAML with hidden
+  // error states, chip lists, descriptions etc. that are useless for static output.
+  if (node.visible === false) return null;
 
   const result: any = { name: node.name, type: node.type };
 
@@ -219,7 +275,15 @@ function serializeNodeForPrompt(node: any): any {
           }
           if (f.type === 'GRADIENT_ANGULAR') return `conic-gradient(from 0deg, ${stops})`;
         }
-        return f.type; // IMAGE, EMOJI, etc.
+        if (f.type === 'IMAGE') {
+          // Signal to the LLM that this is a background image fill so it can
+          // emit the correct CSS (background-image / object-fit rules).
+          return {
+            type: 'image',
+            scaleMode: (f.scaleMode ?? 'FILL').toLowerCase(), // fill / fit / tile / stretch
+          };
+        }
+        return f.type; // EMOJI, VIDEO, etc.
       });
     }
   }
@@ -271,7 +335,15 @@ function serializeNodeForPrompt(node: any): any {
     if (node.style.fontSize) ts.fontSize = `${node.style.fontSize}px`;
     if (node.style.fontWeight) ts.fontWeight = node.style.fontWeight;
     if (node.style.lineHeightPx) ts.lineHeight = `${Math.round(node.style.lineHeightPx * 100) / 100}px`;
-    if (node.style.letterSpacing) ts.letterSpacing = `${Math.round(node.style.letterSpacing * 100) / 100}px`;
+    if (node.style.letterSpacing) {
+      // Figma letterSpacing can be px or percentage of font-size
+      if (typeof node.style.letterSpacing === 'object' && node.style.letterSpacing.unit === 'PERCENT') {
+        ts.letterSpacing = `${Math.round(node.style.letterSpacing.value * 100) / 100}em`;
+      } else {
+        const lsVal = typeof node.style.letterSpacing === 'object' ? node.style.letterSpacing.value : node.style.letterSpacing;
+        ts.letterSpacing = `${Math.round(lsVal * 100) / 100}px`;
+      }
+    }
     if (node.style.italic) ts.fontStyle = 'italic';
     if (node.style.textCase && node.style.textCase !== 'ORIGINAL') {
       const caseMap: Record<string, string> = { UPPER: 'uppercase', LOWER: 'lowercase', TITLE: 'capitalize' };
@@ -279,6 +351,36 @@ function serializeNodeForPrompt(node: any): any {
     }
     if (node.style.textDecoration && node.style.textDecoration !== 'NONE') {
       ts.textDecoration = node.style.textDecoration.toLowerCase();
+    }
+    // Horizontal text alignment (left/center/right/justify)
+    if (node.style.textAlignHorizontal && node.style.textAlignHorizontal !== 'LEFT') {
+      const alignMap: Record<string, string> = { CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' };
+      const mapped = alignMap[node.style.textAlignHorizontal];
+      if (mapped) ts.textAlign = mapped;
+    }
+    // Vertical text alignment
+    if (node.style.textAlignVertical && node.style.textAlignVertical !== 'TOP') {
+      const vAlignMap: Record<string, string> = { CENTER: 'center', BOTTOM: 'flex-end' };
+      const vMapped = vAlignMap[node.style.textAlignVertical];
+      if (vMapped) {
+        ts.display = 'flex';
+        ts.alignItems = vMapped;
+      }
+    }
+    // Text truncation / overflow
+    if (node.style.textAutoResize === 'TRUNCATE') {
+      ts.overflow = 'hidden';
+      ts.textOverflow = 'ellipsis';
+      ts.whiteSpace = 'nowrap';
+    } else if (node.style.maxLines && node.style.maxLines > 1) {
+      ts.overflow = 'hidden';
+      ts.display = '-webkit-box';
+      ts['-webkit-line-clamp'] = node.style.maxLines;
+      ts['-webkit-box-orient'] = 'vertical';
+    }
+    // Paragraph spacing → margin-bottom (CSS has no paragraph-spacing property)
+    if (node.style.paragraphSpacing && node.style.paragraphSpacing > 0) {
+      ts.marginBottom = `${node.style.paragraphSpacing}px`;
     }
     // Text color is stored in node.fills (Paint[]), NOT node.style.fills.
     // Figma's .style object contains typography only; the fill color is always
@@ -288,7 +390,7 @@ function serializeNodeForPrompt(node: any): any {
       : null;
     if (textFill?.color) {
       ts.color = figmaColorToCSS(textFill.color, textFill.opacity);
-    } else if (node.style.fills?.[0]?.color) {
+    } else if (Array.isArray(node.style.fills) && node.style.fills[0]?.color) {
       // Fallback: Framelink-simplified nodes may embed fills inside .style
       ts.color = figmaColorToCSS(node.style.fills[0].color, node.style.fills[0].opacity);
     }
@@ -336,14 +438,27 @@ function serializeNodeForPrompt(node: any): any {
     result.rotation = `${node.rotation}deg`;
   }
 
-  // ── Visibility (for conditional rendering hints) ───────────────────
-  if (node.visible === false) {
-    result.visible = false;
-  }
-
   // ── Blend mode ─────────────────────────────────────────────────────
   if (node.blendMode && node.blendMode !== 'PASS_THROUGH' && node.blendMode !== 'NORMAL') {
     result.blendMode = node.blendMode.toLowerCase().replace(/_/g, '-');
+  }
+
+  // ── INSTANCE variant context ────────────────────────────────────────
+  // When an INSTANCE node is used inside a section or page, tell the LLM
+  // which component variant was selected and what property overrides it has.
+  // This prevents all instances from rendering as the default variant.
+  if (node.type === 'INSTANCE') {
+    if (node.mainComponent?.name) result.componentVariant = node.mainComponent.name;
+    if (node.componentProperties && Object.keys(node.componentProperties).length > 0) {
+      result.componentProperties = Object.fromEntries(
+        Object.entries(node.componentProperties as Record<string, any>).map(([k, v]) => [
+          k,
+          typeof v === 'object' && v !== null ? (v.value ?? v) : v,
+        ]),
+      );
+    } else if (node.componentPropertyValues && Object.keys(node.componentPropertyValues).length > 0) {
+      result.componentProperties = node.componentPropertyValues;
+    }
   }
 
   // ── Children (recursive) ───────────────────────────────────────────
@@ -378,7 +493,7 @@ export async function convertFigmaToCode(
 
   // Step 2: Fetch from Figma API
   onStep?.(`Fetching from Figma: file=${fileKey}, node=${nodeId ?? 'root'}...`);
-  const figmaToken = process.env.FIGMA_TOKEN;
+  const figmaToken = options.figmaToken || process.env.FIGMA_TOKEN;
   if (!figmaToken) {
     throw new Error(
       'FIGMA_TOKEN environment variable is required.\n' +
@@ -821,7 +936,7 @@ async function convertSingleComponent(
   const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
-    : yamlContent;
+    : dump(rootNode ? serializeNodeForPrompt(rootNode) : enhanced, { lineWidth: 120, noRefs: true });
   const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined);
 
   // Generate Mitosis code via LLM with retry
@@ -953,6 +1068,28 @@ async function convertPage(
   const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
 
+  // Compute page-level context once — passed to every section prompt so the
+  // LLM knows the canvas width, section gap, page padding, and neighbor names.
+  const _rootFill = (rootNode.fills ?? [])[0];
+  const pageBackground = _rootFill?.type === 'SOLID' && _rootFill.color
+    ? figmaColorToCSS(_rootFill.color, _rootFill.opacity)
+    : undefined;
+  const basePageCtx: Omit<PageSectionContext, 'prevSectionName' | 'nextSectionName'> = {
+    pageWidth:
+      rootNode.absoluteBoundingBox?.width ??
+      rootNode.dimensions?.width ??
+      rootNode.size?.x ??
+      undefined,
+    sectionGap: rootNode.itemSpacing ?? rootNode.layout?.gap ?? 0,
+    pagePadding: {
+      top: rootNode.paddingTop ?? rootNode.layout?.padding?.top ?? 0,
+      right: rootNode.paddingRight ?? rootNode.layout?.padding?.right ?? 0,
+      bottom: rootNode.paddingBottom ?? rootNode.layout?.padding?.bottom ?? 0,
+      left: rootNode.paddingLeft ?? rootNode.layout?.padding?.left ?? 0,
+    },
+    pageBackground,
+  };
+
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     const sectionInfo = sections[i];
@@ -997,12 +1134,9 @@ async function convertPage(
           failed: !parseResult.success,
         });
       } else {
-        // Regular section: use compact serializer for manageable YAML size.
-        // Raw dump of a section with 3 cards can be 300K+ chars (~90K tokens)
-        // which overwhelms the LLM. serializeNodeForPrompt keeps only
-        // CSS-relevant properties, reducing it to ~10K tokens.
-        const compactSection = serializeNodeForPrompt(child);
-        const sectionYaml = dump(compactSection, { lineWidth: 120, noRefs: true });
+        // Regular section: use hierarchical component-first generation.
+        // PATH 2 discovers UI components (dropdowns, inputs, buttons),
+        // generates each via PATH 1, then assembles the section layout.
 
         // Export any SVG assets from this section
         const iconNodes = collectAssetNodes(child);
@@ -1011,19 +1145,29 @@ async function convertPage(
           allAssets.push(...assets);
         }
 
-        const userPrompt = assemblePageSectionUserPrompt(
-          sectionYaml,
+        const sectionCtx: PageSectionContext = {
+          ...basePageCtx,
+          prevSectionName: i > 0 ? (sections[i - 1]?.name ?? null) : null,
+          nextSectionName: i < sections.length - 1 ? (sections[i + 1]?.name ?? null) : null,
+        };
+
+        const compoundResult = await generateCompoundSection(
+          child,
           sectionInfo.name,
           i + 1,
           children.length,
+          serializeNodeForPrompt,
+          llm,
+          sectionCtx,
+          onStep,
+          onAttempt,
         );
 
-        const parseResult = await generateWithRetry(llm, sectionSystemPrompt, userPrompt, onAttempt);
         sectionOutputs.push({
           info: sectionInfo,
-          rawCode: parseResult.rawCode,
-          css: parseResult.css ?? '',
-          failed: !parseResult.success,
+          rawCode: compoundResult.rawCode,
+          css: compoundResult.css,
+          failed: !compoundResult.success,
         });
       }
     } catch (err) {

@@ -1454,6 +1454,12 @@ function resolveLayout(node: any, globalStyles: Record<string, any>, css: Record
   if (layout.alignItems)     css['align-items']     = layout.alignItems;
   if (layout.gap)            css['gap']             = layout.gap;
   if (node.itemSpacing)      css['gap']             = `${node.itemSpacing}px`;
+
+  // Flex wrap — must be checked here, not just in resolveGrid
+  if (node.layoutWrap === 'WRAP' && css['display'] === 'flex') {
+    css['flex-wrap'] = 'wrap';
+    if (node.counterAxisSpacing) css['row-gap'] = `${node.counterAxisSpacing}px`;
+  }
 }
 
 function extractLayoutFromNode(node: any): any | null {
@@ -1539,10 +1545,15 @@ function resolveDimensions(node: any, css: Record<string, string>) {
   if (node.maxHeight != null && node.maxHeight > 0) css['max-height'] = `${node.maxHeight}px`;
 
   // ── Aspect ratio lock ──
+  // When preserveRatio is true, emit only width and let aspect-ratio control height.
   if (node.preserveRatio === true && width > 0 && height > 0) {
     const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
     const g = gcd(Math.round(width), Math.round(height));
     css['aspect-ratio'] = `${Math.round(width / g)} / ${Math.round(height / g)}`;
+    // Set width only — let aspect-ratio derive height
+    if (!css['width']) css['width'] = `${width}px`;
+    // Skip fixed height to let aspect-ratio work
+    css['height'] = 'auto';
   }
 
   // ── Height ──
@@ -1566,6 +1577,7 @@ function resolveDimensions(node: any, css: Record<string, string>) {
     if (fill) {
       css['flex-grow'] = '1'; css['width'] = '100%';
     } else if (hug) {
+      css['width'] = 'fit-content';
       css['min-width'] = `${width}px`;
     } else {
       css['width'] = `${width}px`;
@@ -1588,10 +1600,12 @@ function resolvePositioning(node: any, css: Record<string, string>) {
   css['position'] = 'absolute';
 
   if (!node.constraints) {
-    // Use relative position within parent (node.x/y), NOT absoluteBoundingBox
-    // which is relative to the canvas root and gives huge values in COMPONENT_SETs
-    if (node.x !== undefined) css['left'] = `${Math.round(node.x)}px`;
-    if (node.y !== undefined) css['top']  = `${Math.round(node.y)}px`;
+    // Use relative position within parent (node.x/y), NOT absoluteBoundingBox.
+    // Fall back to relativeTransform matrix if x/y are unavailable.
+    const posX = node.x ?? node.relativeTransform?.[0]?.[2];
+    const posY = node.y ?? node.relativeTransform?.[1]?.[2];
+    if (posX !== undefined) css['left'] = `${Math.round(posX)}px`;
+    if (posY !== undefined) css['top']  = `${Math.round(posY)}px`;
     return;
   }
 
@@ -1717,12 +1731,25 @@ function linearGradientToCSS(fill: any): string {
 
 function radialGradientToCSS(fill: any): string {
   if (!fill.gradientStops?.length) return 'radial-gradient(transparent, transparent)';
+  if (fill.gradientHandlePositions?.length >= 1) {
+    const cx = Math.round(fill.gradientHandlePositions[0].x * 100);
+    const cy = Math.round(fill.gradientHandlePositions[0].y * 100);
+    return `radial-gradient(circle at ${cx}% ${cy}%, ${gradientStopsToCSS(fill.gradientStops)})`;
+  }
   return `radial-gradient(circle, ${gradientStopsToCSS(fill.gradientStops)})`;
 }
 
 function angularGradientToCSS(fill: any): string {
   if (!fill.gradientStops?.length) return 'conic-gradient(transparent, transparent)';
-  return `conic-gradient(${gradientStopsToCSS(fill.gradientStops)})`;
+  let angle = 0;
+  let cx = 50, cy = 50;
+  if (fill.gradientHandlePositions?.length >= 2) {
+    const [h0, h1] = fill.gradientHandlePositions;
+    angle = Math.round(Math.atan2(h1.x - h0.x, -(h1.y - h0.y)) * (180 / Math.PI));
+    cx = Math.round(h0.x * 100);
+    cy = Math.round(h0.y * 100);
+  }
+  return `conic-gradient(from ${angle}deg at ${cx}% ${cy}%, ${gradientStopsToCSS(fill.gradientStops)})`;
 }
 
 function gradientStopsToCSS(stops: any[]): string {
@@ -1758,13 +1785,13 @@ function resolveStrokes(
   } else {
     // CENTER (default CSS border)
     if (strokes.sides) {
-      const val = `${weight} solid ${color} !important`;
+      const val = `${weight} solid ${color}`;
       if (strokes.sides.top)    css['border-top']    = val;
       if (strokes.sides.right)  css['border-right']  = val;
       if (strokes.sides.bottom) css['border-bottom'] = val;
       if (strokes.sides.left)   css['border-left']   = val;
     } else {
-      css['border'] = `${weight} solid ${color} !important`;
+      css['border'] = `${weight} solid ${color}`;
     }
   }
 
@@ -1911,17 +1938,6 @@ function heuristicCursor(node: any): string | null {
   if (/\b(drag|draggable)\b/.test(n)) return 'grab';
   if (/\bdisabled\b/.test(n)) return 'not-allowed';
   return null;
-}
-
-function buildTransitionHint(node: any): string {
-  const dur = node.transitionDuration ?? 200;
-  const ms  = typeof dur === 'number' ? `${Math.round(dur)}ms` : dur;
-  const EASING: Record<string, string> = {
-    EASE_IN: 'ease-in', EASE_OUT: 'ease-out', EASE_IN_AND_OUT: 'ease-in-out', LINEAR: 'linear',
-    EASE_IN_BACK: 'cubic-bezier(0.36, 0, 0.66, -0.56)', EASE_OUT_BACK: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
-    EASE_IN_AND_OUT_BACK: 'cubic-bezier(0.68, -0.55, 0.265, 1.55)', SPRING: 'cubic-bezier(0.5, 0, 0, 1.5)',
-  };
-  return `all ${ms} ${(node.transitionEasing && EASING[node.transitionEasing]) ?? 'ease'}`;
 }
 
 function findFirstTextNode(node: any): any | null {
@@ -2189,7 +2205,7 @@ export function buildVariantCSS(
   if (sourceComments) lines.push(`/* ${data.name} | ${data.componentCategory} | <${data.suggestedHtmlTag}> */`);
   lines.push(`.${base} {`);
   for (const [p, v] of Object.entries(rootContainer)) lines.push(`  ${p}: ${v};`);
-  if (!defaultContainer['border']) { lines.push(`  border: none !important;`); lines.push(`  outline: none;`); }
+  if (!defaultContainer['border']) { lines.push(`  border: none;`); lines.push(`  outline: none;`); }
   // Behavioral CSS for interactive components (cursor, transition, user-select)
   if (injectBehavioralStyles && data.isInteractive) {
     if (!rootContainer['cursor']) lines.push(`  cursor: pointer;`);
@@ -2208,7 +2224,7 @@ export function buildVariantCSS(
     const merged = { ...childCSS };
     const dims = childDimensions.get(childKey);
     if (dims) { merged['width'] = `${dims.width}px`; merged['height'] = `${dims.height}px`; }
-    if (isIconKey(childKey) && merged['color']) delete merged['color'];
+    // Keep icon color — SVGs preserve original Figma colors (no currentColor)
     if (Object.keys(merged).length === 0) continue;
 
     const effectiveKey = applyRenameMap(childKey, semanticRenameMap);
@@ -2386,7 +2402,7 @@ function emitDiffRules(
   const allKeys = new Set([...Object.keys(baseStyles.children), ...Object.keys(variantStyles.children)]);
   for (const key of allKeys) {
     const diff = diffStyles(baseStyles.children[key] ?? {}, variantStyles.children[key] ?? {});
-    if (isIconKey(key) && diff['color']) delete diff['color'];
+    // Keep icon color diffs — SVGs preserve original Figma colors
     const effectiveKey = renameMap ? applyRenameMap(key, renameMap) : key;
     if (Object.keys(diff).length > 0) maybeEmit(lines, `${selector} .${base}__${effectiveKey}`, diff, fps);
   }

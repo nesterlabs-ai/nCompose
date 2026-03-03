@@ -126,14 +126,15 @@ export function walkDocument(
 }
 
 /**
- * Create a hash key for deduplication
+ * Create a collision-free hash key for deduplication.
+ *
+ * Uses JSON.stringify with sorted keys to produce a deterministic
+ * canonical representation.  Previous implementation joined with '|'
+ * which could collide when values contained the delimiter.
  */
 export function createStyleHash(obj: any): string {
-  // Simple deterministic hash based on JSON stringification
-  // Sort keys to ensure consistent hashing
-  const sortedKeys = Object.keys(obj).sort();
-  const parts = sortedKeys.map((key) => `${key}:${JSON.stringify(obj[key])}`);
-  return parts.join('|');
+  // Canonical JSON with sorted keys — no delimiter ambiguity
+  return JSON.stringify(obj, Object.keys(obj).sort());
 }
 
 /**
@@ -142,7 +143,7 @@ export function createStyleHash(obj: any): string {
 export function addToGlobalVars<T>(
   globalMap: Record<string, T>,
   value: T,
-  prefix: string = 'style'
+  _prefix: string = 'style'
 ): string {
   const hash = createStyleHash(value);
 

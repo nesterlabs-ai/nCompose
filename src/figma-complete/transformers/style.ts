@@ -5,15 +5,15 @@
 import type { Paint, Color } from '../types.js';
 
 /**
- * Convert Figma color to CSS string
+ * Convert Figma color to CSS string, multiplying in paint-level opacity.
  */
-export function colorToCss(color: Color): string {
+export function colorToCss(color: Color, paintOpacity?: number): string {
   const r = Math.round(color.r * 255);
   const g = Math.round(color.g * 255);
   const b = Math.round(color.b * 255);
-  const a = color.a;
+  const a = parseFloat(((color.a ?? 1) * (paintOpacity ?? 1)).toFixed(3));
 
-  if (a === 1) {
+  if (a >= 0.999) {
     return `rgb(${r}, ${g}, ${b})`;
   }
 
@@ -25,7 +25,7 @@ export function colorToCss(color: Color): string {
  */
 export function paintToCssBackground(paint: Paint): string | null {
   if (paint.type === 'SOLID' && paint.color) {
-    return colorToCss(paint.color);
+    return colorToCss(paint.color, paint.opacity);
   }
 
   if (paint.type.startsWith('GRADIENT') && paint.gradientStops) {

@@ -230,8 +230,20 @@ export function resolveVariableValue(
     return null;
   }
 
-  // Get value for specific mode or use first available mode
-  const targetModeId = modeId || Object.keys(variable.valuesByMode)[0];
+  // Get value for specific mode, or use the collection's default mode,
+  // or fall back to the first available mode.
+  let targetModeId = modeId;
+  if (!targetModeId) {
+    // Look up the variable's collection to find its declared default mode
+    const collection = parsedData.variableCollections?.[variable.variableCollectionId];
+    targetModeId = collection?.defaultModeId
+      ?? collection?.modes?.[0]?.modeId
+      ?? Object.keys(variable.valuesByMode)[0];
+  }
+
+  if (!targetModeId) {
+    return null;
+  }
 
   if (variable.valuesByMode[targetModeId] !== undefined) {
     return variable.valuesByMode[targetModeId];

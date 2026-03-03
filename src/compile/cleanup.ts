@@ -240,6 +240,40 @@ function fixClassNameAttribute(code: string): string {
 }
 
 /**
+ * Normalizes SVG presentation attributes from kebab-case to camelCase
+ * so they are valid in JSX (both Mitosis and React).
+ *
+ * Only replaces attribute-position occurrences (`attr=`) to avoid
+ * touching valid kebab-case CSS property names inside string literals.
+ */
+function fixSVGAttributes(code: string): string {
+  return code
+    .replace(/\bstroke-width=/g, 'strokeWidth=')
+    .replace(/\bstroke-linecap=/g, 'strokeLinecap=')
+    .replace(/\bstroke-linejoin=/g, 'strokeLinejoin=')
+    .replace(/\bstroke-dasharray=/g, 'strokeDasharray=')
+    .replace(/\bstroke-dashoffset=/g, 'strokeDashoffset=')
+    .replace(/\bstroke-miterlimit=/g, 'strokeMiterlimit=')
+    .replace(/\bstroke-opacity=/g, 'strokeOpacity=')
+    .replace(/\bfill-opacity=/g, 'fillOpacity=')
+    .replace(/\bfill-rule=/g, 'fillRule=')
+    .replace(/\bclip-path=/g, 'clipPath=')
+    .replace(/\bclip-rule=/g, 'clipRule=')
+    .replace(/\bshape-rendering=/g, 'shapeRendering=')
+    .replace(/\bcolor-interpolation-filters=/g, 'colorInterpolationFilters=');
+}
+
+/**
+ * Fixes invalid CSS values that LLMs sometimes hallucinate.
+ * Applied to the extracted CSS block, not the JSX.
+ */
+function fixInvalidCSSValues(css: string): string {
+  // `background-size: stretch` is not a valid CSS value.
+  // The closest valid equivalent that preserves the "fill the area" intent is `cover`.
+  return css.replace(/\bbackground-size\s*:\s*stretch\b/gi, 'background-size: cover');
+}
+
+/**
  * Auto-fixes the root element when the LLM outputs `<div>` but the expected
  * tag is something else (e.g. `<button>`, `<nav>`, `<label>`).
  *
@@ -452,6 +486,37 @@ export function fixMapToFor(code: string): string {
 }
 
 /**
+ * Wraps bare JSX (no `export default function`) in a Mitosis component.
+ *
+ * Some LLMs (e.g. DeepSeek) output raw HTML/JSX without the
+ * `export default function` wrapper that Mitosis `parseJsx()` requires.
+ * This detects that case and wraps the JSX into a valid component.
+ */
+export function wrapBareJSX(code: string): string {
+  const trimmed = code.trim();
+
+  // Already has an export default function — nothing to do
+  if (/export\s+default\s+function\s/.test(trimmed)) return trimmed;
+
+  // If the code starts with a JSX tag (< not followed by another <, i.e. not a comparison)
+  // and does NOT have an export default, wrap it.
+  if (!trimmed.startsWith('<')) return trimmed;
+
+  // Derive a component name from the root element's class attribute
+  let componentName = 'Section';
+  const classMatch = trimmed.match(/^<\w+[^>]*\bclass="([^"]+)"/);
+  if (classMatch) {
+    // "hero-section" → "HeroSection"
+    componentName = classMatch[1]
+      .split(/[-_]+/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join('');
+  }
+
+  return `export default function ${componentName}(props) {\n  return (\n    ${trimmed}\n  );\n}`;
+}
+
+/**
  * Full cleanup pipeline: extracts CSS block, strips fences, fixes Mitosis
  * compliance issues, auto-fixes root element, hoists consts, and fixes imports.
  * Returns both the cleaned JSX and extracted CSS.
@@ -463,9 +528,12 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: s
   let cleaned = stripMarkdownFences(code);
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
-  const fixedRoot = fixRootElement(fixedClassName, expectedRootTag);
+  const fixedSVG = fixSVGAttributes(fixedClassName);
+  const wrapped = wrapBareJSX(fixedSVG);
+  const fixedRoot = fixRootElement(wrapped, expectedRootTag);
   const fixedMap = fixMapToFor(fixedRoot);
   const hoisted = hoistLocalConsts(fixedMap);
   const fixedJsx = fixMissingImports(hoisted);
-  return { jsx: fixedJsx, css };
+  const fixedCSS = fixInvalidCSSValues(css);
+  return { jsx: fixedJsx, css: fixedCSS };
 }

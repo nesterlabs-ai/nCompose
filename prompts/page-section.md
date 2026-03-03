@@ -10,4 +10,17 @@ You are generating ONE SECTION of a multi-section landing page. This section wil
 4. **Use semantic HTML** — `<header>`, `<section>`, `<footer>`, `<nav>`, `<h1>`-`<h6>`, `<p>`, `<button>`, `<a>`, `<img>`, `<ul>`, `<li>` as appropriate
 5. **The root element** of your section should use the section's BEM base class (e.g. `<section class="hero">`)
 6. **All CSS goes after the `---CSS---` delimiter** — same as the base rules
-7. **Do NOT import anything from @builder.io/mitosis** — pure static JSX only
+7. **No imports needed** — do NOT import from `@builder.io/mitosis`. No `useStore`, `Show`, or `For`.
+8. **You MUST still wrap JSX in `export default function`** — this is required for compilation. Example:
+
+```
+export default function HeroSection(props) {
+  return (
+    <section class="hero">
+      <h1 class="hero__title">Welcome</h1>
+    </section>
+  );
+}
+---CSS---
+.hero { ... }
+```

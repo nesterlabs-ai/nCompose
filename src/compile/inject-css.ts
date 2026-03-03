@@ -49,12 +49,22 @@ function injectReactCSS(code: string, css: string): string {
   if (lastMatch) {
     const afterReturn = lastMatch.index + lastMatch[0].length;
 
-    // Find the balanced closing ) for this return
+    // Find the balanced closing ) for this return, with string-context awareness
     let depth = 1;
     let closeIndex = afterReturn;
+    let inString: string | null = null;
+    let inTemplate = false;
+    let escaped = false;
     for (let i = afterReturn; i < code.length; i++) {
-      if (code[i] === '(') depth++;
-      if (code[i] === ')') depth--;
+      const ch = code[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && (inString || inTemplate)) { escaped = true; continue; }
+      if (inString) { if (ch === inString) inString = null; continue; }
+      if (inTemplate) { if (ch === '`') inTemplate = false; continue; }
+      if (ch === '"' || ch === "'") { inString = ch; continue; }
+      if (ch === '`') { inTemplate = true; continue; }
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
       if (depth === 0) {
         closeIndex = i;
         break;
@@ -96,11 +106,11 @@ function injectReactCSS(code: string, css: string): string {
 }
 
 function injectVueCSS(code: string, css: string): string {
-  // Vue: Add or replace <style scoped> section
+  // Vue: Append to existing <style scoped> or create new one
   if (code.includes('<style scoped>')) {
     return code.replace(
-      /<style scoped>[\s\S]*?<\/style>/,
-      `<style scoped>\n${css}\n</style>`,
+      /<\/style>/,
+      `\n/* — Variant CSS — */\n${css}\n</style>`,
     );
   }
 
@@ -108,11 +118,11 @@ function injectVueCSS(code: string, css: string): string {
 }
 
 function injectSvelteCSS(code: string, css: string): string {
-  // Svelte: Add or replace <style> section
+  // Svelte: Append to existing <style> or create new one
   if (code.includes('<style>')) {
     return code.replace(
-      /<style>[\s\S]*?<\/style>/,
-      `<style>\n${css}\n</style>`,
+      /<\/style>/,
+      `\n/* — Variant CSS — */\n${css}\n</style>`,
     );
   }
 

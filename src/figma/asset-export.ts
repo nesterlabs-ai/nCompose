@@ -683,8 +683,8 @@ export async function exportAssetsFromAllVariants(
 function extractSVGDimensions(svgContent: string): { width: number; height: number } | null {
   try {
     // Try to extract width/height attributes
-    const widthMatch = svgContent.match(/width="(\d+(?:\.\d+)?)"/);
-    const heightMatch = svgContent.match(/height="(\d+(?:\.\d+)?)"/);
+    const widthMatch = svgContent.match(/width="(\d+(?:\.\d+)?)(px|em|%)?"/);
+    const heightMatch = svgContent.match(/height="(\d+(?:\.\d+)?)(px|em|%)?"/);
 
     if (widthMatch && heightMatch) {
       return {

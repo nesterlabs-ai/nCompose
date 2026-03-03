@@ -91,7 +91,10 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     mkdirSync(assetsDir, { recursive: true });
 
     for (const asset of assets) {
-      if (!asset.content) continue; // skip if download failed
+      if (!asset.content) {
+        console.warn(`[output] Skipping asset "${asset.filename}" — download failed or content is empty`);
+        continue;
+      }
       const assetPath = join(assetsDir, asset.filename);
       writeFileSync(assetPath, asset.content, 'utf-8');
       writtenPaths.push(assetPath);

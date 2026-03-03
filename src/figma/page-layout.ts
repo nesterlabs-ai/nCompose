@@ -26,7 +26,7 @@ export interface PageLayoutResult {
 /**
  * Infer a semantic HTML tag from a Figma section name.
  */
-function inferSemanticTag(name: string): SectionInfo['semanticTag'] {
+function inferSemanticTag(name: string, index?: number, totalChildren?: number): SectionInfo['semanticTag'] {
   const lower = name.toLowerCase();
   if (/^(header|nav(bar|igation)?|top[-_ ]?bar|app[-_ ]?bar)$/i.test(lower) || lower.startsWith('header') || lower.startsWith('nav')) {
     return 'header';
@@ -36,6 +36,11 @@ function inferSemanticTag(name: string): SectionInfo['semanticTag'] {
   }
   if (/^nav/i.test(lower)) {
     return 'nav';
+  }
+  // Position-based fallback: first child → header, last child → footer
+  if (index !== undefined && totalChildren !== undefined) {
+    if (index === 0) return 'header';
+    if (index === totalChildren - 1) return 'footer';
   }
   return 'section';
 }
@@ -103,117 +108,129 @@ function extractPadding(node: any): string {
 export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayoutResult {
   const pageName = toKebab(rootNode.name || 'page') || 'page';
 
-  // Determine flex direction from layout mode
-  const layoutMode = rootNode.layoutMode ?? rootNode.layout?.mode;
-  const isHorizontal = layoutMode === 'HORIZONTAL' || layoutMode === 'row';
-  const flexDir = isHorizontal ? 'row' : 'column';
-
-  // Wrapping detection
-  const layoutWrap = rootNode.layoutWrap;
-  const isWrapping = layoutWrap === 'WRAP';
-
-  // Counter-axis spacing (row-gap for wrapping layouts)
-  const counterAxisSpacing = rootNode.counterAxisSpacing ?? 0;
-
   // Root dimensions
-  const width = rootNode.absoluteBoundingBox?.width
-    ?? rootNode.dimensions?.width
-    ?? rootNode.size?.x;
-  const minHeight = rootNode.absoluteBoundingBox?.height
-    ?? rootNode.dimensions?.height
-    ?? rootNode.size?.y;
-
-  // Item spacing
-  const gap = rootNode.itemSpacing ?? rootNode.layout?.gap ?? 0;
-
-  // Counter-axis alignment
-  const counterAlign = rootNode.counterAxisAlignItems ?? rootNode.layout?.alignItems;
-  let alignItems = '';
-  if (counterAlign === 'CENTER') alignItems = '  align-items: center;\n';
-  else if (counterAlign === 'MAX') alignItems = '  align-items: flex-end;\n';
+  const rootBounds = rootNode.absoluteBoundingBox;
+  const width = rootBounds?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x;
+  const rootHeight = rootBounds?.height ?? rootNode.dimensions?.height ?? rootNode.size?.y;
 
   // Clips content
   const overflow = rootNode.clipsContent ? '  overflow: hidden;\n' : '';
 
-  // Build root CSS
-  let rootCSS = `.${pageName} {\n`;
-  rootCSS += `  display: flex;\n`;
-  rootCSS += `  flex-direction: ${flexDir};\n`;
-  if (isWrapping) rootCSS += `  flex-wrap: wrap;\n`;
-  if (width) rootCSS += `  width: ${width}px;\n`;
-  if (minHeight) rootCSS += `  min-height: ${minHeight}px;\n`;
-  if (gap) rootCSS += `  gap: ${gap}px;\n`;
-  if (isWrapping && counterAxisSpacing) rootCSS += `  row-gap: ${counterAxisSpacing}px;\n`;
-  rootCSS += alignItems;
-  rootCSS += extractPadding(rootNode);
-  rootCSS += extractBackground(rootNode);
-  rootCSS += overflow;
-  rootCSS += '}\n';
+  // Determine layout mode
+  const layoutMode = rootNode.layoutMode ?? rootNode.layout?.mode;
+  const hasAutoLayout = layoutMode && layoutMode !== 'NONE';
 
-  // Build section info + CSS
   const sections: SectionInfo[] = [];
   let sectionCSS = '';
 
-  for (const child of children) {
-    const rawName = child.name || `section-${sections.length + 1}`;
-    const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
-    const baseClass = `${pageName}__${kebabName}`;
-    const semanticTag = inferSemanticTag(rawName);
+  let rootCSS: string;
 
-    sections.push({ name: kebabName, baseClass, semanticTag });
+  if (hasAutoLayout) {
+    // ── Auto-layout: flex-based stacking ─────────────────────────────────
+    const isHorizontal = layoutMode === 'HORIZONTAL' || layoutMode === 'row';
+    const flexDir = isHorizontal ? 'row' : 'column';
+    const isWrapping = rootNode.layoutWrap === 'WRAP';
+    const counterAxisSpacing = rootNode.counterAxisSpacing ?? 0;
+    const gap = rootNode.itemSpacing ?? rootNode.layout?.gap ?? 0;
 
-    // Section CSS
-    let css = `.${baseClass} {\n`;
+    const counterAlign = rootNode.counterAxisAlignItems ?? rootNode.layout?.alignItems;
+    let alignItems = '';
+    if (counterAlign === 'CENTER') alignItems = '  align-items: center;\n';
+    else if (counterAlign === 'MAX') alignItems = '  align-items: flex-end;\n';
 
-    // Use actual child width when available to preserve Figma dimensions.
-    const childWidth = child.absoluteBoundingBox?.width
-      ?? child.dimensions?.width
-      ?? child.size?.x;
-    if (childWidth) {
-      css += `  width: ${childWidth}px;\n`;
-    } else {
-      css += `  width: 100%;\n`;
-    }
+    rootCSS = `.${pageName} {\n`;
+    rootCSS += `  display: flex;\n`;
+    rootCSS += `  flex-direction: ${flexDir};\n`;
+    if (isWrapping) rootCSS += `  flex-wrap: wrap;\n`;
+    if (width) rootCSS += `  max-width: ${width}px;\n  width: 100%;\n  margin-left: auto;\n  margin-right: auto;\n`;
+    if (rootHeight) rootCSS += `  min-height: ${rootHeight}px;\n`;
+    if (gap) rootCSS += `  gap: ${gap}px;\n`;
+    if (isWrapping && counterAxisSpacing) rootCSS += `  row-gap: ${counterAxisSpacing}px;\n`;
+    rootCSS += alignItems;
+    rootCSS += extractPadding(rootNode);
+    rootCSS += extractBackground(rootNode);
+    rootCSS += overflow;
 
-    // Check if child has explicit height (fixed sizing)
-    const childHeight = child.absoluteBoundingBox?.height
-      ?? child.dimensions?.height
-      ?? child.size?.y;
-    const verticalSizing = child.layoutSizingVertical ?? child.sizing?.vertical;
-    if (verticalSizing === 'FIXED' && childHeight) {
-      css += `  height: ${childHeight}px;\n`;
-    }
+    // If any explicitly-absolute children exist, root needs relative context
+    const hasExplicitAbsolute = children.some(
+      (c) => c.layoutPositioning === 'ABSOLUTE' || c.constraints?.layoutPositioning === 'ABSOLUTE'
+    );
+    if (hasExplicitAbsolute) rootCSS += `  position: relative;\n`;
+    rootCSS += '}\n';
 
-    // Check for layoutGrow (flex: 1)
-    const layoutGrow = child.layoutGrow ?? child.layoutAlign;
-    if (layoutGrow === 1 || layoutGrow === 'STRETCH') {
-      css += `  flex: 1;\n`;
-    }
+    for (let ci = 0; ci < children.length; ci++) {
+      const child = children[ci];
+      const rawName = child.name || `section-${sections.length + 1}`;
+      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      const baseClass = `${pageName}__${kebabName}`;
+      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
 
-    // Position: absolute children
-    if (child.layoutPositioning === 'ABSOLUTE' || child.constraints?.layoutPositioning === 'ABSOLUTE') {
-      const bounds = child.absoluteBoundingBox;
-      const parentBounds = rootNode.absoluteBoundingBox;
-      if (bounds && parentBounds) {
-        css = `.${baseClass} {\n`;
-        css += `  position: absolute;\n`;
-        css += `  left: ${bounds.x - parentBounds.x}px;\n`;
-        css += `  top: ${bounds.y - parentBounds.y}px;\n`;
-        css += `  width: ${bounds.width}px;\n`;
-        css += `  height: ${bounds.height}px;\n`;
+      // Explicit absolute child inside an auto-layout frame
+      if (child.layoutPositioning === 'ABSOLUTE' || child.constraints?.layoutPositioning === 'ABSOLUTE') {
+        const bounds = child.absoluteBoundingBox;
+        const parentBounds = rootNode.absoluteBoundingBox;
+        if (bounds && parentBounds) {
+          sectionCSS += `.${baseClass} {\n`;
+          sectionCSS += `  position: absolute;\n`;
+          sectionCSS += `  left: ${Math.round(bounds.x - parentBounds.x)}px;\n`;
+          sectionCSS += `  top: ${Math.round(bounds.y - parentBounds.y)}px;\n`;
+          sectionCSS += `  width: ${Math.round(bounds.width)}px;\n`;
+          sectionCSS += `  height: ${Math.round(bounds.height)}px;\n`;
+          sectionCSS += '}\n';
+          continue;
+        }
       }
+
+      let css = `.${baseClass} {\n`;
+      const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
+      if (childWidth) css += `  width: ${childWidth}px;\n`;
+      else css += `  width: 100%;\n`;
+
+      const childHeight = child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y;
+      const verticalSizing = child.layoutSizingVertical ?? child.sizing?.vertical;
+      if (verticalSizing === 'FIXED' && childHeight) css += `  height: ${childHeight}px;\n`;
+
+      const layoutGrow = child.layoutGrow ?? child.layoutAlign;
+      if (layoutGrow === 1 || layoutGrow === 'STRETCH') css += `  flex: 1;\n`;
+      css += '}\n';
+      sectionCSS += css;
     }
 
-    css += '}\n';
-    sectionCSS += css;
-  }
+  } else {
+    // ── No auto-layout: children are absolutely positioned ────────────────
+    // Root is a positioning context; each child gets explicit top/left from bounds.
+    rootCSS = `.${pageName} {\n`;
+    rootCSS += `  position: relative;\n`;
+    if (width) rootCSS += `  max-width: ${width}px;\n  width: 100%;\n  margin-left: auto;\n  margin-right: auto;\n`;
+    if (rootHeight) rootCSS += `  height: ${rootHeight}px;\n`;
+    rootCSS += extractPadding(rootNode);
+    rootCSS += extractBackground(rootNode);
+    rootCSS += overflow;
+    rootCSS += '}\n';
 
-  // If any child is absolute, root needs position: relative
-  const hasAbsolute = children.some(
-    (c) => c.layoutPositioning === 'ABSOLUTE' || c.constraints?.layoutPositioning === 'ABSOLUTE'
-  );
-  if (hasAbsolute) {
-    rootCSS = rootCSS.replace('}\n', '  position: relative;\n}\n');
+    for (let ci = 0; ci < children.length; ci++) {
+      const child = children[ci];
+      const rawName = child.name || `section-${sections.length + 1}`;
+      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      const baseClass = `${pageName}__${kebabName}`;
+      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
+
+      const bounds = child.absoluteBoundingBox;
+      let css = `.${baseClass} {\n`;
+      if (bounds && rootBounds) {
+        css += `  position: absolute;\n`;
+        css += `  left: ${Math.round(bounds.x - rootBounds.x)}px;\n`;
+        css += `  top: ${Math.round(bounds.y - rootBounds.y)}px;\n`;
+        css += `  width: ${Math.round(bounds.width)}px;\n`;
+        css += `  height: ${Math.round(bounds.height)}px;\n`;
+      } else {
+        // No bounding box — fallback to full-width flow
+        const childWidth = child.dimensions?.width ?? child.size?.x;
+        css += childWidth ? `  width: ${childWidth}px;\n` : `  width: 100%;\n`;
+      }
+      css += '}\n';
+      sectionCSS += css;
+    }
   }
 
   return {

@@ -79,6 +79,23 @@ export function assemblePageSectionSystemPrompt(): string {
   return `${base}\n\n${sectionAddendum}`;
 }
 
+export interface PageSectionContext {
+  /** Page width in pixels */
+  pageWidth?: number;
+  /** Page height in pixels */
+  pageHeight?: number;
+  /** Gap between sections in pixels */
+  sectionGap?: number;
+  /** Page-level padding */
+  pagePadding?: { top: number; right: number; bottom: number; left: number };
+  /** Name of the section immediately before this one (null if first) */
+  prevSectionName?: string | null;
+  /** Name of the section immediately after this one (null if last) */
+  nextSectionName?: string | null;
+  /** Dominant background color of the page root */
+  pageBackground?: string;
+}
+
 /**
  * Assembles the user prompt for a single page section in PATH C.
  *
@@ -86,20 +103,47 @@ export function assemblePageSectionSystemPrompt(): string {
  * @param sectionName - Human-readable section name (e.g. "Hero")
  * @param sectionIndex - 1-based index of this section within the page
  * @param totalSections - Total number of sections in the page
+ * @param ctx - Optional page-level context (width, gap, neighbors)
  */
 export function assemblePageSectionUserPrompt(
   yamlContent: string,
   sectionName: string,
   sectionIndex: number,
   totalSections: number,
+  ctx?: PageSectionContext,
 ): string {
+  const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
+
+  const contextLines: string[] = [];
+  if (ctx) {
+    if (ctx.pageWidth) contextLines.push(`- Page canvas width: ${ctx.pageWidth}px`);
+    if (ctx.sectionGap) contextLines.push(`- Gap between sections: ${ctx.sectionGap}px`);
+    if (ctx.pagePadding) {
+      const { top, right, bottom, left } = ctx.pagePadding;
+      if (top || right || bottom || left) {
+        contextLines.push(`- Page padding: ${top}px ${right}px ${bottom}px ${left}px`);
+      }
+    }
+    if (ctx.pageBackground) contextLines.push(`- Page background: ${ctx.pageBackground}`);
+    if (ctx.prevSectionName) contextLines.push(`- Previous section: "${ctx.prevSectionName}"`);
+    else contextLines.push(`- This is the FIRST section (no section above)`);
+    if (ctx.nextSectionName) contextLines.push(`- Next section: "${ctx.nextSectionName}"`);
+    else contextLines.push(`- This is the LAST section (no section below)`);
+  }
+
+  const contextBlock = contextLines.length > 0
+    ? `\n**Page context:**\n${contextLines.join('\n')}\n`
+    : '';
+
   return `Convert the following Figma section to static Mitosis JSX (.lite.tsx).
 
 This is **Section ${sectionIndex} of ${totalSections}: "${sectionName}"**.
-
-Use BEM class names prefixed with "${sectionName.toLowerCase().replace(/\s+/g, '-')}" (e.g. "${sectionName.toLowerCase().replace(/\s+/g, '-')}__title").
-Preserve exact text content and numeric dimensions from the input data.
-Do not replace labels/content with placeholders.
+${contextBlock}
+Use BEM class names prefixed with "${slug}" (e.g. "${slug}__title", "${slug}__cta-button").
+- Do NOT invent class names — derive them from the element's role in the design.
+- Preserve exact text content and numeric dimensions from the input data.
+- Do not replace labels/content with placeholders.
+- If a fill has type "image", render it as a CSS background-image (cover/contain based on scaleMode).
 
 \`\`\`yaml
 ${yamlContent.trim()}

@@ -18,8 +18,33 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = config.server.port;
 
-// In-memory session storage
-const sessions = new Map<string, ConversionResult>();
+// In-memory session storage with TTL (1 hour)
+const SESSION_TTL_MS = 60 * 60 * 1000;
+const sessionStore = new Map<string, { result: ConversionResult; createdAt: number }>();
+
+function getSession(id: string): ConversionResult | undefined {
+  const entry = sessionStore.get(id);
+  if (!entry) return undefined;
+  if (Date.now() - entry.createdAt > SESSION_TTL_MS) {
+    sessionStore.delete(id);
+    return undefined;
+  }
+  return entry.result;
+}
+
+function setSession(id: string, result: ConversionResult): void {
+  sessionStore.set(id, { result, createdAt: Date.now() });
+}
+
+// Periodic cleanup of expired sessions (every 10 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of sessionStore) {
+    if (now - entry.createdAt > SESSION_TTL_MS) {
+      sessionStore.delete(id);
+    }
+  }
+}, 10 * 60 * 1000);
 
 // Middleware
 app.use(express.json({ limit: config.server.jsonLimit }));
@@ -34,7 +59,7 @@ app.use(express.static(join(__dirname, 'public')));
  * Streams progress via Server-Sent Events, then sends completion data.
  */
 app.post('/api/convert', (req: any, res: any) => {
-  const { figmaUrl, figmaToken, frameworks, name } = req.body;
+  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM } = req.body;
 
   // Validate inputs
   if (!figmaUrl || typeof figmaUrl !== 'string') {
@@ -65,10 +90,6 @@ app.post('/api/convert', (req: any, res: any) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Set the Figma token for this request
-  const previousToken = process.env.FIGMA_TOKEN;
-  process.env.FIGMA_TOKEN = figmaToken;
-
   const sessionId = generateSessionId();
 
   sendEvent('step', { message: 'Starting conversion...' });
@@ -79,8 +100,9 @@ app.post('/api/convert', (req: any, res: any) => {
       frameworks: selectedFrameworks,
       output: config.server.outputDir,
       name: name && typeof name === 'string' ? name.trim() : undefined,
-      llm: config.server.defaultLLM as any,
+      llm: (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM) as any,
       depth: config.server.defaultDepth,
+      figmaToken,
     },
     {
       onStep: (step) => {
@@ -93,7 +115,7 @@ app.post('/api/convert', (req: any, res: any) => {
   )
     .then((result) => {
       // Store result in session
-      sessions.set(sessionId, result);
+      setSession(sessionId, result);
 
       // Write output files to disk (same as CLI)
       const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
@@ -139,14 +161,7 @@ app.post('/api/convert', (req: any, res: any) => {
       sendEvent('error', { message });
       res.end();
     })
-    .finally(() => {
-      // Restore previous token
-      if (previousToken !== undefined) {
-        process.env.FIGMA_TOKEN = previousToken;
-      } else {
-        delete process.env.FIGMA_TOKEN;
-      }
-    });
+;
 
   // Handle client disconnect
   req.on('close', () => {
@@ -159,7 +174,7 @@ app.post('/api/convert', (req: any, res: any) => {
  */
 app.get('/api/download/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = sessions.get(sessionId);
+  const result = getSession(sessionId);
 
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
@@ -223,7 +238,7 @@ app.post('/api/save-file', async (req: any, res: any) => {
     return;
   }
 
-  const result = sessions.get(sessionId);
+  const result = getSession(sessionId);
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
@@ -275,7 +290,7 @@ app.get('/api/config', (_req: any, res: any) => {
  */
 app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = sessions.get(sessionId);
+  const result = getSession(sessionId);
 
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
@@ -356,7 +371,7 @@ app.get('/auth/github/callback', (_req: any, res: any) => {
  */
 app.get('/api/preview/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = sessions.get(sessionId);
+  const result = getSession(sessionId);
 
   if (!result) {
     res.status(404).send('Session not found or expired');
@@ -374,7 +389,6 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
     result.componentName,
     sessionId,
     result.componentPropertyDefinitions,
-    result.variantMetadata,
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);
@@ -385,7 +399,7 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
  */
 app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
   const { sessionId, filename } = req.params;
-  const result = sessions.get(sessionId);
+  const result = getSession(sessionId);
 
   if (!result) {
     res.status(404).send('Session not found');

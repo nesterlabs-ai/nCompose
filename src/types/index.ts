@@ -102,6 +102,7 @@ export interface ConvertOptions {
   name?: string;
   llm: LLMProviderName;
   depth: number;
+  figmaToken?: string; // Pass token directly instead of relying on process.env
 }
 
 /**

@@ -5,4 +5,5 @@ export {
   assembleUserPrompt,
   assemblePageSectionSystemPrompt,
   assemblePageSectionUserPrompt,
+  type PageSectionContext,
 } from './assemble.js';

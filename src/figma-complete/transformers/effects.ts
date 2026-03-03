@@ -5,15 +5,15 @@
 import type { Effect, Color } from '../types.js';
 
 /**
- * Convert color to CSS string
+ * Convert color to CSS string, multiplying in paint-level opacity.
  */
-function colorToCss(color: Color): string {
+function colorToCss(color: Color, paintOpacity?: number): string {
   const r = Math.round(color.r * 255);
   const g = Math.round(color.g * 255);
   const b = Math.round(color.b * 255);
-  const a = color.a;
+  const a = parseFloat(((color.a ?? 1) * (paintOpacity ?? 1)).toFixed(3));
 
-  if (a === 1) {
+  if (a >= 0.999) {
     return `rgb(${r}, ${g}, ${b})`;
   }
 

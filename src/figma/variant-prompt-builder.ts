@@ -1020,7 +1020,8 @@ export function buildComponentSetUserPrompt(
   // invent different names. This is the single source of truth for child element
   // class names — the JSX must use these exactly.
   if (variantCSS) {
-    const base           = toKebabCase(promptData.componentName);
+    const base           
+    = toKebabCase(promptData.componentName);
     const elementClasses = extractCSSElementClasses(variantCSS, base);
     if (elementClasses.length > 0) {
       lines.push('### ⚠️ Exact Child CSS Classes — Use ONLY These');

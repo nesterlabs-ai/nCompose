@@ -102,6 +102,8 @@ export interface ConvertOptions {
   name?: string;
   llm: LLMProviderName;
   depth: number;
+  /** When true, prompts instruct the LLM to use Tailwind + cn() + CSS variables for the starter template. */
+  templateMode?: boolean;
   figmaToken?: string; // Pass token directly instead of relying on process.env
 }
 

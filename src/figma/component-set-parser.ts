@@ -330,6 +330,55 @@ export function classifyStateValue(value: string): ClassifiedState {
   return { booleanCondition: toBooleanPropName(normalized), cssSelector: '', originalValue: value };
 }
 
+/**
+ * Resolve CSS selector collisions when two states share the same pseudo-class.
+ *
+ * Example: "Pressed" and "Active" both default to `:active:not([disabled])`.
+ * In a chip or toggle, "Active" is a persistent selected state (needs `[data-active]`),
+ * while "Pressed" is a transient mouse-down state (stays as `:active`).
+ *
+ * Rules:
+ *  - States whose name implies transient press ("pressed", "clicking", "mousedown")
+ *    keep the `:active` pseudo-class.
+ *  - States whose name implies persistence ("active", "selected", "on") and share the
+ *    pseudo-class with a transient state are reclassified to `[data-{name}]`.
+ */
+const TRANSIENT_ACTIVE_NAMES = new Set(['pressed', 'clicking', 'mousedown', 'push']);
+function resolveStateSelectorCollisions(states: ClassifiedState[]): ClassifiedState[] {
+  // Group states by their cssSelector
+  const bySel = new Map<string, ClassifiedState[]>();
+  for (const cs of states) {
+    if (!cs.cssSelector) continue;
+    const group = bySel.get(cs.cssSelector) ?? [];
+    group.push(cs);
+    bySel.set(cs.cssSelector, group);
+  }
+
+  const reclassify = new Set<ClassifiedState>();
+  for (const [, group] of bySel) {
+    if (group.length < 2) continue;
+    // If there's a transient state in the group, reclassify the non-transient ones
+    const hasTransient = group.some((cs) => TRANSIENT_ACTIVE_NAMES.has(cs.originalValue.toLowerCase().trim()));
+    if (hasTransient) {
+      for (const cs of group) {
+        if (!TRANSIENT_ACTIVE_NAMES.has(cs.originalValue.toLowerCase().trim())) {
+          reclassify.add(cs);
+        }
+      }
+    }
+  }
+
+  if (reclassify.size === 0) return states;
+
+  return states.map((cs) => {
+    if (!reclassify.has(cs)) return cs;
+    // Reclassify as a boolean data-attribute state.
+    // buildStateSelector() will fall back to [data-{kebab}] for unknown boolean names,
+    // so setting cssSelector='' and booleanCondition correctly is sufficient.
+    return { ...cs, cssSelector: '', booleanCondition: toBooleanPropName(cs.originalValue) };
+  });
+}
+
 function splitCompoundState(normalized: string): [string, string] | null {
   const sdIdx = normalized.indexOf(' - ');
   if (sdIdx > 0) return [normalized.slice(0, sdIdx), normalized.slice(sdIdx + 3)];
@@ -345,8 +394,10 @@ function splitCompoundState(normalized: string): [string, string] | null {
 
 function toBooleanPropName(stateValue: string): string {
   const parts = stateValue.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0];
-  return parts[0] + parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('');
+  // Lowercase the first word so single-word values like "Active" → "active" (camelCase)
+  const first = parts[0].charAt(0).toLowerCase() + parts[0].slice(1);
+  if (parts.length === 1) return first;
+  return first + parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('');
 }
 
 // ============================================================================
@@ -421,7 +472,7 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
 export const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
   'button': 'button', 'icon-button': 'button', 'input': 'div', 'textarea': 'div',
   'select': 'div', 'checkbox': 'label', 'radio': 'label', 'toggle': 'button', 'switch': 'button',
-  'badge': 'span', 'chip': 'div', 'tag': 'span', 'label': 'label', 'avatar': 'div',
+  'badge': 'span', 'chip': 'button', 'tag': 'span', 'label': 'label', 'avatar': 'div',
   'card': 'article', 'dialog': 'dialog', 'modal': 'dialog', 'drawer': 'aside',
   'tooltip': 'div', 'popover': 'div', 'toast': 'div', 'alert': 'div', 'banner': 'div',
   'tab': 'button', 'tab-panel': 'div', 'menu': 'ul', 'menu-item': 'li', 'dropdown': 'div',
@@ -454,7 +505,10 @@ const INTERACTIVE_CATEGORIES = new Set<ComponentCategory>([
 ]);
 
 export function detectComponentCategory(name: string): ComponentCategory {
-  const n = name.toLowerCase();
+  const n = name
+    .replace(/([a-z])([A-Z])/g, '$1 $2')  // "ButtonDanger" → "Button Danger"
+    .replace(/[-_]+/g, ' ')
+    .toLowerCase().trim();
   for (const [pattern, cat] of CATEGORY_PATTERNS) {
     if (pattern.test(n)) return cat;
   }
@@ -770,7 +824,9 @@ export function parseComponentSet(completeDesign: any): ComponentSetData | null 
   const stateAxis  = stateAxes[0] ?? null;
   const propAxes   = axes.filter((a) => !stateAxes.includes(a));
 
-  const classifiedStates = stateAxis ? stateAxis.values.map(classifyStateValue) : [];
+  const classifiedStates = stateAxis
+    ? resolveStateSelectorCollisions(stateAxis.values.map(classifyStateValue))
+    : [];
 
   const booleanPropsSet = new Set<string>();
   for (const cs of classifiedStates) {
@@ -1406,7 +1462,13 @@ function resolveNodeCSS(
 
   const effects = globalStyles[node.effects] ?? extractEffectsFromNode(node);
   if (effects) {
-    if (effects.boxShadow)      css['box-shadow']      = effects.boxShadow;
+    if (effects.boxShadow) {
+      // Preserve any inset stroke shadows already set by resolveStrokes — drop shadows go first
+      const existingStroke = css['box-shadow'];
+      css['box-shadow'] = existingStroke
+        ? `${effects.boxShadow}, ${existingStroke}`
+        : effects.boxShadow;
+    }
     if (effects.backdropFilter) css['backdrop-filter'] = effects.backdropFilter;
     if (effects.filter)         css['filter']          = effects.filter;
   }
@@ -2254,7 +2316,27 @@ export function buildVariantCSS(
   // Emit BEM modifier diffs for every non-default axis value, then immediately
   // emit state overrides scoped to that same modifier selector — so every axis
   // (Style, Size, Type, …) gets its own :hover/:focus/:disabled rules.
-  for (const axis of data.propAxes) {
+  //
+  // IMPORTANT — Axis emission order: structural/dimension axes (Size, Width, …) are
+  // processed BEFORE style/theme axes (Style, Type, Variant, …).  Both single-axis
+  // state selectors have the same CSS specificity (one class + one pseudo-class), so
+  // the last rule wins.  By ensuring style-axis rules come last in the output they
+  // override the size-axis hover/focus rules and the correct visual state is applied.
+  const STYLE_AXIS_NAMES = new Set(['style', 'type', 'variant', 'color', 'theme', 'kind', 'appearance', 'mode']);
+  const SIZE_AXIS_NAMES  = new Set(['size', 'width', 'height', 'dimension', 'density', 'scale']);
+  const sortedPropAxes = [...data.propAxes].sort((a, b) => {
+    const aIsSize  = SIZE_AXIS_NAMES.has(a.name.toLowerCase());
+    const bIsSize  = SIZE_AXIS_NAMES.has(b.name.toLowerCase());
+    const aIsStyle = STYLE_AXIS_NAMES.has(a.name.toLowerCase());
+    const bIsStyle = STYLE_AXIS_NAMES.has(b.name.toLowerCase());
+    // Size axes first, style axes last, others in original order
+    if (aIsSize && !bIsSize) return -1;
+    if (!aIsSize && bIsSize) return 1;
+    if (aIsStyle && !bIsStyle) return 1;
+    if (!aIsStyle && bIsStyle) return -1;
+    return 0;
+  });
+  for (const axis of sortedPropAxes) {
     for (const value of axis.values) {
       const isDefault = value === (data.defaultVariant.props[axis.name] ?? axis.values[0]);
       const lookup = { ...defaultLookup, [axis.name]: value };
@@ -2395,13 +2477,14 @@ function emitDiffRules(
   variantStyles: VariantStyles,
   fps?: Set<string>,
   renameMap?: Map<string, string>,
+  isStateDiff = false,
 ): void {
-  const cDiff = diffStyles(baseStyles.container, variantStyles.container);
+  const cDiff = diffStyles(baseStyles.container, variantStyles.container, isStateDiff);
   if (Object.keys(cDiff).length > 0) maybeEmit(lines, selector, cDiff, fps);
 
   const allKeys = new Set([...Object.keys(baseStyles.children), ...Object.keys(variantStyles.children)]);
   for (const key of allKeys) {
-    const diff = diffStyles(baseStyles.children[key] ?? {}, variantStyles.children[key] ?? {});
+    const diff = diffStyles(baseStyles.children[key] ?? {}, variantStyles.children[key] ?? {}, isStateDiff);
     // Keep icon color diffs — SVGs preserve original Figma colors
     const effectiveKey = renameMap ? applyRenameMap(key, renameMap) : key;
     if (Object.keys(diff).length > 0) maybeEmit(lines, `${selector} .${base}__${effectiveKey}`, diff, fps);
@@ -2415,7 +2498,11 @@ function maybeEmit(lines: string[], selector: string, props: Record<string, stri
   lines.push('', `${selector} {`, body, '}');
 }
 
-function buildStateSelector(baseSelector: string, cs: ClassifiedState): string {
+function buildStateSelector(
+  baseSelector: string,
+  cs: ClassifiedState,
+  dataAttrExclusions: string[] = [],
+): string {
   const clean = baseSelector.replace(/[()[\]]/g, '');
   let sel = clean;
   if (cs.booleanCondition) {
@@ -2423,7 +2510,14 @@ function buildStateSelector(baseSelector: string, cs: ClassifiedState): string {
     const kb = toKebabCase(cs.booleanCondition);
     sel += KNOWN_BOOLEAN_STATES[lo] ?? KNOWN_BOOLEAN_STATES[kb] ?? `[data-${kb}]`;
   }
-  if (cs.cssSelector) sel += cs.cssSelector;
+  if (cs.cssSelector) {
+    sel += cs.cssSelector;
+    // Prevent pseudo-class hover/focus rules from overriding persistent data-attribute states.
+    // e.g. :hover on an active chip should not flash the hover colour over the active colour.
+    for (const attr of dataAttrExclusions) {
+      sel += `:not(${attr})`;
+    }
+  }
   return sel;
 }
 
@@ -2434,20 +2528,50 @@ function emitStateOverrides(
   sourceComments?: boolean, fps?: Set<string>,
   renameMap?: Map<string, string>,
 ): void {
+  // Collect all persistent data-attribute selectors present in this component.
+  // These are states that have a booleanCondition but no CSS pseudo-class selector.
+  const persistentDataAttrs: string[] = [];
+  for (const s of data.classifiedStates) {
+    if (s.booleanCondition && !s.cssSelector) {
+      const lo = s.booleanCondition.toLowerCase();
+      const kb = toKebabCase(s.booleanCondition);
+      persistentDataAttrs.push(KNOWN_BOOLEAN_STATES[lo] ?? KNOWN_BOOLEAN_STATES[kb] ?? `[data-${kb}]`);
+    }
+  }
+
   for (const cs of data.classifiedStates) {
     if (cs.cssSelector === '' && cs.booleanCondition === null) continue;
     const stateVariant = findVariant({ ...baseLookup, [data.stateAxis!.name]: cs.originalValue });
     if (!stateVariant) continue;
     if (sourceComments) lines.push('', `/* state: ${cs.originalValue} */`);
-    emitDiffRules(lines, base, buildStateSelector(baseSel, cs), baseVariant.styles, stateVariant.styles, fps, renameMap);
+    // For pseudo-class states (hover/focus/active), exclude persistent data-attribute states
+    // so e.g. hovering an active chip doesn't flash the hover colour over the active colour.
+    const exclusions = cs.cssSelector ? persistentDataAttrs : [];
+    emitDiffRules(lines, base, buildStateSelector(baseSel, cs, exclusions), baseVariant.styles, stateVariant.styles, fps, renameMap, true);
   }
 }
 
-function diffStyles(base: Record<string, string>, variant: Record<string, string>): Record<string, string> {
+// Properties that should never be emitted as state-specific overrides (hover/focus/disabled diffs).
+// overflow is a structural layout property set by Figma's clipsContent — not a visual state property.
+const STATE_DIFF_SKIP_PROPS = new Set(['overflow', 'overflow-x', 'overflow-y']);
+
+function diffStyles(
+  base: Record<string, string>,
+  variant: Record<string, string>,
+  isStateDiff = false,
+): Record<string, string> {
   const diff: Record<string, string> = {};
-  for (const [k, v] of Object.entries(variant)) { if (base[k] !== v) diff[k] = v; }
+  for (const [k, v] of Object.entries(variant)) {
+    if (isStateDiff && STATE_DIFF_SKIP_PROPS.has(k)) continue;
+    if (base[k] !== v) diff[k] = v;
+  }
   for (const k of Object.keys(base)) {
-    if (!(k in variant)) diff[k] = (k === 'background-color' || k === 'background') ? 'transparent' : 'unset';
+    if (!(k in variant)) {
+      // For state diffs, don't unset backdrop-filter — let it inherit from the base class.
+      // Figma's effects:[] on a focus variant just means the effect wasn't repeated, not removed.
+      if (isStateDiff && k === 'backdrop-filter') continue;
+      diff[k] = (k === 'background-color' || k === 'background') ? 'transparent' : 'unset';
+    }
   }
   return diff;
 }

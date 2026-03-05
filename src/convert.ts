@@ -624,9 +624,9 @@ async function convertComponentSet(
 
   // Step A3: Build specialized prompt for class-based component (asset hints + variant tracking included)
   const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
-  const systemPrompt = buildComponentSetSystemPrompt();
+  const systemPrompt = buildComponentSetSystemPrompt(options.templateMode);
   const defaultVariantYaml = extractDefaultVariantYaml(componentSetData.defaultVariantNode);
-  const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS);
+  const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS, options.templateMode);
 
   // Step A4: LLM generates Mitosis component with class bindings
   const llm = createLLMProvider(options.llm);
@@ -930,14 +930,14 @@ async function convertSingleComponent(
 
   // Assemble prompts
   onStep?.('Assembling prompts...');
-  const systemPrompt = assembleSystemPrompt();
+  const systemPrompt = assembleSystemPrompt(options.templateMode);
   // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
   // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
   const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
     : dump(rootNode ? serializeNodeForPrompt(rootNode) : enhanced, { lineWidth: 120, noRefs: true });
-  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined);
+  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
 
   // Generate Mitosis code via LLM with retry
   const llm = createLLMProvider(options.llm);
@@ -1064,7 +1064,7 @@ async function convertPage(
 
   // Step C2: Generate each section via LLM
   const llm = createLLMProvider(options.llm);
-  const sectionSystemPrompt = assemblePageSectionSystemPrompt();
+  const sectionSystemPrompt = assemblePageSectionSystemPrompt(options.templateMode);
   const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
 
@@ -1117,8 +1117,8 @@ async function convertPage(
         const variantCSS = buildVariantCSS(componentSetData, dimensionMap);
         const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
         const defaultVariantYaml = extractDefaultVariantYaml(componentSetData.defaultVariantNode);
-        const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS);
-        const systemPrompt = buildComponentSetSystemPrompt();
+        const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS, options.templateMode);
+        const systemPrompt = buildComponentSetSystemPrompt(options.templateMode);
 
         const parseResult = await generateWithRetry(
           llm, systemPrompt, userPrompt, onAttempt, variantCSS,
@@ -1161,6 +1161,7 @@ async function convertPage(
           sectionCtx,
           onStep,
           onAttempt,
+          options.templateMode,
         );
 
         sectionOutputs.push({

@@ -6,22 +6,39 @@ import { loadFewShotExamples } from './few-shot-examples.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const TEMPLATE_MODE_PROMPT_PATH = resolve(__dirname, '../../prompts/template-mode.md');
+let cachedTemplateModeAddendum: string | null = null;
+
+/**
+ * Loads the template-mode addendum (Tailwind + cn() + CSS variables for the starter).
+ * Exported for use in variant-prompt-builder (PATH A).
+ */
+export function loadTemplateModeAddendum(): string {
+  if (cachedTemplateModeAddendum) return cachedTemplateModeAddendum;
+  cachedTemplateModeAddendum = readFileSync(TEMPLATE_MODE_PROMPT_PATH, 'utf-8').trim();
+  return cachedTemplateModeAddendum;
+}
+
 /**
  * Assembles the full system prompt by combining:
  * 1. The base system prompt (Mitosis rules, styling mappings, semantic mapping)
  * 2. Few-shot examples (input/output pairs)
+ * 3. Optionally: template-mode addendum (Tailwind + CSS variables for starter)
  *
  * This is passed as the system/instruction message to the LLM.
  */
-export function assembleSystemPrompt(): string {
+export function assembleSystemPrompt(templateMode?: boolean): string {
   const base = loadSystemPrompt();
   const examples = loadFewShotExamples();
+  const templateBlock = templateMode
+    ? `\n\n## Template mode (output will be wired into Vite + React + Tailwind starter)\n\n${loadTemplateModeAddendum()}\n`
+    : '';
 
   return `${base}
 
 ## Few-Shot Examples
 
-${examples}`;
+${examples}${templateBlock}`;
 }
 
 /**
@@ -32,11 +49,13 @@ ${examples}`;
  * @param yamlContent - The simplified Figma design as a YAML string
  * @param componentName - Optional component name hint
  * @param semanticHint - Optional semantic HTML hint (detected category, tag, ARIA role)
+ * @param templateMode - When true, remind LLM to use Tailwind + CSS variables for the starter
  */
 export function assembleUserPrompt(
   yamlContent: string,
   componentName?: string,
   semanticHint?: string,
+  templateMode?: boolean,
 ): string {
   const nameHint = componentName
     ? `\nComponent name: ${componentName}\n`
@@ -46,8 +65,12 @@ export function assembleUserPrompt(
     ? `\n${semanticHint}\n`
     : '';
 
+  const templateReminder = templateMode
+    ? '\n**Template mode:** Use Tailwind utility classes and CSS variables (e.g. `var(--color-primary)`, `var(--radius-md)`) in your class names and CSS block so the component fits the Vite + React + Tailwind starter.\n'
+    : '';
+
   return `Convert the following Figma design to a Mitosis component (.lite.tsx):
-${nameHint}${semanticBlock}
+${nameHint}${semanticBlock}${templateReminder}
 Fidelity requirements:
 - Preserve exact text content from Figma; do NOT replace with placeholders.
 - Preserve exact numeric dimensions, spacing, and typography values from the design data.
@@ -72,11 +95,15 @@ function loadPageSectionPrompt(): string {
 /**
  * Assembles the system prompt for a single page section.
  * Combines the base system prompt with the page-section addendum.
+ * When templateMode is true, appends the template-mode styling addendum.
  */
-export function assemblePageSectionSystemPrompt(): string {
+export function assemblePageSectionSystemPrompt(templateMode?: boolean): string {
   const base = loadSystemPrompt();
   const sectionAddendum = loadPageSectionPrompt();
-  return `${base}\n\n${sectionAddendum}`;
+  const templateBlock = templateMode
+    ? `\n\n## Template mode\n\n${loadTemplateModeAddendum()}\n`
+    : '';
+  return `${base}\n\n${sectionAddendum}${templateBlock}`;
 }
 
 export interface PageSectionContext {
@@ -104,6 +131,7 @@ export interface PageSectionContext {
  * @param sectionIndex - 1-based index of this section within the page
  * @param totalSections - Total number of sections in the page
  * @param ctx - Optional page-level context (width, gap, neighbors)
+ * @param templateMode - When true, remind LLM to use Tailwind + CSS variables
  */
 export function assemblePageSectionUserPrompt(
   yamlContent: string,
@@ -111,8 +139,12 @@ export function assemblePageSectionUserPrompt(
   sectionIndex: number,
   totalSections: number,
   ctx?: PageSectionContext,
+  templateMode?: boolean,
 ): string {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
+  const templateReminder = templateMode
+    ? '\n**Template mode:** Use Tailwind classes and CSS variables (e.g. `var(--color-primary)`, `var(--radius-md)`) so the section fits the starter.\n'
+    : '';
 
   const contextLines: string[] = [];
   if (ctx) {
@@ -138,7 +170,7 @@ export function assemblePageSectionUserPrompt(
   return `Convert the following Figma section to static Mitosis JSX (.lite.tsx).
 
 This is **Section ${sectionIndex} of ${totalSections}: "${sectionName}"**.
-${contextBlock}
+${contextBlock}${templateReminder}
 Use BEM class names prefixed with "${slug}" (e.g. "${slug}__title", "${slug}__cta-button").
 - Do NOT invent class names — derive them from the element's role in the design.
 - Preserve exact text content and numeric dimensions from the input data.

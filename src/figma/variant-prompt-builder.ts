@@ -19,6 +19,7 @@ import type {
 } from './component-set-parser.js';
 import type { AssetEntry } from './asset-export.js';
 import { toKebabCase, toCamelCase } from './component-set-parser.js';
+import { loadTemplateModeAddendum } from '../prompt/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -778,12 +779,17 @@ export function buildComponentSetUserPrompt(
   defaultVariantYaml?: string,
   componentSetData?: ComponentSetData,
   variantCSS?: string,
+  templateMode?: boolean,
 ): string {
   const lines: string[] = [];
 
   // ── Header ──────────────────────────────────────────────────────────────
   lines.push(`## Component Set: ${promptData.componentName}`);
   lines.push(`> Category: **${promptData.componentCategory}** | Element: \`<${promptData.elementType}>\` | ARIA: \`${promptData.ariaRole || 'none'}\``);
+  if (templateMode) {
+    lines.push('');
+    lines.push('**Template mode:** Use Tailwind utility classes and CSS variables (e.g. `var(--color-primary)`, `var(--radius-md)`) in your class strings so this component fits the Vite + React + Tailwind starter. Prefer the theme tokens from the system prompt over hardcoded hex.');
+  }
   lines.push('');
 
   // ── Structure ────────────────────────────────────────────────────────────
@@ -1119,9 +1125,10 @@ export function buildComponentSetUserPrompt(
 /**
  * Builds the system prompt for the LLM.
  * Contains the full semantic HTML mapping table and hard rules against div-spam.
+ * When templateMode is true, appends Tailwind + CSS variable instructions for the starter.
  */
-export function buildComponentSetSystemPrompt(): string {
-  return `You are a Mitosis component generator. You receive a Figma component set description. Your job is to generate correct, semantic, accessible HTML — NOT a div-for-every-frame recreation of the Figma layer tree.
+export function buildComponentSetSystemPrompt(templateMode?: boolean): string {
+  const base = `You are a Mitosis component generator. You receive a Figma component set description. Your job is to generate correct, semantic, accessible HTML — NOT a div-for-every-frame recreation of the Figma layer tree.
 
 ## The #1 Rule
 **Figma frames are NOT HTML elements.** A Figma design has nested frames (Frame > Group > Frame > Rectangle) purely for visual layout. Your job is to IGNORE that nesting and output the correct semantic HTML element for the component TYPE.
@@ -1221,4 +1228,13 @@ export default function CheckboxField(props) {
 
 Respond with ONLY the .lite.tsx code. No markdown fences, no explanation.
 Start directly with the import statement.`;
+  return base + getTemplateModeSystemSuffix(templateMode);
+}
+
+/**
+ * Appends the template-mode addendum to the system prompt when templateMode is true.
+ */
+function getTemplateModeSystemSuffix(templateMode?: boolean): string {
+  if (!templateMode) return '';
+  return `\n\n## Template mode (output will be wired into Vite + React + Tailwind starter)\n\n${loadTemplateModeAddendum()}\n`;
 }

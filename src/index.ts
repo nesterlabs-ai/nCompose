@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { convertFigmaToCode } from './convert.js';
 import { writeOutputFiles } from './output.js';
 import { setupPreview, getPreviewUrl, cleanPreviewApp } from './preview/setup-preview.js';
+import { wireIntoStarter } from './template/wire-into-starter.js';
 import { generateSessionId } from './utils/session-id.js';
 import {
   SUPPORTED_FRAMEWORKS,
@@ -45,6 +46,7 @@ program
     config.cli.defaultLLM,
   )
   .option('--depth <number>', 'Figma tree depth limit', config.cli.defaultDepth)
+  .option('--template', 'Use starter template styling (Tailwind + cn() + CSS variables)', false)
   .option('--preview', 'Set up preview app and show URL', false)
   .action(async (figmaUrl: string, opts) => {
     // Validate frameworks
@@ -87,6 +89,7 @@ program
           name: opts.name,
           llm,
           depth: parseInt(opts.depth, 10),
+          templateMode: opts.template === true,
         },
         {
           onStep: (step) => {
@@ -123,6 +126,30 @@ program
       }
 
       console.log(chalk.bold.green(`\nDone! ${writtenPaths.length} files written to ${componentOutputDir}/\n`));
+
+      // Wire into starter template when --template
+      if (opts.template) {
+        const projectRoot = join(__dirname, '..');
+        const starterDir = join(projectRoot, 'src', 'figma-to-code-starter-main');
+        if (existsSync(starterDir)) {
+          try {
+            const appDir = wireIntoStarter({
+              componentOutputDir: componentOutputDir,
+              componentName: result.componentName,
+              starterDir,
+              componentPropertyDefinitions: result.componentPropertyDefinitions,
+            });
+            console.log(chalk.bold.cyan('Template wired: runnable app in'));
+            console.log(chalk.cyan(`  ${appDir}\n`));
+            console.log(chalk.dim('  cd ' + appDir + ' && npm install && npm run dev\n'));
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(chalk.yellow('⚠ Template wiring failed: ' + msg + '\n'));
+          }
+        } else {
+          console.warn(chalk.yellow(`⚠ Starter template not found at ${starterDir}. Skipping template wiring.\n`));
+        }
+      }
 
       // Set up preview if requested
       if (opts.preview) {

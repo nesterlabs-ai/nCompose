@@ -11,6 +11,7 @@ import { generatePreviewHTML } from './preview.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
 import type { Framework, ConversionResult } from '../types/index.js';
 import { config } from '../config.js';
+import { wireIntoStarter } from '../template/wire-into-starter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,7 +60,7 @@ app.use(express.static(join(__dirname, 'public')));
  * Streams progress via Server-Sent Events, then sends completion data.
  */
 app.post('/api/convert', (req: any, res: any) => {
-  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM } = req.body;
+  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM, template } = req.body;
 
   // Validate inputs
   if (!figmaUrl || typeof figmaUrl !== 'string') {
@@ -103,6 +104,7 @@ app.post('/api/convert', (req: any, res: any) => {
       llm: (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM) as any,
       depth: config.server.defaultDepth,
       figmaToken,
+      templateMode: Boolean(template),
     },
     {
       onStep: (step) => {
@@ -134,6 +136,28 @@ app.post('/api/convert', (req: any, res: any) => {
       } catch (writeErr) {
         const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
         sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
+      }
+
+      // Wire into starter template when requested (same behavior as CLI --template)
+      if (template) {
+        const projectRoot = join(__dirname, '..'); // points to src/
+        const starterDir = join(projectRoot, 'figma-to-code-starter-main');
+        if (starterDir) {
+          try {
+            const appDir = wireIntoStarter({
+              componentOutputDir,
+              componentName: result.componentName,
+              starterDir,
+              componentPropertyDefinitions: result.componentPropertyDefinitions,
+            });
+            sendEvent('step', {
+              message: `Template wired: runnable app at ${appDir} (cd there and npm run dev)`,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            sendEvent('step', { message: `Template wiring failed: ${msg}` });
+          }
+        }
       }
 
       // Send framework outputs for code display

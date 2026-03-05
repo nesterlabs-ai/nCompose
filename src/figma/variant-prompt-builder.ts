@@ -60,6 +60,19 @@ export interface VariantPromptData {
 }
 
 // ---------------------------------------------------------------------------
+// SVG helpers
+// ---------------------------------------------------------------------------
+
+/** Collapses newlines and redundant whitespace in SVG markup for compact prompt embedding. */
+function compactSvg(svgContent: string): string {
+  return svgContent
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/>\s+</g, '><')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Structure description — uses parser's childLayers, not raw node walk
 // ---------------------------------------------------------------------------
 
@@ -68,11 +81,13 @@ export interface VariantPromptData {
  * from parser-resolved ChildLayerInfo[]. This replaces the old manual
  * tree walk that re-implemented parser logic.
  *
- * @param assetMap - Optional map from nodeId → "./assets/filename.svg"
+ * @param assetMap      - Optional map from nodeId → "./assets/filename.svg" (for detection)
+ * @param svgContentMap - Optional map from nodeId → inline SVG content (for embedding)
  */
 function describeVariantStructure(
   data: ComponentSetData,
   assetMap?: Map<string, string>,
+  svgContentMap?: Map<string, string>,
 ): string {
   const lines: string[] = [];
 
@@ -125,7 +140,7 @@ function describeVariantStructure(
 
   lines.push('Children:');
   for (const layer of data.childLayers) {
-    describeLayer(layer, lines, assetMap, data.childLayers, textPropMap);
+    describeLayer(layer, lines, assetMap, data.childLayers, textPropMap, svgContentMap);
   }
 
   return lines.join('\n');
@@ -141,6 +156,7 @@ function describeLayer(
   assetMap?: Map<string, string>,
   allLayers?: ChildLayerInfo[],
   textPropMap?: Map<string, string>,
+  svgContentMap?: Map<string, string>,
 ): void {
   const indent = '  '.repeat(layer.depth + 1);
   const name   = layer.originalName;
@@ -193,7 +209,15 @@ function describeLayer(
       if (childAsset?.nodeId) assetPath = assetMap.get(childAsset.nodeId);
     }
     if (assetPath) {
-      lines.push(`${indent}- "${name}" → render as: <img src="${assetPath}" alt="" /> with class: "${layer.key}"`);
+      // Prefer inline SVG content; fall back to a note about the asset file.
+      const svgNodeId = layer.nodeId ?? layer.vectorInfo?.nodeId;
+      const svgContent = svgNodeId ? svgContentMap?.get(svgNodeId) : undefined;
+      if (svgContent) {
+        lines.push(`${indent}- "${name}" → render INLINE SVG (class: "${layer.key}"), SVG uses currentColor:`);
+        lines.push(`${indent}  ${compactSvg(svgContent)}`);
+      } else {
+        lines.push(`${indent}- "${name}" → render INLINE SVG (class: "${layer.key}") — file: ${assetPath}`);
+      }
       return;
     }
   }
@@ -697,7 +721,11 @@ export function buildVariantPromptData(
   }));
 
   const props      = buildDynamicProps(data);
-  const structure  = describeVariantStructure(data, assetMap);
+  // Build nodeId → SVG content map so describeLayer can embed inline SVGs in the prompt.
+  const svgContentMap = assets
+    ? new Map(assets.filter(a => a.content).map(a => [a.nodeId, a.content!]))
+    : undefined;
+  const structure  = describeVariantStructure(data, assetMap, svgContentMap);
   const classNaming = buildClassNaming(data, baseClass);
 
   const stateInfo = data.stateAxis
@@ -807,72 +835,32 @@ export function buildComponentSetUserPrompt(
       }
 
       for (const [, groupAssets] of shapeGroups) {
-        if (groupAssets.length > 1) {
-          // Multiple color variants of the same icon shape — tell LLM to switch src
-          const posLabel = groupAssets[0].parentName || 'icon';
-          const iconLabel = groupAssets[0].nodeName || 'icon';
-          lines.push(`**${posLabel} / ${iconLabel}** — ${groupAssets.length} color variants (switch \`<img src>\` by variant/state):`);
+        // All same-shape icons now share one SVG (colours normalised to currentColor).
+        // Only show as conditional if the icon does NOT appear in every variant.
+        const asset = groupAssets[0];
+        const names = asset.variants ?? [];
+        const appearsIn = names.length;
+        if (appearsIn >= totalVariants) continue; // appears in all variants — not conditional
 
-          for (const asset of groupAssets) {
-            const names = asset.variants ?? [];
-            const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
-            const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
-            let hint = '';
-            if (onlyLoading) hint = '→ LOADING state only';
-            else if (onlyDisabled) hint = '→ DISABLED state only';
-            else if (names.length <= 6) hint = `→ ${names.join(', ')}`;
-            else hint = `→ ${names.length}/${totalVariants} variants`;
-            lines.push(`  - \`${asset.filename}\` ${hint}`);
-          }
+        const posLabel = asset.parentName || 'icon';
+        const iconLabel = asset.nodeName || 'icon';
+        const svgSnippet = asset.content ? compactSvg(asset.content) : `(file: ./assets/${asset.filename})`;
 
-          // Generate explicit src-switching code hint
-          const defaultAsset = groupAssets[0]; // already sorted: default first
-          const others = groupAssets.slice(1);
-          if (others.length > 0) {
-            lines.push(`  - **Default**: \`<img src="./assets/${defaultAsset.filename}" />\``);
-            for (const other of others) {
-              const names = other.variants ?? [];
-              const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
-              const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
-              if (onlyLoading) {
-                lines.push(`  - When \`props.loading\`: switch to \`"./assets/${other.filename}"\``);
-              } else if (onlyDisabled) {
-                lines.push(`  - When \`props.disabled\`: switch to \`"./assets/${other.filename}"\``);
-              } else {
-                // Try to detect which prop axis controls this variant
-                const sampleName = names[0] || '';
-                const axisParts = sampleName.split('/').map(s => s.trim().toLowerCase());
-                const styleMatch = axisParts.find(p => !['default','hover','focus','loading','disabled','medium','small','large'].includes(p));
-                if (styleMatch) {
-                  lines.push(`  - When variant is \`"${styleMatch}"\`: switch to \`"./assets/${other.filename}"\``);
-                } else {
-                  lines.push(`  - In specific variants: switch to \`"./assets/${other.filename}"\``);
-                }
-              }
-            }
-          }
-          lines.push('');
+        const onlyLoading  = names.every((v) => v.toLowerCase().includes('loading'));
+        const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
+
+        lines.push(`**${posLabel} / ${iconLabel}** — conditional inline SVG:`);
+        lines.push(`  SVG: ${svgSnippet}`);
+        if (onlyLoading) {
+          lines.push(`  Only in LOADING state → render: \`{props.loading && <svg ...>...</svg>}\``);
+        } else if (onlyDisabled) {
+          lines.push(`  Only in DISABLED state → render: \`{props.disabled && <svg ...>...</svg>}\``);
+        } else if (names.length <= 6) {
+          lines.push(`  Only in: ${names.join(', ')}`);
         } else {
-          // Single asset (no color variants) — show simple conditional
-          const asset = groupAssets[0];
-          const names = asset.variants ?? [];
-          const appearsIn = names.length;
-          if (appearsIn >= totalVariants) continue; // appears in all variants — not conditional
-
-          const assetLabel = asset.filename.replace('.svg', '').replace(/-/g, ' ');
-          lines.push(`**${assetLabel}** (\`${asset.filename}\`):`);
-
-          const onlyLoading = names.every((v) => v.toLowerCase().includes('loading'));
-          if (onlyLoading) {
-            lines.push(`  - Only appears in LOADING state`);
-            lines.push(`  - Use: \`{props.loading && <img src="./assets/${asset.filename}" />}\``);
-          } else if (names.length <= 6) {
-            lines.push(`  - Only in: ${names.join(', ')}`);
-          } else {
-            lines.push(`  - Appears in ${appearsIn}/${totalVariants} variants`);
-          }
-          lines.push('');
+          lines.push(`  Appears in ${appearsIn}/${totalVariants} variants`);
         }
+        lines.push('');
       }
     }
   }
@@ -933,7 +921,7 @@ export function buildComponentSetUserPrompt(
         for (const p of componentSetData.iconSlotProperties) {
           lines.push(`- \`${toCamelCase(p.name)}\`: swappable icon/component`);
         }
-        lines.push('  → Use: `{props.iconName || <img src="./assets/default.svg" />}`');
+        lines.push('  → Use: `{props.iconName || <svg ...>...</svg>}` (inline SVG fallback)');
         lines.push('');
       }
 
@@ -1108,7 +1096,7 @@ export function buildComponentSetUserPrompt(
 
   // Icon slots
   if (componentSetData && componentSetData.iconSlotProperties.length > 0) {
-    reqs.push('For icon slot props, use: `{props.iconName || <img src="./assets/default.svg" alt="" />}`');
+    reqs.push('For icon slot props, use: `{props.iconName || <svg ...>...</svg>}` (inline SVG fallback)');
   }
 
   reqs.push('Use string concatenation (not template literals) for building the class string');
@@ -1184,7 +1172,7 @@ When you see these component categories, you MUST use these elements — no exce
 7.  Access props directly (e.g. \`props.variant\`) — do NOT destructure
 8.  For text content: \`{props.children || 'Fallback'}\`
 9.  For boolean state props (loading, error, checked, etc.): add EXACTLY the \`data-*\` attribute listed in the "Selector map" (e.g. if CSS uses \`[data-loading]\`, add \`data-loading={props.loading || undefined}\` to root). Hover and Focus are handled by native CSS pseudo-classes (\`:hover\`, \`:focus-visible\`) — do NOT add data-hover or data-focus attributes.
-10. CRITICAL: When structure says "render as: <img src='…'>" — use EXACTLY that \`<img>\`, no div/svg
+10. CRITICAL: SVG icons MUST be rendered INLINE — paste the SVG XML directly into JSX. NEVER use \`<img src="...">\` for SVG icons. The SVG already uses \`currentColor\` so the parent's CSS \`color\` property controls the icon colour automatically.
 11. CRITICAL: BOOLEAN default TRUE  → \`{props.name !== false ? <el /> : null}\`
 12. CRITICAL: BOOLEAN default FALSE → \`{props.name ? <el /> : null}\`
 13. Do NOT hardcode colors listed as CSS tokens

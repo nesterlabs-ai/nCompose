@@ -413,8 +413,8 @@ export async function exportAssets(
         if (res.ok) {
           let content = await res.text();
 
-          // Preserve original SVG colors — currentColor doesn't work with <img> tags
-          // (SVGs in <img> are sandboxed and can't inherit CSS `color` from parent)
+          // Normalise colours so inline SVGs respond to CSS `color` via currentColor.
+          content = makeColorInheritable(content);
 
           entry.content = content;
           downloadedUrls.add(entry.url);
@@ -546,14 +546,14 @@ export async function exportAssetsFromAllVariants(
         if (res.ok) {
           let content = await res.text();
 
-          // Preserve original SVG colors — currentColor doesn't work with <img> tags
-          // (SVGs in <img> are sandboxed and can't inherit CSS `color` from parent)
-
           // Keep raw Figma SVG viewBox by default for exact fidelity.
           // Optional normalization can be enabled via config.
           if (config.figma.adjustSvgViewBox) {
             content = adjustViewBoxToPathBounds(content);
           }
+
+          // Normalise colours → currentColor so inline SVGs respond to CSS `color`.
+          content = makeColorInheritable(content);
 
           entry.content = content;
           downloadedUrls.set(entry.url, content);
@@ -579,13 +579,14 @@ export async function exportAssetsFromAllVariants(
   for (const entry of entries) {
     if (!entry.content) continue; // Skip if download failed
 
-    // Group by: position + SVG path shape + SVG colors
-    // Including color ensures different-colored icons with the same shape
-    // are kept as separate files (CSS color can't inherit into <img> tags)
+    // Group by: position + SVG path shape only.
+    // Color is no longer part of the key because makeColorInheritable() has
+    // already replaced all hardcoded colours with currentColor — same-shape
+    // icons from different style variants are now visually identical SVGs and
+    // should be a single file whose colour is driven by CSS `color`.
     const position = entry.parentName || 'icon';
     const contentSignature = extractSVGPathSignature(entry.content);
-    const colorSignature = extractSVGColorSignature(entry.content);
-    const groupKey = `${position}::${contentSignature}::${colorSignature}`;
+    const groupKey = `${position}::${contentSignature}`;
 
     // Track shape group (position + shape WITHOUT color) for color-variant grouping
     entry.shapeGroupId = `${position}::${contentSignature}`;
@@ -670,6 +671,30 @@ export async function exportAssetsFromAllVariants(
   }
 
   return deduplicated;
+}
+
+// ---------------------------------------------------------------------------
+// SVG colour normalisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Replaces hardcoded fill/stroke hex colours in SVG markup with `currentColor`
+ * so that the icon's colour can be controlled entirely via the CSS `color`
+ * property of the parent element when the SVG is rendered inline.
+ *
+ * Preserves:
+ *   fill="none"         — transparent / invisible fills must stay
+ *   stroke="none"       — invisible strokes must stay
+ *   fill="currentColor" — already normalised
+ */
+export function makeColorInheritable(svgContent: string): string {
+  return svgContent
+    // Attribute form:  fill="<color>"  →  fill="currentColor"  (skip none / already done)
+    .replace(/\bfill="(?!none\b)(?!currentColor\b)[^"]+"/g, 'fill="currentColor"')
+    .replace(/\bstroke="(?!none\b)(?!currentColor\b)[^"]+"/g, 'stroke="currentColor"')
+    // Inline style form:  fill: <color>  (inside style="…" attributes)
+    .replace(/\bfill:\s*(?!none\b)(?!currentColor\b)[^;}"]+/g, 'fill: currentColor')
+    .replace(/\bstroke:\s*(?!none\b)(?!currentColor\b)[^;}"]+/g, 'stroke: currentColor');
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +910,21 @@ export function buildAssetMap(assets: AssetEntry[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const entry of assets) {
     map.set(entry.nodeId, `./assets/${entry.filename}`);
+  }
+  return map;
+}
+
+/**
+ * Builds a map from node ID → inline SVG content for use in prompt building.
+ * Only includes entries where SVG content was successfully downloaded.
+ * Used to embed SVGs directly in JSX instead of loading them via <img src>.
+ */
+export function buildSvgContentMap(assets: AssetEntry[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const entry of assets) {
+    if (entry.content) {
+      map.set(entry.nodeId, entry.content);
+    }
   }
   return map;
 }

@@ -36,7 +36,7 @@ import {
   type PageSectionContext,
 } from './prompt/index.js';
 import { generateWithRetry } from './compile/retry.js';
-import { generateCompoundSection } from './compile/component-gen.js';
+import { generateCompoundSection, deduplicateSiblingNames } from './compile/component-gen.js';
 import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
@@ -231,12 +231,15 @@ function serializeNodeForPrompt(node: any): any {
   }
 
   // ── Sizing ─────────────────────────────────────────────────────────
-  if (node.layoutSizing) {
-    if (node.layoutSizing.horizontal === 'FILL') result.widthMode = 'fill';
-    else if (node.layoutSizing.horizontal === 'HUG') result.widthMode = 'hug';
-    if (node.layoutSizing.vertical === 'FILL') result.heightMode = 'fill';
-    else if (node.layoutSizing.vertical === 'HUG') result.heightMode = 'hug';
-  }
+  // figma-complete extractor puts sizing in nested layoutSizing object,
+  // but INSTANCE/child nodes inside auto-layout use flat properties
+  // (layoutSizingHorizontal / layoutSizingVertical) from the Figma API.
+  const hSizing = node.layoutSizing?.horizontal ?? node.layoutSizingHorizontal;
+  const vSizing = node.layoutSizing?.vertical ?? node.layoutSizingVertical;
+  if (hSizing === 'FILL') result.widthMode = 'fill';
+  else if (hSizing === 'HUG') result.widthMode = 'hug';
+  if (vSizing === 'FILL') result.heightMode = 'fill';
+  else if (vSizing === 'HUG') result.heightMode = 'hug';
   if (node.layoutGrow) result.flexGrow = node.layoutGrow;
 
   // Dimensions
@@ -464,7 +467,12 @@ function serializeNodeForPrompt(node: any): any {
   // ── Children (recursive) ───────────────────────────────────────────
   if (node.children && Array.isArray(node.children)) {
     const mapped = node.children.map(serializeNodeForPrompt).filter(Boolean);
-    if (mapped.length > 0) result.children = mapped;
+    if (mapped.length > 0) {
+      // Deduplicate sibling names: same-named children with different visual
+      // properties get unique suffixes so the LLM generates distinct CSS classes.
+      deduplicateSiblingNames({ children: mapped });
+      result.children = mapped;
+    }
   }
 
   return result;

@@ -23,6 +23,7 @@ import {
 } from '../prompt/index.js';
 import {
   discoverComponents,
+  computeStructuralFingerprint,
   type DiscoveredComponent,
   type ComponentDiscoveryResult,
 } from '../figma/component-discovery.js';
@@ -128,6 +129,7 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param llm - LLM provider instance
  * @param bemPrefix - BEM class prefix for the component (e.g., "content")
  * @param onAttempt - Progress callback
+ * @param bemSuffix - Optional variant suffix to produce unique class names (e.g., "-v2")
  */
 export async function generateSingleComponent(
   node: any,
@@ -136,6 +138,7 @@ export async function generateSingleComponent(
   llm: LLMProvider,
   bemPrefix: string,
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
+  bemSuffix?: string,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -148,6 +151,15 @@ export async function generateSingleComponent(
   // Add formRole annotation directly into the serialized data
   serialized.formRole = formRole;
 
+  // ALWAYS strip root-level dimensions for PATH 1 components.
+  // Components generated here are always placed inside a sized wrapper by
+  // the section LLM (PATH 2), which controls the component's outer dimensions
+  // via inline styles or wrapper CSS. The component root should use width:100%
+  // to fill its wrapper — not a hardcoded pixel value from the representative
+  // instance (which may differ from other instances of the same component).
+  delete serialized.width;
+  delete serialized.height;
+
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
   // Build semantic hint for this component
@@ -157,7 +169,15 @@ export async function generateSingleComponent(
     : '';
 
   // Build a focused component name for the user prompt
-  const kebabName = componentName.toLowerCase().replace(/\s+/g, '-');
+  // Append bemSuffix so each structural variant gets unique CSS class names
+  const kebabName = componentName.toLowerCase().replace(/\s+/g, '-') + (bemSuffix ?? '');
+  const responsiveHint =
+    '## Sizing\n' +
+    'The component root element MUST use `width: 100%` (never a fixed pixel width). ' +
+    'A parent wrapper controls the outer dimensions.\n' +
+    'The root height should be `height: auto` so it sizes to content.\n' +
+    'Internal child elements that have `widthMode: fill` in the YAML should also use `width: 100%`. ' +
+    'Only use fixed pixel widths on children that have an explicit `width` in the YAML.\n';
   const componentBemHint = bemPrefix
     ? `Use BEM classes prefixed with "${bemPrefix}" (e.g., "${bemPrefix}__${kebabName}", "${bemPrefix}__${kebabName}-label").`
     : '';
@@ -166,7 +186,7 @@ export async function generateSingleComponent(
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
-    semanticHint + (componentBemHint ? `\n${componentBemHint}` : ''),
+    semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
   );
 
   // Collect expected text for fidelity validation
@@ -250,14 +270,41 @@ export async function generateCompoundSection(
   onStep?.(
     `  Discovered ${discovery.components.length} component types ` +
     `(${discovery.totalInstances} instances): ` +
-    discovery.components.map((c) => `${c.name}(${c.formRole})`).join(', '),
+    discovery.components.map((c) =>
+      c.variantKey !== c.name
+        ? `${c.name}[${c.variantKey.slice(c.name.length + 2)}](${c.formRole})`
+        : `${c.name}(${c.formRole})`,
+    ).join(', '),
   );
 
   // ── Step 2: Generate leaf components via PATH 1 (parallel) ──────────────
   const componentCache = new Map<string, GeneratedComponent>();
 
+  // Compute BEM suffixes for components that share the same name
+  // so each structural variant gets unique CSS class names
+  const nameCount = new Map<string, number>();
+  for (const comp of discovery.components) {
+    nameCount.set(comp.name, (nameCount.get(comp.name) ?? 0) + 1);
+  }
+  const nameIndex = new Map<string, number>();
+  const bemSuffixes = new Map<string, string>(); // variantKey → suffix
+  for (const comp of discovery.components) {
+    const count = nameCount.get(comp.name) ?? 1;
+    if (count === 1) {
+      bemSuffixes.set(comp.variantKey, '');
+    } else {
+      const idx = (nameIndex.get(comp.name) ?? 0) + 1;
+      nameIndex.set(comp.name, idx);
+      bemSuffixes.set(comp.variantKey, `-v${idx}`);
+    }
+  }
+
   const generationPromises = discovery.components.map(async (comp) => {
-    onStep?.(`  [PATH 1] Generating "${comp.name}" (${comp.formRole})...`);
+    const suffix = bemSuffixes.get(comp.variantKey) ?? '';
+    const displayName = comp.variantKey !== comp.name
+      ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
+      : comp.name;
+    onStep?.(`  [PATH 1] Generating "${displayName}" (${comp.formRole})${suffix ? ` → BEM suffix "${suffix}"` : ''}...`);
     const generated = await generateSingleComponent(
       comp.representativeNode,
       comp.formRole,
@@ -265,10 +312,11 @@ export async function generateCompoundSection(
       llm,
       slug,
       onAttempt,
+      suffix || undefined,
     );
-    componentCache.set(comp.name, generated);
+    componentCache.set(comp.variantKey, generated);
     onStep?.(
-      `  [PATH 1] "${comp.name}" → ${generated.success ? 'OK' : 'FAILED'}`,
+      `  [PATH 1] "${displayName}" → ${generated.success ? 'OK' : 'FAILED'}`,
     );
     return generated;
   });
@@ -287,6 +335,12 @@ export async function generateCompoundSection(
     componentCache,
     serializeNode,
   );
+
+  // Deduplicate sibling names: same-named nodes with different visual
+  // properties (dimensions, colors, etc.) get unique suffixes so the
+  // section LLM generates distinct CSS classes for each.
+  deduplicateSiblingNames(substitutedNode);
+
   const sectionYaml = dump(substitutedNode, { lineWidth: 120, noRefs: true });
 
   onStep?.(
@@ -355,21 +409,44 @@ function substituteComponents(
 
   // Check if this is a recognized component instance
   if (node.type === 'INSTANCE' && node.name) {
-    const generated = cache.get(node.name);
+    const fingerprint = computeStructuralFingerprint(node);
+    const cacheKey = fingerprint ? `${node.name}::${fingerprint}` : node.name;
+    const generated = cache.get(cacheKey);
     if (generated && generated.success) {
       // Replace entire subtree with a compact reference
       const props = extractVisibleProps(node);
-      return {
+
+      // Determine sizing mode: use flat API properties (layoutSizingHorizontal/Vertical)
+      // or nested figma-complete object (layoutSizing.horizontal/vertical).
+      // When sizing is FILL, emit widthMode/heightMode instead of pixel values
+      // so the section LLM sizes the wrapper with width:100% instead of fixed pixels.
+      const hSizing = node.layoutSizing?.horizontal ?? node.layoutSizingHorizontal;
+      const vSizing = node.layoutSizing?.vertical ?? node.layoutSizingVertical;
+
+      const ref: any = {
         name: node.name,
         type: 'COMPONENT_REF',
         formRole: generated.formRole,
         props,
         generatedHTML: generated.html,
-        // Keep basic layout info for the parent to position correctly
         ...(node.layoutGrow ? { flexGrow: node.layoutGrow } : {}),
-        ...(node.absoluteBoundingBox?.width ? { width: `${Math.round(node.absoluteBoundingBox.width)}px` } : {}),
-        ...(node.absoluteBoundingBox?.height ? { height: `${Math.round(node.absoluteBoundingBox.height)}px` } : {}),
       };
+
+      // Width: fill → widthMode, otherwise pixel value
+      if (hSizing === 'FILL') {
+        ref.widthMode = 'fill';
+      } else if (node.absoluteBoundingBox?.width) {
+        ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
+      }
+
+      // Height: fill → heightMode, otherwise pixel value
+      if (vSizing === 'FILL') {
+        ref.heightMode = 'fill';
+      } else if (node.absoluteBoundingBox?.height) {
+        ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
+      }
+
+      return ref;
     }
   }
 
@@ -428,12 +505,24 @@ function buildComponentReferenceBlock(
 ): string {
   const blocks: string[] = [];
 
-  for (const [name, comp] of cache) {
+  for (const [variantKey, comp] of cache) {
     if (!comp.success || !comp.html) continue;
 
+    // Extract fingerprint portion for display if present
+    const separatorIdx = variantKey.indexOf('::');
+    const displayName = comp.name;
+    const fingerprint = separatorIdx !== -1
+      ? variantKey.slice(separatorIdx + 2)
+      : '';
+    const variantLabel = fingerprint
+      ? ` (${comp.formRole}, variant: ${fingerprint})`
+      : ` (${comp.formRole})`;
+
     blocks.push(
-      `### ${name} (${comp.formRole})\n` +
-      `Use the following HTML when you encounter a "${name}" component in the YAML:\n` +
+      `### ${displayName}${variantLabel}\n` +
+      `Use the following HTML when you encounter a "${displayName}" component ` +
+      (fingerprint ? `with structural props [${fingerprint}] ` : '') +
+      `in the YAML:\n` +
       '```html\n' +
       comp.html + '\n' +
       '```',
@@ -441,6 +530,26 @@ function buildComponentReferenceBlock(
   }
 
   if (blocks.length === 0) return '';
+
+  // Collect all component class prefixes so we can tell the section LLM to skip them
+  const componentClassPrefixes: string[] = [];
+  for (const [, comp] of cache) {
+    if (!comp.success || !comp.html) continue;
+    // Extract the root class from the generated HTML (first class="..." value)
+    const classMatch = comp.html.match(/class="([^"]+)"/);
+    if (classMatch) {
+      const rootClass = classMatch[1].split(/\s+/)[0];
+      if (rootClass) componentClassPrefixes.push(rootClass);
+    }
+  }
+
+  const skipCssNote = componentClassPrefixes.length > 0
+    ? '\n\n**CSS rule:** CSS for these components is already provided separately. ' +
+      'Do NOT generate CSS for any class that starts with: ' +
+      componentClassPrefixes.map((c) => `\`${c}\``).join(', ') + '. ' +
+      'Only generate CSS for your own section layout elements (wrappers, containers, grids). ' +
+      'Use the `width` and `height` from each COMPONENT_REF YAML node to size the **parent wrapper** around the component.\n'
+    : '';
 
   return (
     '## Pre-Generated Components\n\n' +
@@ -450,6 +559,11 @@ function buildComponentReferenceBlock(
     'Adapt the text content from the `props` (e.g., swap labels and values) ' +
     'but keep the HTML structure and class names. ' +
     'Do NOT regenerate these as `<div>` — use the semantic HTML provided.\n\n' +
+    '**Sizing COMPONENT_REF wrappers:** When a COMPONENT_REF has `widthMode: fill`, ' +
+    'its wrapper must use `width: 100%` (NOT a fixed pixel width). ' +
+    'When it has a `width` in pixels, use that exact width on the wrapper. ' +
+    'Same for `heightMode: fill` → `height: 100%` vs fixed `height`.' +
+    skipCssNote + '\n\n' +
     blocks.join('\n\n')
   );
 }
@@ -568,4 +682,108 @@ function collectTextsFromNode(node: any): string[] {
 function estimateOriginalSize(node: any, serializeNode: (n: any) => any): number {
   const full = serializeNode(node);
   return dump(full, { lineWidth: 120, noRefs: true }).length;
+}
+
+// ── Sibling Name Deduplication ───────────────────────────────────────────────
+
+/**
+ * Computes a visual-property fingerprint for a serialized node.
+ *
+ * Two nodes with the same name but different fingerprints need unique names
+ * so the LLM generates distinct CSS classes for each.
+ *
+ * Includes: width, height, widthMode, heightMode, fills, strokes, borderRadius,
+ * opacity, layout (padding, gap, direction), flexGrow, position.
+ * Excludes: name, type, text, children, generatedHTML, props, formRole
+ * (content-only fields that don't affect CSS).
+ */
+function computeVisualFingerprint(node: any): string {
+  const parts: string[] = [];
+
+  // Dimensions & sizing mode
+  if (node.width) parts.push(`w:${node.width}`);
+  if (node.height) parts.push(`h:${node.height}`);
+  if (node.widthMode) parts.push(`wm:${node.widthMode}`);
+  if (node.heightMode) parts.push(`hm:${node.heightMode}`);
+  if (node.flexGrow) parts.push(`fg:${node.flexGrow}`);
+
+  // Layout
+  if (node.layout) {
+    const l = node.layout;
+    if (l.direction) parts.push(`ld:${l.direction}`);
+    if (l.padding) parts.push(`lp:${l.padding}`);
+    if (l.gap) parts.push(`lg:${l.gap}`);
+    if (l.justifyContent) parts.push(`lj:${l.justifyContent}`);
+    if (l.alignItems) parts.push(`la:${l.alignItems}`);
+  }
+
+  // Visual properties
+  if (node.fills) parts.push(`f:${JSON.stringify(node.fills)}`);
+  if (node.strokes) parts.push(`s:${JSON.stringify(node.strokes)}`);
+  if (node.borderRadius) parts.push(`br:${node.borderRadius}`);
+  if (node.opacity !== undefined) parts.push(`op:${node.opacity}`);
+  if (node.effects) parts.push(`e:${JSON.stringify(node.effects)}`);
+
+  // Positioning
+  if (node.position) parts.push(`pos:${node.position}`);
+  if (node.left) parts.push(`l:${node.left}`);
+  if (node.top) parts.push(`t:${node.top}`);
+
+  return parts.join('|');
+}
+
+/**
+ * Walks a serialized tree and renames same-named siblings that have different
+ * visual properties by appending numeric suffixes (e.g., "Dropdown Field 2").
+ *
+ * Nodes with IDENTICAL visual properties keep the same name (they can share CSS).
+ * Only nodes with DIFFERENT properties get suffixed to produce unique CSS classes.
+ *
+ * Mutates the tree in place.
+ */
+export function deduplicateSiblingNames(node: any): void {
+  if (!node || !Array.isArray(node.children) || node.children.length === 0) return;
+
+  // Group children by name
+  const nameGroups = new Map<string, Array<{ child: any; index: number }>>();
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    if (!child?.name) continue;
+    const name = child.name;
+    if (!nameGroups.has(name)) nameGroups.set(name, []);
+    nameGroups.get(name)!.push({ child, index: i });
+  }
+
+  // For each name group with multiple members, check visual properties
+  for (const [, members] of nameGroups) {
+    if (members.length <= 1) continue;
+
+    // Sub-group by visual fingerprint — nodes with identical visuals share a name
+    const fpGroups = new Map<string, Array<{ child: any; index: number }>>();
+    for (const member of members) {
+      const fp = computeVisualFingerprint(member.child);
+      if (!fpGroups.has(fp)) fpGroups.set(fp, []);
+      fpGroups.get(fp)!.push(member);
+    }
+
+    // If all members have the same fingerprint, no renaming needed
+    if (fpGroups.size <= 1) continue;
+
+    // Multiple visual variants exist — assign unique suffixes
+    // First group (most members, or first encountered) keeps the original name
+    const sortedGroups = [...fpGroups.values()].sort((a, b) => b.length - a.length);
+    let suffixCounter = 1;
+    for (let gi = 0; gi < sortedGroups.length; gi++) {
+      if (gi === 0) continue; // first group keeps original name
+      suffixCounter++;
+      for (const member of sortedGroups[gi]) {
+        member.child.name = `${member.child.name} ${suffixCounter}`;
+      }
+    }
+  }
+
+  // Recurse into children
+  for (const child of node.children) {
+    if (child) deduplicateSiblingNames(child);
+  }
 }

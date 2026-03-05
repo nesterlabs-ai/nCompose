@@ -212,9 +212,11 @@ ${jsxBody}
   for (const section of sections) {
     if (section.failed || !section.css) continue;
 
-    // Extract every .class-name defined in this section's CSS
-    // Match class names in all selector contexts: top-level, nested, pseudo, media queries
-    const classMatches = section.css.matchAll(/\.([\w-]+)(?:\s*[{:,\s>~+])/gm);
+    // Extract every .class-name that opens a CSS rule block.
+    // Only match selectors followed by '{' (after optional pseudo/combinator parts)
+    // to avoid false-positive collisions from pseudo-selectors like .foo::placeholder
+    // or compound selectors like .foo .bar being counted as separate definitions.
+    const classMatches = section.css.matchAll(/^\.([\w-]+)\s*[{,]/gm);
     for (const m of classMatches) {
       const cls = m[1];
       if (seenClasses.has(cls)) {

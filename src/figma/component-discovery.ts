@@ -46,6 +46,8 @@ export interface ComponentInstance {
 export interface DiscoveredComponent {
   /** Figma component name (e.g., "Dropdown Field") */
   name: string;
+  /** Grouping key: "name::fingerprint" — unique per structural variant */
+  variantKey: string;
   /** Inferred form role (e.g., "select", "textInput", "button") */
   formRole: string;
   /** All instances of this component found in the section */
@@ -94,6 +96,62 @@ function extractProps(node: any): Record<string, string | boolean> {
   return props;
 }
 
+// ── Structural Fingerprinting ────────────────────────────────────────────────
+
+/**
+ * Computes a structural fingerprint from a node's componentProperties.
+ *
+ * Uses Figma's own property `type` metadata to classify:
+ * - BOOLEAN / VARIANT → structural (affect DOM shape) → include
+ * - TEXT → content-only (labels, values) → exclude
+ * - INSTANCE_SWAP → icon swap node IDs → exclude
+ *
+ * Fallback (no type metadata): includes booleans + short strings,
+ * excludes node IDs and long text content.
+ *
+ * Always excludes "State" (interaction states don't change DOM).
+ */
+export function computeStructuralFingerprint(node: any): string {
+  const raw = node.componentProperties ?? node.componentPropertyValues ?? {};
+  const parts: string[] = [];
+
+  for (const [key, val] of Object.entries(raw)) {
+    const cleanKey = cleanPropKey(key);
+
+    // Skip "State" — interaction states (hover/focus/default) don't change DOM
+    if (cleanKey.toLowerCase() === 'state') continue;
+
+    // Extract type and value from Figma property object
+    const propType = typeof val === 'object' && val !== null
+      ? (val as any).type as string | undefined
+      : undefined;
+    const value = typeof val === 'object' && val !== null
+      ? (val as any).value ?? String(val)
+      : val;
+
+    if (propType) {
+      // Use Figma's type metadata — no hardcoded property name lists needed
+      if (propType === 'TEXT' || propType === 'INSTANCE_SWAP') continue;
+      // BOOLEAN, VARIANT, and any other structural types → include
+      parts.push(`${cleanKey}=${value}`);
+    } else {
+      // Fallback: no type metadata available
+      // Skip node ID references ("7896:28357")
+      if (typeof value === 'string' && /^\d+:\d+$/.test(value)) continue;
+      // Skip long text content (likely labels/descriptions)
+      if (typeof value === 'string' && value.length > 50) continue;
+      // Include booleans and short string values
+      if (typeof value === 'boolean' || typeof value === 'string') {
+        parts.push(`${cleanKey}=${value}`);
+      }
+    }
+  }
+
+  // Sort alphabetically for determinism
+  parts.sort();
+  return parts.join('|');
+}
+
 // ── Discovery logic ─────────────────────────────────────────────────────────
 
 /**
@@ -115,7 +173,7 @@ function matchComponentPattern(name: string): string | null {
 function walkForComponents(
   node: any,
   path: number[],
-  results: Map<string, { formRole: string; instances: ComponentInstance[] }>,
+  results: Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>,
 ): void {
   if (!node || node.visible === false) return;
 
@@ -123,9 +181,10 @@ function walkForComponents(
   if (node.type === 'INSTANCE' && node.name) {
     const formRole = matchComponentPattern(node.name);
     if (formRole) {
-      const key = node.name; // Group by exact Figma component name
+      const fingerprint = computeStructuralFingerprint(node);
+      const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
       if (!results.has(key)) {
-        results.set(key, { formRole, instances: [] });
+        results.set(key, { formRole, componentName: node.name, instances: [] });
       }
       results.get(key)!.instances.push({
         node,
@@ -155,14 +214,14 @@ function walkForComponents(
  * @returns Discovery result with unique component types and their instances
  */
 export function discoverComponents(sectionNode: any): ComponentDiscoveryResult {
-  const componentMap = new Map<string, { formRole: string; instances: ComponentInstance[] }>();
+  const componentMap = new Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>();
 
   walkForComponents(sectionNode, [], componentMap);
 
   const components: DiscoveredComponent[] = [];
   let totalInstances = 0;
 
-  for (const [name, { formRole, instances }] of componentMap) {
+  for (const [variantKey, { formRole, componentName, instances }] of componentMap) {
     totalInstances += instances.length;
 
     // Pick the instance with the most props as representative
@@ -176,7 +235,8 @@ export function discoverComponents(sectionNode: any): ComponentDiscoveryResult {
     )];
 
     components.push({
-      name,
+      name: componentName,
+      variantKey,
       formRole,
       instances,
       representativeNode: representative.node,

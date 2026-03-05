@@ -128,6 +128,7 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param llm - LLM provider instance
  * @param bemPrefix - BEM class prefix for the component (e.g., "content")
  * @param onAttempt - Progress callback
+ * @param templateMode - When true, use Tailwind + CSS variables for the starter
  */
 export async function generateSingleComponent(
   node: any,
@@ -136,6 +137,7 @@ export async function generateSingleComponent(
   llm: LLMProvider,
   bemPrefix: string,
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
+  templateMode?: boolean,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -162,11 +164,12 @@ export async function generateSingleComponent(
     ? `Use BEM classes prefixed with "${bemPrefix}" (e.g., "${bemPrefix}__${kebabName}", "${bemPrefix}__${kebabName}-label").`
     : '';
 
-  const systemPrompt = assembleSystemPrompt();
+  const systemPrompt = assembleSystemPrompt(templateMode);
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
     semanticHint + (componentBemHint ? `\n${componentBemHint}` : ''),
+    templateMode,
   );
 
   // Collect expected text for fidelity validation
@@ -221,6 +224,7 @@ export async function generateSingleComponent(
  * @param ctx - Page context (width, gap, etc.)
  * @param onStep - Progress callback
  * @param onAttempt - Retry attempt callback
+ * @param templateMode - When true, prompts use Tailwind + CSS variables for the starter
  */
 export async function generateCompoundSection(
   sectionNode: any,
@@ -232,6 +236,7 @@ export async function generateCompoundSection(
   ctx?: PageSectionContext,
   onStep?: (msg: string) => void,
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
+  templateMode?: boolean,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -243,7 +248,7 @@ export async function generateCompoundSection(
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode,
     );
   }
 
@@ -265,6 +270,7 @@ export async function generateCompoundSection(
       llm,
       slug,
       onAttempt,
+      templateMode,
     );
     componentCache.set(comp.name, generated);
     onStep?.(
@@ -297,7 +303,7 @@ export async function generateCompoundSection(
   // ── Step 4: Generate section layout (Pass 2) ───────────────────────────
   // Build a custom user prompt that includes pre-generated component HTML
   const componentRefBlock = buildComponentReferenceBlock(componentCache);
-  const sectionSystemPrompt = assemblePageSectionSystemPrompt();
+  const sectionSystemPrompt = assemblePageSectionSystemPrompt(templateMode);
 
   const baseUserPrompt = assemblePageSectionUserPrompt(
     sectionYaml,
@@ -305,6 +311,7 @@ export async function generateCompoundSection(
     sectionIndex,
     totalSections,
     ctx,
+    templateMode,
   );
 
   // Insert component references before the YAML block
@@ -513,13 +520,14 @@ async function fallbackMonolithicGeneration(
   ctx: PageSectionContext | undefined,
   onAttempt: ((attempt: number, maxRetries: number, error?: string) => void) | undefined,
   discovery: ComponentDiscoveryResult,
+  templateMode?: boolean,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
-  const systemPrompt = assemblePageSectionSystemPrompt();
+  const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
   const userPrompt = assemblePageSectionUserPrompt(
-    yaml, sectionName, sectionIndex, totalSections, ctx,
+    yaml, sectionName, sectionIndex, totalSections, ctx, templateMode,
   );
 
   try {

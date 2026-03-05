@@ -30,9 +30,8 @@ export function loadTemplateModeAddendum(): string {
 export function assembleSystemPrompt(templateMode?: boolean): string {
   const base = loadSystemPrompt();
   const examples = loadFewShotExamples();
-  const templateBlock = templateMode
-    ? `\n\n## Template mode (output will be wired into Vite + React + Tailwind starter)\n\n${loadTemplateModeAddendum()}\n`
-    : '';
+  // Do not inject Tailwind/template-mode styling; keep original BEM + CSS class strategy
+  const templateBlock = '';
 
   return `${base}
 
@@ -65,9 +64,8 @@ export function assembleUserPrompt(
     ? `\n${semanticHint}\n`
     : '';
 
-  const templateReminder = templateMode
-    ? '\n**Template mode:** Use Tailwind utility classes and CSS variables (e.g. `var(--color-primary)`, `var(--radius-md)`) in your class names and CSS block so the component fits the Vite + React + Tailwind starter.\n'
-    : '';
+  // Do not inject Tailwind instructions; use same class/CSS strategy as non-template mode
+  const templateReminder = '';
 
   return `Convert the following Figma design to a Mitosis component (.lite.tsx):
 ${nameHint}${semanticBlock}${templateReminder}
@@ -100,9 +98,7 @@ function loadPageSectionPrompt(): string {
 export function assemblePageSectionSystemPrompt(templateMode?: boolean): string {
   const base = loadSystemPrompt();
   const sectionAddendum = loadPageSectionPrompt();
-  const templateBlock = templateMode
-    ? `\n\n## Template mode\n\n${loadTemplateModeAddendum()}\n`
-    : '';
+  const templateBlock = '';
   return `${base}\n\n${sectionAddendum}${templateBlock}`;
 }
 
@@ -142,9 +138,7 @@ export function assemblePageSectionUserPrompt(
   templateMode?: boolean,
 ): string {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
-  const templateReminder = templateMode
-    ? '\n**Template mode:** Use Tailwind classes and CSS variables (e.g. `var(--color-primary)`, `var(--radius-md)`) so the section fits the starter.\n'
-    : '';
+  const templateReminder = '';
 
   const contextLines: string[] = [];
   if (ctx) {

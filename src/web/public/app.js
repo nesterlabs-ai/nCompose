@@ -409,8 +409,8 @@ function startConversion() {
   tabsData = [];
   updateCodeActionsState();
 
-  // Start SSE request
-  const body = JSON.stringify({ figmaUrl, figmaToken, frameworks });
+  // Start SSE request (always enable template wiring for now)
+  const body = JSON.stringify({ figmaUrl, figmaToken, frameworks, template: true });
 
   fetch('/api/convert', {
     method: 'POST',

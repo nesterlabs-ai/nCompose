@@ -81,6 +81,8 @@ const downloadBtn = document.getElementById('download-btn');
 const codeExplorer = document.getElementById('code-explorer');
 const explorerBody = document.getElementById('explorer-body');
 const explorerFiles = document.getElementById('explorer-files');
+const codeViewModeEl = document.getElementById('code-view-mode');
+const explorerSectionTitle = document.getElementById('explorer-section-title');
 const editorTabs = document.getElementById('editor-tabs');
 const explorerToggle = document.getElementById('explorer-toggle');
 const codeEditBtn = document.getElementById('code-edit-btn');
@@ -115,6 +117,69 @@ let webContainerDevProcess = null;
 let webContainerPreviewUrl = null;
 let webContainerLastWritten = {};
 let webContainerSyncEnabled = false;
+let codeViewMode = 'generated'; // 'generated' | 'wired'
+let wiredAppFiles = {}; // path -> content (when template was wired)
+let generatedTabsData = [];
+let templateWired = false;
+/** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
+let wiredExplorerExpanded = new Set(['src', 'public']);
+
+/** Explorer icon config: folder, chevron, fileIcons. Loaded from /explorer-icons.config.json; merged with these defaults. */
+const DEFAULT_EXPLORER_ICON_CONFIG = {
+  folder: { closed: 'icon-folder-closed', open: 'icon-folder-open' },
+  chevron: { right: 'icon-chevron-right', down: 'icon-chevron-down' },
+  fileIcons: {
+    default: 'icon-file-doc',
+    '.json': 'icon-file-json',
+    '.html': 'icon-file-html',
+    '.ts': 'icon-file-ts',
+    '.tsx': 'icon-file-ts',
+    '.js': 'icon-file-js',
+    '.jsx': 'icon-file-js',
+    '.svg': 'icon-file-svg',
+    '.css': 'icon-file-css',
+    '.md': 'icon-file-md',
+    '.env.example': 'icon-file-env',
+    '.gitignore': 'icon-file-gitignore',
+    'vite.config': 'icon-file-vite',
+    'config.toml': 'icon-file-config',
+  },
+};
+let explorerIconConfig = {
+  folder: { ...DEFAULT_EXPLORER_ICON_CONFIG.folder },
+  chevron: { ...DEFAULT_EXPLORER_ICON_CONFIG.chevron },
+  fileIcons: { ...DEFAULT_EXPLORER_ICON_CONFIG.fileIcons },
+};
+
+/** Load explorer icon config from JSON; merge with defaults. Edit public/explorer-icons.config.json to customize. */
+function loadExplorerIconConfig() {
+  fetch('/explorer-icons.config.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (!data || typeof data !== 'object') return;
+      if (data.folder && typeof data.folder === 'object') {
+        explorerIconConfig.folder = { ...DEFAULT_EXPLORER_ICON_CONFIG.folder, ...data.folder };
+      }
+      if (data.chevron && typeof data.chevron === 'object') {
+        explorerIconConfig.chevron = { ...DEFAULT_EXPLORER_ICON_CONFIG.chevron, ...data.chevron };
+      }
+      if (data.fileIcons && typeof data.fileIcons === 'object') {
+        explorerIconConfig.fileIcons = { ...DEFAULT_EXPLORER_ICON_CONFIG.fileIcons, ...data.fileIcons };
+      }
+      if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) buildExplorer();
+    })
+    .catch(() => {});
+}
+
+/** Render icon HTML: value is sprite id (e.g. icon-folder-closed) or emoji:📁. size in px. */
+function renderExplorerIcon(value, size = 16) {
+  if (!value || typeof value !== 'string') value = 'icon-file-doc';
+  if (value.startsWith('emoji:')) {
+    const emoji = value.slice(6).trim() || '📄';
+    return `<span class="explorer-icon-emoji" style="width:${size}px;height:${size}px;display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(size * 0.9)}px">${escapeHtml(emoji)}</span>`;
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 16 16"><use href="#${escapeHtml(value)}"/></svg>`;
+}
 
 // ── LocalStorage ──
 const STORAGE_KEY = 'figma-to-code-token';
@@ -407,6 +472,11 @@ function startConversion() {
   activeFile = null;
   openFiles = [];
   tabsData = [];
+  wiredAppFiles = {};
+  codeViewMode = 'generated';
+  templateWired = false;
+  wiredExplorerExpanded = new Set(['src', 'public']);
+  if (codeViewModeEl) codeViewModeEl.style.display = 'none';
   updateCodeActionsState();
 
   // Start SSE request (always enable template wiring for now)
@@ -767,9 +837,24 @@ function handleComplete(data) {
   currentSessionId = data.sessionId;
   currentFrameworkOutputs = data.frameworkOutputs || {};
   currentComponentName = data.componentName;
+  templateWired = Boolean(data.templateWired);
 
-  // Build code tabs
+  // Build code tabs (generated view)
   buildTabs(data);
+  generatedTabsData = tabsData.map((t) => ({ ...t }));
+
+  // When template was wired, show "Generated | Wired app" toggle and fetch wired app files
+  if (templateWired && codeViewModeEl) {
+    codeViewModeEl.style.display = 'flex';
+    fetch(`/api/session/${currentSessionId}/wired-app-files`)
+      .then((r) => (r.ok ? r.json() : { files: {} }))
+      .then((res) => {
+        wiredAppFiles = res.files || {};
+      })
+      .catch(() => {});
+  } else if (codeViewModeEl) {
+    codeViewModeEl.style.display = 'none';
+  }
 
   // Show download and push buttons
   downloadBtn.style.display = 'inline-flex';
@@ -823,6 +908,9 @@ function getMonacoLanguage(ext) {
   if (ext.endsWith('.tsx') || ext.endsWith('.ts')) return 'typescript';
   if (ext.endsWith('.jsx') || ext.endsWith('.js')) return 'javascript';
   if (ext.endsWith('.vue') || ext.endsWith('.svelte')) return 'html';
+  if (ext.endsWith('.html')) return 'html';
+  if (ext.endsWith('.css')) return 'css';
+  if (ext.endsWith('.json')) return 'json';
   return 'plaintext';
 }
 
@@ -914,20 +1002,130 @@ function switchMode(mode) {
 }
 
 // ── File Explorer & Editor Tabs ──
+/** Build a tree from flat paths: { children: { 'src': { children: { 'App.tsx': { path: 'src/App.tsx' } } }, 'index.html': { path: 'index.html' } } } */
+function pathsToTree(paths) {
+  const root = { children: {} };
+  for (const path of paths) {
+    const parts = path.split('/');
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      if (i === parts.length - 1) {
+        current.children[name] = { path, leaf: true };
+      } else {
+        if (!current.children[name] || current.children[name].leaf) {
+          current.children[name] = { children: {} };
+        }
+        current = current.children[name];
+      }
+    }
+  }
+  return root;
+}
+
+function renderWiredExplorerTree(container, node, folderPath = '') {
+  const entries = Object.entries(node.children || {}).sort(([a, aVal], [b, bVal]) => {
+    const aIsFolder = !aVal.leaf;
+    const bIsFolder = !bVal.leaf;
+    if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
+    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  });
+  for (const [name, value] of entries) {
+    if (value.leaf) {
+      const path = value.path;
+      const { icon: iconValue, class: iconClass } = getWiredFileIcon(path);
+      const item = document.createElement('div');
+      item.className = 'explorer-file';
+      item.dataset.key = path;
+      item.innerHTML = `
+        <span class="explorer-file-icon explorer-file-icon--${escapeHtml(iconClass)}">${renderExplorerIcon(iconValue, 16)}</span>
+        <span class="explorer-file-name">${escapeHtml(name)}</span>
+      `;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openFile(path);
+      });
+      container.appendChild(item);
+    } else {
+      const pathPrefix = folderPath ? `${folderPath}/${name}` : name;
+      const isExpanded = wiredExplorerExpanded.has(pathPrefix);
+      const folderRow = document.createElement('div');
+      folderRow.className = 'explorer-folder';
+      folderRow.dataset.folderPath = pathPrefix;
+      const chevronVal = isExpanded ? explorerIconConfig.chevron.down : explorerIconConfig.chevron.right;
+      const folderVal = isExpanded ? explorerIconConfig.folder.open : explorerIconConfig.folder.closed;
+      folderRow.innerHTML = `
+        <span class="explorer-folder-chevron" aria-hidden="true">${renderExplorerIcon(chevronVal, 10)}</span>
+        <span class="explorer-folder-icon">${renderExplorerIcon(folderVal, 16)}</span>
+        <span class="explorer-folder-name">${escapeHtml(name)}</span>
+      `;
+      folderRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (wiredExplorerExpanded.has(pathPrefix)) {
+          wiredExplorerExpanded.delete(pathPrefix);
+        } else {
+          wiredExplorerExpanded.add(pathPrefix);
+        }
+        buildExplorer();
+      });
+      container.appendChild(folderRow);
+      const childrenContainer = document.createElement('div');
+      childrenContainer.className = 'explorer-folder-children';
+      if (isExpanded) {
+        childrenContainer.style.display = 'block';
+        renderWiredExplorerTree(childrenContainer, value, pathPrefix);
+      } else {
+        childrenContainer.style.display = 'none';
+      }
+      container.appendChild(childrenContainer);
+    }
+  }
+}
+
 function buildExplorer() {
   explorerFiles.innerHTML = '';
-  tabsData.forEach((tab) => {
-    const filename = currentComponentName + tab.ext;
-    const item = document.createElement('div');
-    item.className = 'explorer-file';
-    item.dataset.key = tab.key;
-    item.innerHTML = `
-      <span class="explorer-file-icon">${getFileIcon(tab.ext)}</span>
-      <span class="explorer-file-name">${escapeHtml(filename)}</span>
-    `;
-    item.addEventListener('click', () => openFile(tab.key));
-    explorerFiles.appendChild(item);
-  });
+  if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) {
+    const paths = Object.keys(wiredAppFiles).sort();
+    const tree = pathsToTree(paths);
+    renderWiredExplorerTree(explorerFiles, tree);
+  } else {
+    tabsData.forEach((tab) => {
+      const displayName = codeViewMode === 'wired' ? tab.key : currentComponentName + tab.ext;
+      const item = document.createElement('div');
+      item.className = 'explorer-file';
+      item.dataset.key = tab.key;
+      item.innerHTML = `
+        <span class="explorer-file-icon">${getFileIcon(tab.ext)}</span>
+        <span class="explorer-file-name">${escapeHtml(displayName)}</span>
+      `;
+      item.addEventListener('click', () => openFile(tab.key));
+      explorerFiles.appendChild(item);
+    });
+  }
+}
+
+/** Resolve file icon from config (explorer-icons.config.json) with fallback. Returns { icon, class } for render. */
+function getWiredFileIcon(path) {
+  const name = path.split('/').pop() || '';
+  const ext = path.includes('.') ? path.slice(path.lastIndexOf('.')) : '';
+  const lower = name.toLowerCase();
+  const icons = explorerIconConfig.fileIcons;
+  let icon = icons.default;
+  if (lower === '.env' || lower === '.env.example' || lower.endsWith('.env')) icon = icons['.env.example'] ?? 'icon-file-env';
+  else if (lower === '.gitignore') icon = icons['.gitignore'] ?? 'icon-file-gitignore';
+  else if (lower === 'config.toml' || lower.endsWith('config.toml')) icon = icons['config.toml'] ?? 'icon-file-config';
+  else if (lower.startsWith('vite.config')) icon = icons['vite.config'] ?? 'icon-file-vite';
+  else if (lower.endsWith('tailwind.config.ts') || lower.endsWith('postcss.config.js') || lower.endsWith('eslint.config.js')) icon = icons['config.toml'] ?? 'icon-file-config';
+  else if (icons[ext] !== undefined) icon = icons[ext];
+  else if (ext === '.html') icon = icons['.html'] ?? 'icon-file-html';
+  else if (ext === '.ts' || ext === '.tsx') icon = icons['.ts'] ?? icons['.tsx'] ?? 'icon-file-ts';
+  else if (ext === '.js' || ext === '.jsx') icon = icons['.js'] ?? icons['.jsx'] ?? 'icon-file-js';
+  else if (ext === '.svg') icon = icons['.svg'] ?? 'icon-file-svg';
+  else if (ext === '.css') icon = icons['.css'] ?? 'icon-file-css';
+  else if (ext === '.md') icon = icons['.md'] ?? 'icon-file-md';
+  else if (ext === '.json') icon = icons['.json'] ?? 'icon-file-json';
+  const colorClass = icon && icon.startsWith('emoji:') ? 'doc' : (String(icon).replace('icon-file-', '') || 'doc');
+  return { icon: icon || 'icon-file-doc', class: colorClass };
 }
 
 function getFileIcon(ext) {
@@ -947,12 +1145,12 @@ function buildEditorTabs() {
   openFiles.forEach((key) => {
     const tab = tabsData.find((t) => t.key === key);
     if (!tab) return;
-    const filename = currentComponentName + tab.ext;
+    const tabLabel = codeViewMode === 'wired' ? tab.key : currentComponentName + tab.ext;
     const el = document.createElement('div');
     el.className = `editor-tab${key === activeFile ? ' active' : ''}`;
     el.dataset.key = key;
     el.innerHTML = `
-      <span class="editor-tab-name">${escapeHtml(filename)}</span>
+      <span class="editor-tab-name">${escapeHtml(tabLabel)}</span>
       <button class="editor-tab-close" data-key="${key}" aria-label="Close">×</button>
     `;
     el.querySelector('.editor-tab-name').addEventListener('click', () => openFile(key));
@@ -973,9 +1171,13 @@ function setEditMode(editing) {
 
 function updateCodeActionsState() {
   const hasCode = activeFile && tabsData.length > 0;
-  codeEditBtn.disabled = !hasCode;
+  const canEdit = hasCode && codeViewMode === 'generated';
+  codeEditBtn.disabled = !canEdit;
+  codeSaveBtn.disabled = !canEdit;
   codeCopyBtn.disabled = !hasCode;
   if (!hasCode) {
+    setEditMode(false);
+  } else if (codeViewMode === 'wired' && isEditMode) {
     setEditMode(false);
   }
 }
@@ -998,6 +1200,7 @@ function openFile(key) {
   document.querySelectorAll('.explorer-file').forEach((el) => {
     el.classList.toggle('active', el.dataset.key === key);
   });
+  document.querySelectorAll('.explorer-folder').forEach((el) => el.classList.remove('active'));
 
   if (monacoEditor && typeof monaco !== 'undefined') {
     monacoEditor.setValue(tab.code || '');
@@ -1052,6 +1255,7 @@ function buildTabs(data) {
   openFiles = firstKey ? [firstKey] : [];
   activeFile = firstKey;
 
+  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Generated Files';
   buildExplorer();
   buildEditorTabs();
 
@@ -1062,10 +1266,58 @@ function buildTabs(data) {
   });
 }
 
+function switchCodeViewMode(mode) {
+  if (mode === codeViewMode) return;
+  // When leaving generated view, persist current editor content into generatedTabsData
+  if (codeViewMode === 'generated' && activeFile && monacoEditor) {
+    const tab = tabsData.find((t) => t.key === activeFile);
+    if (tab) tab.code = monacoEditor.getValue();
+    generatedTabsData = tabsData.map((t) => ({ ...t }));
+  }
+  codeViewMode = mode;
+  document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  if (explorerSectionTitle) {
+    explorerSectionTitle.textContent = mode === 'wired' ? 'Wired app' : 'Generated Files';
+  }
+  if (mode === 'wired') {
+    const paths = Object.keys(wiredAppFiles).sort();
+    tabsData = paths.map((path) => ({
+      key: path,
+      label: path,
+      code: wiredAppFiles[path] || '',
+      ext: path.includes('.') ? path.slice(path.lastIndexOf('.')) : '',
+    }));
+  } else {
+    tabsData = generatedTabsData.map((t) => ({ ...t }));
+  }
+  const firstKey = tabsData[0]?.key;
+  openFiles = firstKey ? [firstKey] : [];
+  activeFile = firstKey;
+  buildExplorer();
+  buildEditorTabs();
+  if (monacoEditor && firstKey) {
+    openFile(firstKey);
+  } else if (monacoEditor) {
+    monacoEditor.setValue('');
+  }
+  updateCodeActionsState();
+  layoutMonaco();
+}
+
 // ── Explorer Toggle ──
 explorerToggle.addEventListener('click', () => {
   codeExplorer.classList.toggle('collapsed');
   requestAnimationFrame(layoutMonaco);
+});
+
+// ── Code view mode (Generated | Wired app) ──
+document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.mode;
+    if (mode === 'generated' || mode === 'wired') switchCodeViewMode(mode);
+  });
 });
 
 // ── Edit ──
@@ -1603,6 +1855,7 @@ function escapeHtml(str) {
 
 // ── Init ──
 loadSavedToken();
+loadExplorerIconConfig();
 updateCodeActionsState();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)

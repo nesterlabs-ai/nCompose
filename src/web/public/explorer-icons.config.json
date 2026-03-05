@@ -1,0 +1,27 @@
+{
+  "_comment": "Customize wired-app explorer icons. Values: sprite ID (e.g. icon-folder-closed) or emoji (emoji:📁). Only include keys you want to override.",
+  "folder": {
+    "closed": "icon-folder-closed",
+    "open": "icon-folder-open"
+  },
+  "chevron": {
+    "right": "icon-chevron-right",
+    "down": "icon-chevron-down"
+  },
+  "fileIcons": {
+    "default": "icon-file-doc",
+    ".json": "icon-file-json",
+    ".html": "icon-file-html",
+    ".ts": "icon-file-ts",
+    ".tsx": "icon-file-ts",
+    ".js": "icon-file-js",
+    ".jsx": "icon-file-js",
+    ".svg": "icon-file-svg",
+    ".css": "icon-file-css",
+    ".md": "icon-file-md",
+    ".env.example": "icon-file-env",
+    ".gitignore": "icon-file-gitignore",
+    "vite.config": "icon-file-vite",
+    "config.toml": "icon-file-config"
+  }
+}

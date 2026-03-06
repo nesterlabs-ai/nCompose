@@ -909,54 +909,99 @@ function buildSemanticHint(rootNode: any): string | null {
     }
   }
 
-  if (category === 'unknown') return null;
-
-  const htmlTag = CATEGORY_HTML_TAGS[category] ?? 'div';
-  const ariaRole = CATEGORY_ARIA_ROLES[category] ?? '';
-
-  let hint = `## Semantic HTML Hint\n`;
-  hint += `Detected component category: **${category}**\n`;
-  hint += `Root element: \`<${htmlTag}>\``;
-  if (ariaRole) hint += ` with \`role="${ariaRole}"\``;
-  hint += `\n`;
-
-  // Add category-specific guidance
+  // Category-specific guidance — used for both root and nested hints
   const guidance: Partial<Record<ComponentCategory, string>> = {
-    'button': 'Use `<button type="button">` as root. Include `<span>` for label text. Add `disabled` attribute support.',
-    'icon-button': 'Use `<button type="button">` as root with `aria-label`. Place icon inside `<span>`.',
+    'button': 'Use `<button type="button">`. Include `<span>` for label text. Add `disabled` attribute support.',
+    'icon-button': 'Use `<button type="button">` with `aria-label`. Place icon inside `<span>`.',
     'input': 'Wrapper `<div>` is OK, but MUST contain a real `<input>` element — never a contenteditable div.',
     'textarea': 'Wrapper `<div>` is OK, but MUST contain a real `<textarea>` element.',
     'select': 'Wrapper `<div>` is OK, but MUST contain a real `<select>` element.',
-    'checkbox': 'Root MUST be `<label>`. MUST contain `<input type="checkbox">` + visual `<span>` for the box.',
-    'radio': 'Root MUST be `<label>`. MUST contain `<input type="radio">` + visual `<span>` for the circle.',
-    'toggle': 'Use `<button role="switch">` as root. Include track `<span>` and thumb `<span>`.',
-    'switch': 'Use `<button role="switch">` as root. Include track `<span>` and thumb `<span>`.',
-    'link': 'Use `<a href="...">` as root — never a `<div>` or `<button>`.',
-    'navigation': 'Use `<nav>` as root. Wrap links in `<ul>` > `<li>` > `<a>` structure.',
-    'card': 'Use `<article>` as root. Use semantic children: `<h2>`/`<h3>` for title, `<p>` for description.',
-    'dialog': 'Use `<dialog>` as root.',
+    'checkbox': 'MUST be `<label>` wrapping `<input type="checkbox">` + visual `<span>` for the box.',
+    'radio': 'MUST be `<label>` wrapping `<input type="radio">` + visual `<span>` for the circle.',
+    'toggle': 'Use `<button role="switch">`. Include track `<span>` and thumb `<span>`.',
+    'switch': 'Use `<button role="switch">`. Include track `<span>` and thumb `<span>`.',
+    'link': 'Use `<a href="...">` — never a `<div>` or `<button>`.',
+    'navigation': 'Use `<nav>`. Wrap links in `<ul>` > `<li>` > `<a>` structure.',
+    'card': 'Use `<article>`. Use semantic children: `<h2>`/`<h3>` for title, `<p>` for description.',
+    'dialog': 'Use `<dialog>`.',
     'tab': 'Use `<button role="tab">` with `aria-selected` attribute.',
-    'menu': 'Use `<ul role="menu">` as root with `<li role="menuitem">` children.',
-    'menu-item': 'Use `<li role="menuitem">` as root.',
-    'header': 'Use `<header>` as root.',
-    'footer': 'Use `<footer>` as root.',
-    'sidebar': 'Use `<aside>` as root.',
-    'badge': 'Use `<span>` as root — keep it simple.',
-    'chip': 'Use `<div role="option">` as root with label `<span>` and optional remove `<button>`.',
+    'menu': 'Use `<ul role="menu">` with `<li role="menuitem">` children.',
+    'menu-item': 'Use `<li role="menuitem">`.',
+    'header': 'Use `<header>`.',
+    'footer': 'Use `<footer>`.',
+    'sidebar': 'Use `<aside>`.',
+    'badge': 'Use `<span>` — keep it simple.',
+    'chip': 'Use `<button>` — NOT `<div>`. Include label `<span>` and optional remove icon.',
     'slider': 'Wrapper `<div>` MUST contain `<input type="range">` — never a custom slider div.',
     'accordion': 'Use `<details>` / `<summary>` or `<div>` with `aria-expanded` toggle.',
     'breadcrumb': 'Use `<nav aria-label="breadcrumb">` with `<ol>` > `<li>` > `<a>` structure.',
     'divider': 'Use `<hr>` — no extra divs.',
-    'list': 'Use `<ul>` or `<ol>` as root with `<li>` children.',
-    'list-item': 'Use `<li>` as root.',
+    'list': 'Use `<ul>` or `<ol>` with `<li>` children.',
+    'list-item': 'Use `<li>`.',
     'table': 'Use `<table>` with `<thead>`, `<tbody>`, `<tr>`, `<th>`, `<td>`.',
   };
 
-  if (guidance[category]) {
-    hint += `\n**Required structure:** ${guidance[category]}`;
+  // Build root hint (if category known)
+  let hint = '';
+  if (category !== 'unknown') {
+    const htmlTag = CATEGORY_HTML_TAGS[category] ?? 'div';
+    const ariaRole = CATEGORY_ARIA_ROLES[category] ?? '';
+    hint += `## Semantic HTML Hint\n`;
+    hint += `Detected component category: **${category}**\n`;
+    hint += `Root element: \`<${htmlTag}>\``;
+    if (ariaRole) hint += ` with \`role="${ariaRole}"\``;
+    hint += `\n`;
+    if (guidance[category]) {
+      hint += `\n**Required structure:** ${guidance[category]}`;
+    }
   }
 
-  return hint;
+  // Scan for nested component instances and add hints for each —
+  // this works even when the root category is 'unknown' (large layout trees).
+  const nestedHints = collectNestedSemanticHints(rootNode, guidance);
+  if (nestedHints) {
+    hint += nestedHints;
+  }
+
+  return hint || null;
+}
+
+/**
+ * Recursively scans a Figma node tree for child nodes whose names match
+ * known component categories (chip, checkbox, radio, search, button, etc.).
+ * Returns a prompt section with semantic HTML guidance for each.
+ *
+ * This is the PATH B equivalent of PATH A's nested instance blueprints.
+ * Works generically for any component — no per-component special-casing.
+ */
+function collectNestedSemanticHints(
+  rootNode: any,
+  guidance: Partial<Record<ComponentCategory, string>>,
+): string | null {
+  const seen = new Set<ComponentCategory>();
+  const hints: string[] = [];
+
+  function walk(node: any) {
+    if (!node?.children) return;
+    for (const child of node.children) {
+      if (!child?.name) continue;
+      const cat = detectComponentCategory(child.name);
+      if (cat !== 'unknown' && !seen.has(cat)) {
+        seen.add(cat);
+        const tag = CATEGORY_HTML_TAGS[cat] ?? 'div';
+        let line = `- **"${child.name}"** → \`<${tag}>\``;
+        if (guidance[cat]) line += ` — ${guidance[cat]}`;
+        hints.push(line);
+      }
+      walk(child);
+    }
+  }
+  walk(rootNode);
+
+  if (hints.length === 0) return null;
+  return `\n\n## Nested Component HTML Rules\n` +
+    `The design contains these nested components. You MUST use semantic HTML for each — do NOT render as \`<div>\` or \`<span>\`:\n` +
+    hints.join('\n');
 }
 
 /**

@@ -174,11 +174,11 @@ app.post('/api/convert', (req: any, res: any) => {
         assetCount: result.assets?.length ?? 0,
         fidelity: result.fidelityReport
           ? {
-              overallPassed: result.fidelityReport.overallPassed,
-              checks: Object.fromEntries(
-                Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
-              ),
-            }
+            overallPassed: result.fidelityReport.overallPassed,
+            checks: Object.fromEntries(
+              Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
+            ),
+          }
           : undefined,
       });
 
@@ -189,7 +189,7 @@ app.post('/api/convert', (req: any, res: any) => {
       sendEvent('error', { message });
       res.end();
     })
-;
+    ;
 
   // Handle client disconnect
   req.on('close', () => {
@@ -362,6 +362,7 @@ app.get('/api/config', (_req: any, res: any) => {
  */
 app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
   const { sessionId } = req.params;
+  const { mode } = req.query;
   const result = getSession(sessionId);
 
   if (!result) {
@@ -371,31 +372,41 @@ app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
 
   const files: { name: string; content: string }[] = [];
 
-  // Mitosis source
-  files.push({
-    name: `${result.componentName}.lite.tsx`,
-    content: result.mitosisSource,
-  });
-
-  // Framework outputs
-  for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
-    if (code && !code.startsWith('// Error')) {
-      const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
-      files.push({
-        name: `${result.componentName}${ext}`,
-        content: code,
-      });
+  if (mode === 'wired') {
+    const appDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
+    if (existsSync(appDir)) {
+      const wiredFilesMap = readDirToFilesMap(appDir);
+      for (const [name, content] of Object.entries(wiredFilesMap)) {
+        files.push({ name, content });
+      }
     }
-  }
+  } else {
+    // Mitosis source
+    files.push({
+      name: `${result.componentName}.lite.tsx`,
+      content: result.mitosisSource,
+    });
 
-  // Assets
-  if (result.assets) {
-    for (const asset of result.assets) {
-      if (asset.content) {
+    // Framework outputs
+    for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+      if (code && !code.startsWith('// Error')) {
+        const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
         files.push({
-          name: `assets/${asset.filename}`,
-          content: asset.content,
+          name: `${result.componentName}${ext}`,
+          content: code,
         });
+      }
+    }
+
+    // Assets
+    if (result.assets) {
+      for (const asset of result.assets) {
+        if (asset.content) {
+          files.push({
+            name: `assets/${asset.filename}`,
+            content: asset.content,
+          });
+        }
       }
     }
   }

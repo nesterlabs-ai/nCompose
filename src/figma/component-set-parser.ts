@@ -968,7 +968,11 @@ function collectNamedChildStyles(
     if (!child?.name || child.name.startsWith('_')) continue;
     if (child.visible === false) continue;
 
-    const key      = buildBemKey(prefix, toKebabCase(child.name));
+    let childKebab = toKebabCase(child.name);
+    if (isContentDerivedName(child)) {
+      childKebab = inferTextSemanticKey(child);
+    }
+    const key      = buildBemKey(prefix, childKebab);
     const childCSS = resolveNodeCSS(child, globalStyles, variables, depth);
 
     if (child.type === 'TEXT') {
@@ -986,9 +990,43 @@ function collectNamedChildStyles(
       }
     }
 
+    // Circular containers (background + border-radius: 9999px or very large) that
+    // contain icon children: extract the inner icon's vector color and set it as
+    // `color` so that SVG stroke="currentColor" inherits the correct value.
+    // This covers cases like a green circle with a white check icon inside.
+    if (['FRAME', 'GROUP'].includes(child.type) && !childCSS['color'] && childCSS['background-color']) {
+      const br = childCSS['border-radius'];
+      const isCircular = br === '50%' || (br && parseInt(br) >= 9999);
+      if (isCircular) {
+        const vColor = extractVectorColorRecursive(child, variables);
+        if (vColor) childCSS['color'] = vColor;
+      }
+    }
+
     // Table node typing
     if (child.type === 'TABLE')      { childCSS['display'] = 'table'; childCSS['border-collapse'] = 'collapse'; }
     if (child.type === 'TABLE_CELL') { childCSS['display'] = 'table-cell'; }
+
+    // CSS circle pattern: render ellipses as CSS circles (border-radius: 50%)
+    // Case 1: FRAME/GROUP containing only a single ELLIPSE child
+    if (['FRAME', 'GROUP'].includes(child.type) &&
+        child.children?.length === 1 &&
+        child.children[0]?.type === 'ELLIPSE') {
+      childCSS['border-radius'] = '50%';
+      childCSS['overflow'] = 'hidden';
+    }
+    // Case 2: Standalone ELLIPSE node (direct child of COMPONENT variant)
+    // The fill color is already extracted by resolveNodeCSS as background-color.
+    // Add border-radius: 50% so it renders as a circle, not a square.
+    // Also set `color` to match `background-color` so that if the LLM generates
+    // an SVG with fill="currentColor", it inherits the correct color.
+    if (child.type === 'ELLIPSE') {
+      childCSS['border-radius'] = '50%';
+      childCSS['overflow'] = 'hidden';
+      if (childCSS['background-color']) {
+        childCSS['color'] = childCSS['background-color'];
+      }
+    }
 
     if (Object.keys(childCSS).length > 0) out[key] = childCSS;
 
@@ -1025,7 +1063,11 @@ function extractChildLayers(
     if (depth > 6) return;
     for (const child of children) {
       if (!child?.name || child.name.startsWith('_')) continue;
-      const key = buildBemKey(prefix, toKebabCase(child.name));
+      let childKebab = toKebabCase(child.name);
+      if (isContentDerivedName(child)) {
+        childKebab = inferTextSemanticKey(child);
+      }
+      const key = buildBemKey(prefix, childKebab);
       const css = resolveNodeCSS(child, globalStyles, variables, depth);
 
       // Inline text runs for mixed-style TEXT nodes
@@ -1047,13 +1089,18 @@ function extractChildLayers(
         imageScaleMode = (imageFill.scaleMode ?? 'FILL') as ChildLayerInfo['imageScaleMode'];
       }
 
+      // ELLIPSE nodes with solid fills are CSS circles (background-color + border-radius: 50%),
+      // not SVG icons. Don't mark them as icons so the LLM renders an empty div, not SVG.
+      const isCSSCircle = child.type === 'ELLIPSE' &&
+        child.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
+
       layers.push({
         key,
         originalName: child.name,
         nodeType: child.type ?? 'UNKNOWN',
         nodeId: child.id ?? undefined,
         css,
-        isIcon:  isIconKey(key) || VECTOR_NODE_TYPES.has(child.type),
+        isIcon:  !isCSSCircle && (isIconKey(key) || VECTOR_NODE_TYPES.has(child.type)),
         isText:  child.type === 'TEXT',
         isImage: !!imageFill,
         depth,
@@ -2052,6 +2099,28 @@ function isIconKey(key: string): boolean {
     k.includes('prefix') || k.includes('suffix') || k.includes('adornment');
 }
 
+/**
+ * Detects TEXT nodes whose Figma layer name IS their text content.
+ * These should use a semantic key instead, since the name changes per variant.
+ */
+function isContentDerivedName(node: any): boolean {
+  if (node.type !== 'TEXT' || !node.characters) return false;
+  const nameNorm = toKebabCase(node.name);
+  const contentNorm = toKebabCase(node.characters);
+  // Name matches content (exact or content starts with name — truncated names)
+  return nameNorm === contentNorm || contentNorm.startsWith(nameNorm);
+}
+
+/**
+ * Infers a semantic BEM key for a content-derived TEXT node based on its
+ * typography (font size, weight) to distinguish titles from body text.
+ */
+function inferTextSemanticKey(node: any): string {
+  const fontSize = node.style?.fontSize ?? 14;
+  if (fontSize >= 16) return 'title';
+  return 'description';
+}
+
 /** Detects Figma auto-generated node names (e.g. "frame-2147225756", "group-42") */
 function isAutoGeneratedKey(key: string): boolean {
   return /^(frame|group|rectangle|ellipse|line|vector|star|polygon|instance|component|section)-\d{3,}$/.test(key)
@@ -2130,7 +2199,9 @@ function buildSemanticRenameMap(rootNode: any): Map<string, string> {
       const origKey = toKebabCase(child.name ?? '');
 
       let semKey = origKey;
-      if (isAutoGeneratedKey(origKey)) {
+      if (isContentDerivedName(child)) {
+        semKey = inferTextSemanticKey(child);
+      } else if (isAutoGeneratedKey(origKey)) {
         semKey = inferSemanticKey(child);
       }
 
@@ -2296,8 +2367,13 @@ export function buildVariantCSS(
     lines.push('}');
 
     if (isIconKey(effectiveKey)) {
-      lines.push('', `.${base}__${effectiveKey} img,`, `.${base}__${effectiveKey} svg {`,
-        `  width: 100%;`, `  height: 100%;`, `  object-fit: contain;`, `  display: block;`, '}');
+      // If the icon container uses flex centering, don't stretch inner SVG/img —
+      // let it use its natural dimensions (the container already centers it).
+      const isCentering = merged['justify-content'] === 'center' && merged['align-items'] === 'center';
+      if (!isCentering) {
+        lines.push('', `.${base}__${effectiveKey} img,`, `.${base}__${effectiveKey} svg {`,
+          `  width: 100%;`, `  height: 100%;`, `  object-fit: contain;`, `  display: block;`, '}');
+      }
     }
   }
 
@@ -2585,7 +2661,7 @@ export function toKebabCase(str: string): string {
     .replace(/([a-z])([A-Z])/g, '$1-$2')
     .replace(/\s+/g, '-')
     // Strip characters invalid in CSS class names and JS identifiers
-    .replace(/[()[\]/\\'",.:;!?@#$%^&*+=|~`<>{}]/g, '')
+    .replace(/[()[\]/\\'",.:;!?@#$%^&*+=|~`<>{}\u2018\u2019\u201C\u201D]/g, '')
     .replace(/-{2,}/g, '-')
     .replace(/^-|-$/g, '')
     .toLowerCase();

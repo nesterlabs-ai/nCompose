@@ -8,6 +8,7 @@ import {
   detectComponentCategory,
   CATEGORY_HTML_TAGS,
   CATEGORY_ARIA_ROLES,
+  toKebabCase,
 } from './figma/component-set-parser.js';
 import type { ComponentCategory } from './figma/component-set-parser.js';
 import {
@@ -48,6 +49,56 @@ export interface ConvertCallbacks {
   onStep?: (step: string) => void;
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void;
   onDebugData?: (data: { yamlContent: string; rawLLMOutput: string }) => void;
+}
+
+/**
+ * For INPUT and TEXTAREA components, CSS is generated from Figma frame names:
+ * the "Input" Figma frame gets class `{base}__input`.
+ * But in HTML, that class is applied to the actual `<input>` / `<textarea>` element,
+ * which cannot have flex/background/border-radius styling.
+ *
+ * Fix: copy visual styling from `{base}__input` → `{base}__field` (the wrapper div),
+ * replace `{base}__input` rules with input-reset styles, and rename descendant
+ * selectors in state modifiers to point at `{base}__field`.
+ */
+function fixInputFieldCSS(css: string, baseClass: string): string {
+  const esc = baseClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Extract the main .{base}__input { ... } block (NOT child elements like __input__)
+  const mainBlockRe = new RegExp(`\\.${esc}__input(?!__)\\s*\\{([^}]+)\\}`);
+  const match = css.match(mainBlockRe);
+  if (!match) return css; // Nothing to fix
+
+  let fieldContent = match[1];
+
+  // Ensure flex-direction: row and align-items: center are present on the field
+  if (!fieldContent.includes('flex-direction')) {
+    fieldContent = fieldContent.replace('display: flex;', 'display: flex;\n  flex-direction: row;\n  align-items: center;');
+  } else if (!fieldContent.includes('align-items')) {
+    fieldContent = fieldContent.replace('flex-direction: row;', 'flex-direction: row;\n  align-items: center;');
+  }
+
+  const fieldBlock = `.${baseClass}__field {${fieldContent}}`;
+
+  const inputReset =
+    `.${baseClass}__input {\n` +
+    `  border: none;\n  outline: none;\n  background: transparent;\n` +
+    `  flex: 1;\n  min-width: 0;\n  padding: 0;\n  font: inherit;\n  color: inherit;\n  cursor: text;\n}`;
+
+  let result = css;
+
+  // 1. Replace the main .{base}__input block with the input reset
+  result = result.replace(mainBlockRe, inputReset);
+
+  // 2. Rename all descendant selectors: .foo .{base}__input → .foo .{base}__field
+  //    (handles state modifiers like .search[data-error] .search__input)
+  result = result.replace(
+    new RegExp(`([ \\t]+)\\.${esc}__input(?!__)`, 'g'),
+    `$1.${baseClass}__field`,
+  );
+
+  // 3. Prepend the new field block
+  return fieldBlock + '\n\n' + result;
 }
 
 /**
@@ -629,7 +680,13 @@ async function convertComponentSet(
 
   // Step A2: Generate CSS deterministically from variant data
   onStep?.('Building variant CSS from design tokens...');
-  const variantCSS = buildVariantCSS(componentSetData, dimensionMap);
+  let variantCSS = buildVariantCSS(componentSetData, dimensionMap);
+
+  // For input/textarea: move visual styling from {base}__input → {base}__field
+  // so the icon + input sit side-by-side inside the styled field box.
+  if (componentSetData.componentCategory === 'input' || componentSetData.componentCategory === 'textarea') {
+    variantCSS = fixInputFieldCSS(variantCSS, toKebabCase(componentSetData.name));
+  }
 
   // Step A3: Build specialized prompt for class-based component (asset hints + variant tracking included)
   const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
@@ -1123,7 +1180,10 @@ async function convertPage(
           : [];
         const assetMap = buildAssetMap(assets);
         const dimensionMap = buildDimensionMap(assets);
-        const variantCSS = buildVariantCSS(componentSetData, dimensionMap);
+        let variantCSS = buildVariantCSS(componentSetData, dimensionMap);
+        if (componentSetData.componentCategory === 'input' || componentSetData.componentCategory === 'textarea') {
+          variantCSS = fixInputFieldCSS(variantCSS, toKebabCase(componentSetData.name));
+        }
         const promptData = buildVariantPromptData(componentSetData, assetMap, assets);
         const defaultVariantYaml = extractDefaultVariantYaml(componentSetData.defaultVariantNode);
         const userPrompt = buildComponentSetUserPrompt(promptData, defaultVariantYaml, componentSetData, variantCSS, options.templateMode);

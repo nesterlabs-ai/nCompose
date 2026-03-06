@@ -517,6 +517,48 @@ export function wrapBareJSX(code: string): string {
 }
 
 /**
+ * Removes redundant SVG background fill paths from SVGs where the parent
+ * element already handles the background via CSS (background-color + border-radius).
+ *
+ * Pattern detected: an SVG has both a `<path fill="currentColor" .../>` that
+ * starts at the origin (M0 — a full-area background shape) and other paths
+ * (the actual icon strokes). The fill path duplicates the CSS background and
+ * renders as black (since `currentColor` has no explicit CSS `color` ancestor).
+ *
+ * Fix: remove the fill path. The CSS background-color + border-radius handles
+ * the visual circle/shape, and the stroke paths render the icon content.
+ */
+export function stripRedundantSVGFills(jsx: string): string {
+  // Match SVGs that contain multiple paths where the first uses fill="currentColor"
+  return jsx.replace(
+    /(<svg\b[^>]*>)([\s\S]*?)(<\/svg>)/g,
+    (_match, open: string, content: string, close: string) => {
+      // Count paths: need at least 2 (one fill background + one stroke icon)
+      const pathMatches = [...content.matchAll(/<path\b[^>]*\/>/g)];
+      if (pathMatches.length < 2) return _match;
+
+      // Check if the first path is a background fill (starts at origin with fill="currentColor")
+      const firstPath = pathMatches[0][0];
+      const isFillPath = /\bfill="currentColor"/.test(firstPath);
+      const startsAtOrigin = /\bd="M0[\s,]/.test(firstPath);
+
+      // Check if there's at least one stroke path (the actual icon)
+      const hasStrokePath = pathMatches.some(
+        (m, i) => i > 0 && /\bstroke="currentColor"/.test(m[0]),
+      );
+
+      if (isFillPath && startsAtOrigin && hasStrokePath) {
+        // Remove the background fill path
+        const cleaned = content.replace(firstPath, '');
+        return open + cleaned + close;
+      }
+
+      return _match;
+    },
+  );
+}
+
+/**
  * Full cleanup pipeline: extracts CSS block, strips fences, fixes Mitosis
  * compliance issues, auto-fixes root element, hoists consts, and fixes imports.
  * Returns both the cleaned JSX and extracted CSS.
@@ -529,7 +571,8 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: s
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
   const fixedSVG = fixSVGAttributes(fixedClassName);
-  const wrapped = wrapBareJSX(fixedSVG);
+  const strippedSVG = stripRedundantSVGFills(fixedSVG);
+  const wrapped = wrapBareJSX(strippedSVG);
   const fixedRoot = fixRootElement(wrapped, expectedRootTag);
   const fixedMap = fixMapToFor(fixedRoot);
   const hoisted = hoistLocalConsts(fixedMap);

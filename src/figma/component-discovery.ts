@@ -101,6 +101,7 @@ function extractProps(node: any): Record<string, string | boolean> {
 /**
  * Computes a structural fingerprint from a node's componentProperties.
  *
+ * 
  * Uses Figma's own property `type` metadata to classify:
  * - BOOLEAN / VARIANT → structural (affect DOM shape) → include
  * - TEXT → content-only (labels, values) → exclude
@@ -166,6 +167,46 @@ function matchComponentPattern(name: string): string | null {
 }
 
 /**
+ * Refines a name-based formRole by inspecting the node's componentProperties.
+ *
+ * Figma component sets often use variant properties like `Dropdown=Yes`,
+ * `Country=Yes`, `Type=Dropdown` to toggle between input styles.
+ * The name might just be "Input Fields" for all variants, so we check
+ * the actual properties to detect dropdowns, country selectors, etc.
+ */
+function refineFormRole(formRole: string, node: any): string {
+  if (formRole !== 'textInput') return formRole; // only refine text inputs
+
+  const raw = node.componentProperties ?? node.componentPropertyValues ?? {};
+
+  for (const [key, val] of Object.entries(raw)) {
+    const cleanKey = cleanPropKey(key).toLowerCase();
+    const value = typeof val === 'object' && val !== null
+      ? (val as any).value
+      : val;
+    const strValue = typeof value === 'string' ? value.toLowerCase() : '';
+    const isTrue = value === true || strValue === 'yes' || strValue === 'true';
+
+    // Property named "dropdown", "select", "combo", "picker" set to true/yes
+    if (isTrue && /^(dropdown|select|combo|picker)$/.test(cleanKey)) {
+      return 'select';
+    }
+
+    // Property named "type" or "variant" with value containing "dropdown"/"select"
+    if (/^(type|variant|style)$/.test(cleanKey) && /dropdown|select/i.test(strValue)) {
+      return 'select';
+    }
+
+    // Property named "country" set to true/yes → country picker (select)
+    if (isTrue && /^country$/.test(cleanKey)) {
+      return 'select';
+    }
+  }
+
+  return formRole;
+}
+
+/**
  * Recursively walks the Figma tree to find INSTANCE nodes that match
  * known UI component patterns. Collects them with their tree path
  * so we can substitute them later.
@@ -179,8 +220,9 @@ function walkForComponents(
 
   // Check if this is a recognizable component INSTANCE
   if (node.type === 'INSTANCE' && node.name) {
-    const formRole = matchComponentPattern(node.name);
-    if (formRole) {
+    const rawFormRole = matchComponentPattern(node.name);
+    if (rawFormRole) {
+      const formRole = refineFormRole(rawFormRole, node);
       const fingerprint = computeStructuralFingerprint(node);
       const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
       if (!results.has(key)) {

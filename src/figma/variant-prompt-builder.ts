@@ -313,13 +313,22 @@ function buildDynamicProps(
     }
   }
   // Then derive props for uncovered TEXT layers
+  const isAutoGenSegment = (s: string) =>
+    /^(frame|group|rectangle|ellipse|line|vector|star|polygon|instance|component|section)-\d{3,}$/.test(s)
+    || /^\d+$/.test(s);
   for (const layer of data.childLayers) {
     if (!layer.isText || !layer.characters || !layer.characters.trim()) continue;
     if (coveredLayerKeys.has(layer.key)) continue;
     const segments = layer.key.split('__');
     let propName: string;
     if (segments.length >= 2) {
-      propName = toCamelCase(segments[segments.length - 2]) + 'Label';
+      const parentSegment = segments[segments.length - 2];
+      if (isAutoGenSegment(parentSegment)) {
+        // Parent has auto-generated name — use the leaf segment instead
+        propName = toCamelCase(segments[segments.length - 1]) + 'Label';
+      } else {
+        propName = toCamelCase(parentSegment) + 'Label';
+      }
     } else {
       propName = toCamelCase(layer.key) + 'Text';
     }
@@ -823,8 +832,15 @@ export function buildComponentSetUserPrompt(
       (a) => a.variants && a.variants.length > 0,
     );
 
+    // Determine default variant prop values for default-variant detection
+    const defaultVariantProps = componentSetData?.defaultVariant?.props ?? {};
+
     if (conditionalAssets.length > 0) {
       lines.push('### Icon / Asset Conditional Rendering');
+      lines.push('');
+      lines.push('**IMPORTANT:** When checking for the default variant value, ALWAYS include a fallback for undefined:');
+      lines.push('  WRONG:  `props.variant === \'success\'`');
+      lines.push('  RIGHT:  `props.variant === \'success\' || !props.variant`');
       lines.push('');
 
       // Group assets by shapeGroupId to identify color variants of the same icon
@@ -850,6 +866,12 @@ export function buildComponentSetUserPrompt(
         const onlyLoading  = names.every((v) => v.toLowerCase().includes('loading'));
         const onlyDisabled = names.every((v) => v.toLowerCase().includes('disabled'));
 
+        // Check if this icon appears in the default variant
+        const defaultPropValues = Object.values(defaultVariantProps).map(v => v.toLowerCase());
+        const isInDefaultVariant = names.some((v) =>
+          defaultPropValues.some(dv => v.toLowerCase().includes(dv))
+        );
+
         lines.push(`**${posLabel} / ${iconLabel}** — conditional inline SVG:`);
         lines.push(`  SVG: ${svgSnippet}`);
         if (onlyLoading) {
@@ -858,6 +880,17 @@ export function buildComponentSetUserPrompt(
           lines.push(`  Only in DISABLED state → render: \`{props.disabled && <svg ...>...</svg>}\``);
         } else if (names.length <= 6) {
           lines.push(`  Only in: ${names.join(', ')}`);
+          if (isInDefaultVariant) {
+            // Identify which variant value is the default
+            const defaultVal = names.find((v) =>
+              defaultPropValues.some(dv => v.toLowerCase().includes(dv))
+            );
+            if (defaultVal) {
+              const kebab = toKebabCase(defaultVal);
+              lines.push(`  ⚠️ "${defaultVal}" is the DEFAULT variant — also render when prop is undefined:`);
+              lines.push(`    \`{(props.variant === '${kebab}' || !props.variant) && <svg ...>}</svg>}\``);
+            }
+          }
         } else {
           lines.push(`  Appears in ${appearsIn}/${totalVariants} variants`);
         }
@@ -1101,6 +1134,15 @@ export function buildComponentSetUserPrompt(
   }
 
   reqs.push('Use string concatenation (not template literals) for building the class string');
+
+  // Default variant fallback — ensure icons/content render when prop is undefined
+  if (promptData.axes.length > 0) {
+    const defaultAxis = promptData.axes[0];
+    reqs.push(
+      `When conditionally rendering content for the default variant value ('${toKebabCase(defaultAxis.default)}'), ` +
+      `ALWAYS include a fallback: \`props.${axisToPropName(defaultAxis.name)} === '${toKebabCase(defaultAxis.default)}' || !props.${axisToPropName(defaultAxis.name)}\``
+    );
+  }
 
   reqs.forEach((req, i) => lines.push(`${i + 1}. ${req}`));
   lines.push('');

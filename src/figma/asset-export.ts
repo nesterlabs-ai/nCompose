@@ -136,6 +136,15 @@ const LEAF_VECTOR_TYPES = new Set([
 export function isAssetNode(node: any): boolean {
   if (!node) return false;
 
+  // CSS circle pattern: frame containing only a single ELLIPSE child.
+  // These are rendered via CSS (background-color + border-radius: 50%),
+  // not as SVG icons. Skip them to avoid duplicate rendering.
+  if (node.type === 'FRAME' &&
+      node.children?.length === 1 &&
+      node.children[0]?.type === 'ELLIPSE') {
+    return false;
+  }
+
   // Legacy Framelink detection
   if (node.type === 'IMAGE-SVG' || node.type === 'IMAGE') return true;
   if (
@@ -153,10 +162,19 @@ export function isAssetNode(node: any): boolean {
     Math.max(d.width, d.height) / Math.min(d.width, d.height) <= 1.5;
 
   // Small FRAME with only vector/instance content → icon container
+  // Exception: if the FRAME has its own solid fill AND has children, it's a
+  // styled container (e.g. green circle with a check icon inside).  The CSS
+  // pipeline handles its background-color + border-radius.  Don't export the
+  // whole frame as SVG — let recursion find the inner icons instead.
   if (node.type === 'FRAME' && node.id && dims) {
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
     const hasVecContent = node.children?.length > 0 && hasOnlyVectorContent(node);
-    if (isSmall && isIconAspectRatio(dims) && hasVecContent) return true;
+    const hasSolidFill = node.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
+    if (isSmall && isIconAspectRatio(dims) && hasVecContent) {
+      // Frame with fill + icon children = styled container, not an icon itself
+      if (hasSolidFill && node.children?.length > 0) return false;
+      return true;
+    }
   }
 
   // INSTANCE nodes — icon component references (e.g. "check-icon", "arrow-right")
@@ -168,7 +186,13 @@ export function isAssetNode(node: any): boolean {
 
   // Standalone VECTOR / BOOLEAN_OPERATION / LINE / ELLIPSE / STAR / REGULAR_POLYGON
   // These are leaf SVG shapes. Only detect small ones to avoid decorative elements.
+  // Exception: ELLIPSE nodes with solid fills are rendered as CSS circles
+  // (background-color + border-radius: 50%), not as SVG assets.
   if (LEAF_VECTOR_TYPES.has(node.type) && node.id && dims) {
+    // Skip ELLIPSE nodes that have solid fills — they are CSS circles, not icons
+    if (node.type === 'ELLIPSE' && node.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false)) {
+      return false;
+    }
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
     if (isSmall) return true;
   }
@@ -238,10 +262,18 @@ export function collectAssetNodes(
   }
 
   if (node.children) {
-    for (const child of node.children) {
-      // Pass current node name as parent, but skip if it looks like a variant name
-      const childParentName = node.name && !node.name.includes('=') ? node.name : parentName;
-      collectAssetNodes(child, result, nodeDimensions, childParentName);
+    // CSS circle pattern: if this frame has only a single ELLIPSE child,
+    // skip recursion — the circle is rendered via CSS, not SVG.
+    const isCSSCircle = node.type === 'FRAME' &&
+      node.children.length === 1 &&
+      node.children[0]?.type === 'ELLIPSE';
+
+    if (!isCSSCircle) {
+      for (const child of node.children) {
+        // Pass current node name as parent, but skip if it looks like a variant name
+        const childParentName = node.name && !node.name.includes('=') ? node.name : parentName;
+        collectAssetNodes(child, result, nodeDimensions, childParentName);
+      }
     }
   }
 

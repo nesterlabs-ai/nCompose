@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import archiver from 'archiver';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +12,7 @@ import { generatePreviewHTML } from './preview.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
 import type { Framework, ConversionResult } from '../types/index.js';
 import { config } from '../config.js';
+import { wireIntoStarter } from '../template/wire-into-starter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,7 +61,7 @@ app.use(express.static(join(__dirname, 'public')));
  * Streams progress via Server-Sent Events, then sends completion data.
  */
 app.post('/api/convert', (req: any, res: any) => {
-  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM } = req.body;
+  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM, template } = req.body;
 
   // Validate inputs
   if (!figmaUrl || typeof figmaUrl !== 'string') {
@@ -103,6 +105,7 @@ app.post('/api/convert', (req: any, res: any) => {
       llm: (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM) as any,
       depth: config.server.defaultDepth,
       figmaToken,
+      templateMode: Boolean(template),
     },
     {
       onStep: (step) => {
@@ -136,6 +139,30 @@ app.post('/api/convert', (req: any, res: any) => {
         sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
       }
 
+      // Wire into starter template when requested (same behavior as CLI --template)
+      let templateWired = false;
+      if (template) {
+        const projectRoot = join(__dirname, '..'); // points to src/
+        const starterDir = join(projectRoot, 'figma-to-code-starter-main');
+        if (existsSync(starterDir)) {
+          try {
+            wireIntoStarter({
+              componentOutputDir,
+              componentName: result.componentName,
+              starterDir,
+              componentPropertyDefinitions: result.componentPropertyDefinitions,
+            });
+            templateWired = true;
+            sendEvent('step', {
+              message: `Template wired: runnable app in app/ (see Wired app in code view)`,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            sendEvent('step', { message: `Template wiring failed: ${msg}` });
+          }
+        }
+      }
+
       // Send framework outputs for code display
       sendEvent('complete', {
         sessionId,
@@ -143,6 +170,7 @@ app.post('/api/convert', (req: any, res: any) => {
         frameworks: selectedFrameworks,
         frameworkOutputs: result.frameworkOutputs,
         mitosisSource: result.mitosisSource,
+        templateWired,
         assetCount: result.assets?.length ?? 0,
         fidelity: result.fidelityReport
           ? {
@@ -216,6 +244,50 @@ app.get('/api/download/:sessionId', (req: any, res: any) => {
   }
 
   archive.finalize();
+});
+
+/**
+ * Recursively read directory and return map of relative path -> content (UTF-8).
+ * Skips node_modules and binary files.
+ */
+function readDirToFilesMap(dirPath: string, baseDir: string = dirPath): Record<string, string> {
+  const out: Record<string, string> = {};
+  const entries = readdirSync(dirPath, { withFileTypes: true });
+  for (const e of entries) {
+    const full = join(dirPath, e.name);
+    const rel = full.slice(baseDir.length).replace(/^[/\\]/, '').replace(/\\/g, '/');
+    if (e.name === 'node_modules') continue;
+    if (e.isDirectory()) {
+      Object.assign(out, readDirToFilesMap(full, baseDir));
+    } else {
+      try {
+        const content = readFileSync(full, 'utf8');
+        out[rel] = content;
+      } catch {
+        // skip binary or unreadable
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * GET /api/session/:sessionId/wired-app-files — List and read all files in the wired app (template) directory
+ */
+app.get('/api/session/:sessionId/wired-app-files', (req: any, res: any) => {
+  const { sessionId } = req.params;
+  const result = getSession(sessionId);
+  if (!result) {
+    res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+  const appDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
+  if (!existsSync(appDir)) {
+    res.status(404).json({ error: 'No wired app for this session' });
+    return;
+  }
+  const files = readDirToFilesMap(appDir);
+  res.json({ files });
 });
 
 const FILE_EXTENSIONS: Record<string, string> = {

@@ -10,6 +10,62 @@
 </head>
 
 <body>
+  <!-- Explorer icons (Cursor/VS Code style), hidden sprite -->
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <!-- Folder: Cursor-style folder with tab -->
+      <symbol id="icon-folder-closed" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M1.5 4h5.38l1.5 1.5h6.12v7H1.5V4zm0 1v6h11V6.5H7.12L5.62 5H1.5z"/>
+      </symbol>
+      <symbol id="icon-folder-open" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M1.5 4h5.38l1.5 1.5h6.12v1H2.2l-1.5 3h12.6l1.2-4H1.5V4zm.7 5l1-2h10.1l-1 2H2.2z"/>
+      </symbol>
+      <!-- Chevrons: small triangles like Cursor -->
+      <symbol id="icon-chevron-right" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M6 3l5 5-5 5V3z"/>
+      </symbol>
+      <symbol id="icon-chevron-down" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M3 6l5 5 5-5H3z"/>
+      </symbol>
+      <!-- File icons: document + type-specific (currentColor set by CSS) -->
+      <symbol id="icon-file-doc" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M4 1h7l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v11h9V6h-3a1 1 0 0 1-1-1V2H5z"/>
+      </symbol>
+      <symbol id="icon-file-json" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M5 2h1v2H5V2zm4 0h1v2H9V2zM5 5h1v1H5V5zm4 0h1v1H9V5zM5 8h1v1H5V8zm4 0h1v1H9V8zM5 11h1v1H5v-1zm4 0h1v1H9v-1z"/>
+      </symbol>
+      <symbol id="icon-file-html" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M3 3h3l.5 8H5L4.5 6H3.5L3 11H2L2.5 3H3zm7 0h3l.5 8h-2l-.2-3h-1.3l-.2 3H9L9.5 3zm-2 4l.3-4H9l-.5 6h-1l.3-2z"/>
+      </symbol>
+      <symbol id="icon-file-ts" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M3 2h10v12H3V2zm1 1v10h8V3H4zm3 2h3v1H7V5zm0 2h3v1H7V7zm0 2h2v1H7V9z"/>
+      </symbol>
+      <symbol id="icon-file-js" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M3 2h10v12H3V2zm1 1v10h8V3H4zm2 2h4v1H6V5zm0 2h4v1H6V7z"/>
+      </symbol>
+      <symbol id="icon-file-svg" viewBox="0 0 16 16">
+        <rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"/>
+      </symbol>
+      <symbol id="icon-file-css" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M4 2l1 11 3-4 3 4 1-11H4zm.5 1.5h6.2l-.8 5-2.2-3-2.2 3-.8-5z"/>
+      </symbol>
+      <symbol id="icon-file-md" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="5" fill="currentColor"/>
+      </symbol>
+      <symbol id="icon-file-env" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M8 2a6 6 0 1 1 0 12A6 6 0 0 1 8 2zm0 1a5 5 0 1 0 0 10A5 5 0 0 0 8 3zm0 2v2h1l.5 3H8v2H7v-2H6l-.5-3H7V5h1z"/>
+      </symbol>
+      <symbol id="icon-file-gitignore" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M8 2.5L2.5 8 8 13.5 13.5 8 8 2.5zM8 4.5l3 3-3 3-3-3 3-3z"/>
+      </symbol>
+      <symbol id="icon-file-config" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M8 3a5 5 0 0 1 3.5 8.5l-.5.5-.5-.5a5 5 0 0 1-5-5H8zm0 2a3 3 0 0 0-2.1.9l.1 1.1 1 .1A3 3 0 0 0 8 5zm0 4l.5-1.5 1.5-.5-1.5-.5L8 5.5 6.5 7 5 6.5l1.5.5L8 8.5z"/>
+      </symbol>
+      <symbol id="icon-file-vite" viewBox="0 0 16 16">
+        <path fill="currentColor" d="M8 2L2 14h2.5l1-3.5h5l1 3.5H14L8 2z"/>
+      </symbol>
+    </defs>
+  </svg>
   <!-- APP SHELL -->
   <div class="app-shell">
 
@@ -382,7 +438,11 @@
                 </div>
                 <div class="explorer-body" id="explorer-body">
                   <div class="explorer-section">
-                    <div class="explorer-section-title">Generated Files</div>
+                    <div class="code-view-mode" id="code-view-mode" style="display: none;">
+                      <button type="button" class="code-view-mode-btn active" data-mode="generated">Generated</button>
+                      <button type="button" class="code-view-mode-btn" data-mode="wired">Wired app</button>
+                    </div>
+                    <div class="explorer-section-title" id="explorer-section-title">Generated Files</div>
                     <div class="explorer-files" id="explorer-files"></div>
                   </div>
                 </div>

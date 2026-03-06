@@ -1098,10 +1098,13 @@ function extractChildLayers(
       const isCSSCircle = child.type === 'ELLIPSE' &&
         child.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
 
-      // Detect semantic category for nested INSTANCE/COMPONENT nodes
+      // Detect semantic category for nested component nodes.
+      // Check all container types (INSTANCE, COMPONENT, FRAME, GROUP) — Framelink's
+      // simplification may convert INSTANCE → FRAME, so relying only on INSTANCE misses
+      // chips, checkboxes, radios, etc. that were flattened during simplification.
       let instanceCategory: ComponentCategory | undefined;
       let instanceHtmlTag: string | undefined;
-      if (['INSTANCE', 'COMPONENT'].includes(child.type)) {
+      if (['INSTANCE', 'COMPONENT', 'FRAME', 'GROUP'].includes(child.type)) {
         let cat = detectComponentCategory(child.name);
         if (cat === 'unknown' && child.mainComponent?.name) {
           cat = detectComponentCategory(child.mainComponent.name);
@@ -2388,6 +2391,25 @@ export function buildVariantCSS(
     if (sourceComments) lines.push('', `/* child: ${effectiveKey} */`);
     lines.push('', `.${base}__${effectiveKey} {`);
     for (const [p, v] of Object.entries(merged)) lines.push(`  ${p}: ${v};`);
+    // Reset browser-default border/outline on child elements that render as <button>.
+    // Two detection strategies:
+    //  a) childLayers has instanceCategory matching a button-like semantic category
+    //  b) BEM key name contains button/btn/cta/close/dismiss/cross/action/x
+    const ek = effectiveKey.toLowerCase();
+    const childLayer = data.childLayers.find((l) =>
+      l.key === `${base}__${effectiveKey}` || l.key === effectiveKey,
+    );
+    const BUTTON_CATEGORIES = new Set(['button', 'icon-button', 'toggle', 'switch', 'chip', 'tab']);
+    const isCategoryButton = childLayer?.instanceCategory
+      ? BUTTON_CATEGORIES.has(childLayer.instanceCategory)
+      : false;
+    const isNameButton = /\b(button|btn|cta|close|dismiss|action|cross)\b/.test(ek)
+      || ek === 'x' || ek.endsWith('-x');
+    if ((isCategoryButton || isNameButton) && !merged['border']) {
+      lines.push(`  border: none;`);
+      lines.push(`  outline: none;`);
+      lines.push(`  cursor: pointer;`);
+    }
     lines.push('}');
 
     if (isIconKey(effectiveKey)) {

@@ -123,6 +123,10 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
   const sections: SectionInfo[] = [];
   let sectionCSS = '';
 
+  // Track used section names to deduplicate — prevents two "Content" sections
+  // from generating the same BEM prefix and baseClass.
+  const usedNames = new Map<string, number>();
+
   let rootCSS: string;
 
   if (hasAutoLayout) {
@@ -161,7 +165,13 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
     for (let ci = 0; ci < children.length; ci++) {
       const child = children[ci];
       const rawName = child.name || `section-${sections.length + 1}`;
-      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+
+      // Deduplicate: "content" + "content" → "content", "content-2"
+      const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
+      usedNames.set(kebabName, nameCount);
+      if (nameCount > 1) kebabName = `${kebabName}-${nameCount}`;
+
       const baseClass = `${pageName}__${kebabName}`;
       sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
 
@@ -211,7 +221,13 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
     for (let ci = 0; ci < children.length; ci++) {
       const child = children[ci];
       const rawName = child.name || `section-${sections.length + 1}`;
-      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+
+      // Deduplicate: "content" + "content" → "content", "content-2"
+      const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
+      usedNames.set(kebabName, nameCount);
+      if (nameCount > 1) kebabName = `${kebabName}-${nameCount}`;
+
       const baseClass = `${pageName}__${kebabName}`;
       sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
 

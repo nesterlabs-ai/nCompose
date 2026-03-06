@@ -26,6 +26,7 @@ import {
 } from './figma/asset-export.js';
 import { extractPageLayoutCSS } from './figma/page-layout.js';
 import { injectCSS } from './compile/inject-css.js';
+import { prependFontImport } from './compile/font-resolver.js';
 import { stitchPageComponent } from './compile/stitch.js';
 import type { SectionOutput } from './compile/stitch.js';
 import { createLLMProvider } from './llm/index.js';
@@ -724,7 +725,7 @@ async function convertComponentSet(
   for (const fw of options.frameworks) {
     const rawCode = rawFrameworkOutputs[fw as Framework];
     if (rawCode && !rawCode.startsWith('// Error')) {
-      frameworkOutputs[fw] = injectCSS(rawCode, variantCSS, fw as Framework);
+      frameworkOutputs[fw] = injectCSS(rawCode, prependFontImport(variantCSS), fw as Framework);
     } else {
       frameworkOutputs[fw] = rawCode;
     }
@@ -1090,7 +1091,7 @@ async function convertSingleComponent(
   if (parseResult.css) {
     for (const fw of options.frameworks) {
       if (frameworkOutputs[fw]) {
-        frameworkOutputs[fw] = injectCSS(frameworkOutputs[fw], parseResult.css, fw);
+        frameworkOutputs[fw] = injectCSS(frameworkOutputs[fw], prependFontImport(parseResult.css), fw);
       }
     }
   }
@@ -1330,7 +1331,7 @@ async function convertPage(
   for (const fw of options.frameworks) {
     const rawCode = rawFrameworkOutputs[fw as Framework];
     if (rawCode && !rawCode.startsWith('// Error')) {
-      frameworkOutputs[fw] = injectCSS(rawCode, mergedCSS, fw as Framework);
+      frameworkOutputs[fw] = injectCSS(rawCode, prependFontImport(mergedCSS), fw as Framework);
     } else {
       frameworkOutputs[fw] = rawCode;
     }

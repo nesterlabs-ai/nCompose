@@ -13,7 +13,7 @@ import { dump } from 'js-yaml';
 import type { LLMProvider } from '../llm/provider.js';
 import type { ParseResult } from '../types/index.js';
 import { generateWithRetry } from './retry.js';
-import { extractJSXBody } from './stitch.js';
+import { extractJSXBody, scopeSectionCSS } from './stitch.js';
 import {
   assembleSystemPrompt,
   assembleUserPrompt,
@@ -41,6 +41,12 @@ export interface GeneratedComponent {
   css: string;
   /** Whether generation succeeded */
   success: boolean;
+  /** Props from the representative instance used to generate the HTML.
+   *  Used to do per-instance text substitution in substituteComponents(). */
+  representativeProps?: Record<string, string | boolean>;
+  /** Ordered text content from the representative instance's node tree.
+   *  Used for positional text substitution when componentProperties lacks TEXT props. */
+  representativeTexts?: string[];
 }
 
 export interface CompoundSectionResult {
@@ -219,6 +225,8 @@ export async function generateSingleComponent(
       html,
       css: result.css ?? '',
       success: true,
+      representativeProps: extractVisibleProps(node),
+      representativeTexts: collectOrderedTexts(node),
     };
   } catch {
     return { name: componentName, formRole, html: '', css: '', success: false };
@@ -423,6 +431,28 @@ function substituteComponents(
       // Replace entire subtree with a compact reference
       const props = extractVisibleProps(node);
 
+      // Per-instance text substitution: replace the representative instance's
+      // text with this specific instance's text. Two strategies:
+      // 1. componentProperties-based (when TEXT props have overrides)
+      // 2. Positional: compare ordered child TEXT nodes between representative and instance
+      let instanceHTML = applyInstanceTextSubstitution(
+        generated.html,
+        generated.representativeProps ?? {},
+        props,
+      );
+
+      // Fallback: positional text substitution from actual child TEXT nodes.
+      // Figma only includes TEXT props in componentProperties when overridden,
+      // so most instances have no TEXT entries. Positional matching handles this.
+      if (instanceHTML === generated.html && generated.representativeTexts?.length) {
+        const instanceTexts = collectOrderedTexts(node);
+        instanceHTML = applyPositionalTextSubstitution(
+          instanceHTML,
+          generated.representativeTexts,
+          instanceTexts,
+        );
+      }
+
       // Determine sizing mode: use flat API properties (layoutSizingHorizontal/Vertical)
       // or nested figma-complete object (layoutSizing.horizontal/vertical).
       // When sizing is FILL, emit widthMode/heightMode instead of pixel values
@@ -435,7 +465,7 @@ function substituteComponents(
         type: 'COMPONENT_REF',
         formRole: generated.formRole,
         props,
-        generatedHTML: generated.html,
+        generatedHTML: instanceHTML,
         ...(node.layoutGrow ? { flexGrow: node.layoutGrow } : {}),
       };
 
@@ -501,6 +531,107 @@ function extractVisibleProps(node: any): Record<string, string | boolean> {
   return props;
 }
 
+// ── Per-Instance Text Substitution ───────────────────────────────────────────
+
+/**
+ * Replaces the representative instance's text with this specific instance's
+ * text in the generated HTML.
+ *
+ * For each string prop that differs between the representative and this instance,
+ * all occurrences of the representative's value are replaced with the instance's
+ * value. Replacements are sorted longest-first to avoid partial-match issues.
+ *
+ * @param html - The representative's generated HTML
+ * @param repProps - Props from the representative instance
+ * @param instanceProps - Props from this specific instance
+ * @returns HTML with this instance's text content
+ */
+function applyInstanceTextSubstitution(
+  html: string,
+  repProps: Record<string, string | boolean>,
+  instanceProps: Record<string, string | boolean>,
+): string {
+  // Collect all text replacements needed
+  const replacements: Array<[string, string]> = [];
+
+  for (const [key, instanceValue] of Object.entries(instanceProps)) {
+    if (typeof instanceValue !== 'string' || !instanceValue) continue;
+    const repValue = repProps[key];
+    if (typeof repValue !== 'string' || !repValue) continue;
+    if (repValue === instanceValue) continue;
+    replacements.push([repValue, instanceValue]);
+  }
+
+  if (replacements.length === 0) return html;
+
+  // Sort longest first to avoid replacing substrings of longer values
+  replacements.sort((a, b) => b[0].length - a[0].length);
+
+  let result = html;
+  for (const [from, to] of replacements) {
+    result = result.split(from).join(to);
+  }
+
+  return result;
+}
+
+// ── Positional Text Substitution ─────────────────────────────────────────────
+
+/**
+ * Collects text content from a node's subtree in depth-first order.
+ * Unlike collectTextsFromNode (which deduplicates via Set), this preserves
+ * order and duplicates so positional matching works correctly.
+ */
+function collectOrderedTexts(node: any): string[] {
+  const texts: string[] = [];
+  const walk = (n: any) => {
+    if (!n || n.visible === false) return;
+    const text =
+      typeof n.characters === 'string' ? n.characters.trim()
+      : typeof n.text === 'string' ? n.text.trim()
+      : '';
+    if (text) texts.push(text);
+    if (Array.isArray(n.children)) n.children.forEach(walk);
+  };
+  walk(node);
+  return texts;
+}
+
+/**
+ * Replaces text in HTML by matching positional text between the representative
+ * and this instance's node trees.
+ *
+ * If text at position i differs between representative and instance, we replace
+ * occurrences of the representative text with the instance text in the HTML.
+ * Replacements are sorted longest-first to avoid partial-match issues.
+ */
+function applyPositionalTextSubstitution(
+  html: string,
+  repTexts: string[],
+  instanceTexts: string[],
+): string {
+  const len = Math.min(repTexts.length, instanceTexts.length);
+  const replacements: Array<[string, string]> = [];
+
+  for (let i = 0; i < len; i++) {
+    if (repTexts[i] !== instanceTexts[i]) {
+      replacements.push([repTexts[i], instanceTexts[i]]);
+    }
+  }
+
+  if (replacements.length === 0) return html;
+
+  // Sort longest-first to avoid replacing substrings of longer values
+  replacements.sort((a, b) => b[0].length - a[0].length);
+
+  let result = html;
+  for (const [from, to] of replacements) {
+    result = result.split(from).join(to);
+  }
+
+  return result;
+}
+
 // ── Component Reference Block ───────────────────────────────────────────────
 
 /**
@@ -562,9 +693,9 @@ function buildComponentReferenceBlock(
     '## Pre-Generated Components\n\n' +
     'The following components have already been generated. ' +
     'When you see a `type: COMPONENT_REF` node in the YAML, ' +
-    'use the provided `generatedHTML` directly. ' +
-    'Adapt the text content from the `props` (e.g., swap labels and values) ' +
-    'but keep the HTML structure and class names. ' +
+    'use its `generatedHTML` exactly as-is — the text content has already been ' +
+    'customized for each specific instance (labels, values, placeholders are correct). ' +
+    'Do NOT change the text, class names, or HTML structure. ' +
     'Do NOT regenerate these as `<div>` — use the semantic HTML provided.\n\n' +
     '**Sizing COMPONENT_REF wrappers:** When a COMPONENT_REF has `widthMode: fill`, ' +
     'its wrapper must use `width: 100%` (NOT a fixed pixel width). ' +
@@ -596,8 +727,24 @@ function injectComponentReferences(userPrompt: string, refBlock: string): string
 // ── CSS Merging ─────────────────────────────────────────────────────────────
 
 /**
+ * Extracts the root CSS class from a component's generated HTML.
+ * Returns the first class name from the first `class="..."` attribute.
+ */
+function extractComponentRootClass(html: string): string | null {
+  if (!html) return null;
+  const match = html.match(/class="([^"]+)"/);
+  if (!match) return null;
+  return match[1].split(/\s+/)[0] || null;
+}
+
+/**
  * Merges the section's CSS with CSS from all generated components.
  * Component CSS is included first so section CSS can override if needed.
+ *
+ * Each component's CSS is scoped under its root class to prevent
+ * intra-section collisions (e.g. two components both defining `.label`
+ * with different styles). Selectors that already reference the root class
+ * are left unchanged via `skipSelfScoping`.
  */
 function mergeSectionCSS(
   sectionCSS: string,
@@ -607,7 +754,13 @@ function mergeSectionCSS(
 
   for (const comp of components) {
     if (comp.success && comp.css) {
-      parts.push(`/* — Component: ${comp.name} — */\n${comp.css}`);
+      // Scope component CSS under its root class to prevent intra-section
+      // collisions between different components that share class names.
+      const rootClass = extractComponentRootClass(comp.html);
+      const scopedCSS = rootClass
+        ? scopeSectionCSS(comp.css, rootClass, { skipSelfScoping: true })
+        : comp.css;
+      parts.push(`/* — Component: ${comp.name} — */\n${scopedCSS}`);
     }
   }
 

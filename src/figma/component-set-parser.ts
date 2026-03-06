@@ -986,9 +986,43 @@ function collectNamedChildStyles(
       }
     }
 
+    // Circular containers (background + border-radius: 9999px or very large) that
+    // contain icon children: extract the inner icon's vector color and set it as
+    // `color` so that SVG stroke="currentColor" inherits the correct value.
+    // This covers cases like a green circle with a white check icon inside.
+    if (['FRAME', 'GROUP'].includes(child.type) && !childCSS['color'] && childCSS['background-color']) {
+      const br = childCSS['border-radius'];
+      const isCircular = br === '50%' || (br && parseInt(br) >= 9999);
+      if (isCircular) {
+        const vColor = extractVectorColorRecursive(child, variables);
+        if (vColor) childCSS['color'] = vColor;
+      }
+    }
+
     // Table node typing
     if (child.type === 'TABLE')      { childCSS['display'] = 'table'; childCSS['border-collapse'] = 'collapse'; }
     if (child.type === 'TABLE_CELL') { childCSS['display'] = 'table-cell'; }
+
+    // CSS circle pattern: render ellipses as CSS circles (border-radius: 50%)
+    // Case 1: FRAME/GROUP containing only a single ELLIPSE child
+    if (['FRAME', 'GROUP'].includes(child.type) &&
+        child.children?.length === 1 &&
+        child.children[0]?.type === 'ELLIPSE') {
+      childCSS['border-radius'] = '50%';
+      childCSS['overflow'] = 'hidden';
+    }
+    // Case 2: Standalone ELLIPSE node (direct child of COMPONENT variant)
+    // The fill color is already extracted by resolveNodeCSS as background-color.
+    // Add border-radius: 50% so it renders as a circle, not a square.
+    // Also set `color` to match `background-color` so that if the LLM generates
+    // an SVG with fill="currentColor", it inherits the correct color.
+    if (child.type === 'ELLIPSE') {
+      childCSS['border-radius'] = '50%';
+      childCSS['overflow'] = 'hidden';
+      if (childCSS['background-color']) {
+        childCSS['color'] = childCSS['background-color'];
+      }
+    }
 
     if (Object.keys(childCSS).length > 0) out[key] = childCSS;
 
@@ -1047,13 +1081,18 @@ function extractChildLayers(
         imageScaleMode = (imageFill.scaleMode ?? 'FILL') as ChildLayerInfo['imageScaleMode'];
       }
 
+      // ELLIPSE nodes with solid fills are CSS circles (background-color + border-radius: 50%),
+      // not SVG icons. Don't mark them as icons so the LLM renders an empty div, not SVG.
+      const isCSSCircle = child.type === 'ELLIPSE' &&
+        child.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
+
       layers.push({
         key,
         originalName: child.name,
         nodeType: child.type ?? 'UNKNOWN',
         nodeId: child.id ?? undefined,
         css,
-        isIcon:  isIconKey(key) || VECTOR_NODE_TYPES.has(child.type),
+        isIcon:  !isCSSCircle && (isIconKey(key) || VECTOR_NODE_TYPES.has(child.type)),
         isText:  child.type === 'TEXT',
         isImage: !!imageFill,
         depth,

@@ -18,7 +18,7 @@ import type {
   ComponentCategory,
 } from './component-set-parser.js';
 import type { AssetEntry } from './asset-export.js';
-import { toKebabCase, toCamelCase } from './component-set-parser.js';
+import { toKebabCase, toCamelCase, CATEGORY_HTML_TAGS } from './component-set-parser.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +57,8 @@ export interface VariantPromptData {
   categorySemanticRules: string[];
   /** Asset entries with variant tracking */
   assets?: AssetEntry[];
+  /** Blueprints for nested component instances (chip, checkbox, radio, etc.) */
+  nestedInstanceBlueprints?: { category: string; htmlTag: string; key: string; blueprint: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +190,23 @@ function describeLayer(
   if (layer.isImage) {
     const scaleMode = layer.imageScaleMode ?? 'FILL';
     lines.push(`${indent}- "${name}" (IMAGE, scale: ${scaleMode}) → class: "${layer.key}"`);
+    return;
+  }
+
+  // ── Semantic INSTANCE nodes: prioritize category hint over asset map ──
+  // Nested component instances (checkbox, radio, chip, search, etc.) must be
+  // described with their semantic HTML tag, NOT swallowed by the asset map.
+  if (layer.instanceCategory && layer.instanceHtmlTag) {
+    const childCount = allLayers?.filter(
+      (l) => l.depth === layer.depth + 1 && l.key.startsWith(layer.key + '__'),
+    ).length ?? 0;
+    const hint = deriveNestedHint(layer.instanceCategory);
+    lines.push(
+      `${indent}- "${name}" (${layer.instanceCategory} component${childCount > 0 ? `, ${childCount} children` : ''}) → class: "${layer.key}"`,
+    );
+    lines.push(
+      `${indent}  ↳ MUST render as ${hint}`,
+    );
     return;
   }
 
@@ -571,12 +590,12 @@ const CATEGORY_BLUEPRINTS: Partial<Record<string, string>> = {
 <span class={state.classes}>{props.children || props.count || '1'}</span>`,
 
   chip: `
-/* CHIP */
-<div class={state.classes} role="option" aria-selected={props.selected}>
+/* CHIP — use <button>, not <div> */
+<button class={state.classes} role="option" aria-selected={props.selected}>
   {props.leadingIcon && <span class="BASE__leading-icon">{props.leadingIcon}</span>}
   <span class="BASE__label">{props.children}</span>
-  {props.onRemove && <button class="BASE__remove" aria-label="remove">×</button>}
-</div>`,
+  {props.onRemove && <span class="BASE__remove" aria-label="remove">×</span>}
+</button>`,
 
   slider: `
 /* SLIDER */
@@ -602,6 +621,53 @@ function getSemanticBlueprint(
   const tpl = CATEGORY_BLUEPRINTS[category];
   if (!tpl) return null;
   return tpl.replace(/BASE/g, baseClass);
+}
+
+/**
+ * Derives a compact, LLM-friendly rendering hint from the category blueprint.
+ *
+ * Generic: reads the blueprint to determine the root tag and any key inner
+ * interactive elements (input, textarea, select, button).  No per-component
+ * special-casing — works for every category that has a blueprint.
+ *
+ *  Examples:
+ *    'checkbox' → '<label> wrapping <input type="checkbox">'
+ *    'input'    → '<div> with real <input> inside — NOT just a <div>'
+ *    'chip'     → '<button>'
+ *    'button'   → '<button>'
+ */
+function deriveNestedHint(category: string): string {
+  const bp = CATEGORY_BLUEPRINTS[category];
+  if (!bp) {
+    // Fall back to CATEGORY_HTML_TAGS
+    const tag = CATEGORY_HTML_TAGS[category as ComponentCategory];
+    return tag ? `<${tag}>` : '<div>';
+  }
+
+  // Extract root tag (first real HTML element, skip comments)
+  const rootMatch = bp.match(/<(\w+)\b[^>]*>/);
+  const rootTag = rootMatch ? rootMatch[1] : 'div';
+
+  // Find key interactive elements inside the blueprint
+  const innerInteractive = bp.match(/<(input|textarea|select)\b[^>]*type="([^"]+)"[^>]*/);
+  const innerPlain = !innerInteractive ? bp.match(/<(input|textarea|select)\b/) : null;
+
+  if (rootTag === 'div' || rootTag === 'span') {
+    // Wrapper category — the important part is the inner element
+    if (innerInteractive) {
+      return `<${rootTag}> with real <${innerInteractive[1]} type="${innerInteractive[2]}"> inside — NOT just a <${rootTag}>`;
+    }
+    if (innerPlain) {
+      return `<${rootTag}> with real <${innerPlain[1]}> inside — NOT just a <${rootTag}>`;
+    }
+    return `<${rootTag}>`;
+  }
+
+  // Non-wrapper root (label, button, a, dialog, etc.)
+  if (innerInteractive) {
+    return `<${rootTag}> wrapping <${innerInteractive[1]} type="${innerInteractive[2]}">`;
+  }
+  return `<${rootTag}>`;
 }
 
 /**
@@ -751,12 +817,33 @@ export function buildVariantPromptData(
   const semanticBlueprint    = getSemanticBlueprint(data.componentCategory, baseClass);
   const categorySemanticRules = getCategorySemanticRules(data.componentCategory, baseClass, elementType);
 
+  // Collect blueprints for nested component instances (chip, checkbox, radio, etc.)
+  const seenCategories = new Set<string>();
+  const nestedInstanceBlueprints: { category: string; htmlTag: string; key: string; blueprint: string }[] = [];
+  for (const layer of data.childLayers) {
+    if (!layer.instanceCategory || !layer.instanceHtmlTag) continue;
+    // Skip the root component's own category
+    if (layer.instanceCategory === data.componentCategory) continue;
+    if (seenCategories.has(layer.instanceCategory)) continue;
+    seenCategories.add(layer.instanceCategory);
+    const bp = getSemanticBlueprint(layer.instanceCategory, layer.key);
+    if (bp) {
+      nestedInstanceBlueprints.push({
+        category: layer.instanceCategory,
+        htmlTag: layer.instanceHtmlTag,
+        key: layer.key,
+        blueprint: bp,
+      });
+    }
+  }
+
   return {
     componentName, baseClass, elementType, ariaRole, componentCategory,
     axes, props, structure, classNaming, stateInfo,
     cssTokens, themeModes,
     semanticBlueprint, categorySemanticRules,
     assets,
+    nestedInstanceBlueprints: nestedInstanceBlueprints.length > 0 ? nestedInstanceBlueprints : undefined,
   };
 }
 
@@ -824,6 +911,21 @@ export function buildComponentSetUserPrompt(
     lines.push(`- ${rule}`);
   }
   lines.push('');
+
+  // ── Nested component instance blueprints ──────────────────────────────────
+  if (promptData.nestedInstanceBlueprints && promptData.nestedInstanceBlueprints.length > 0) {
+    lines.push('### Nested Component HTML (MANDATORY for nested instances)');
+    lines.push('The Figma structure contains these nested component instances.');
+    lines.push('You MUST use the HTML patterns below — do NOT wrap them in extra `<div>`s.');
+    lines.push('');
+    for (const nb of promptData.nestedInstanceBlueprints) {
+      lines.push(`#### ${nb.category} (class: "${nb.key}")`);
+      lines.push('```tsx');
+      lines.push(nb.blueprint.trim());
+      lines.push('```');
+      lines.push('');
+    }
+  }
 
   // ── Conditional assets ───────────────────────────────────────────────────
   if (promptData.assets && promptData.assets.length > 0) {
@@ -1189,7 +1291,7 @@ When you see these component categories, you MUST use these elements — no exce
 | menu       | \`<ul role="menu">\`  | \`<li role="menuitem">\` children                       |
 | menu-item  | \`<li role="menuitem">\` | \`<span>\` for label/icon                           |
 | badge      | \`<span>\`            | text content directly                                   |
-| chip       | \`<div role="option">\` | \`<span>\` for label, \`<button>\` for remove          |
+| chip       | \`<button role="option">\` | \`<span>\` for label, \`<span>\` for remove           |
 | slider     | \`<div>\` wrapper     | MUST contain \`<input type="range">\`                   |
 | dialog     | \`<dialog>\`          | standard dialog children                                |
 | card       | \`<article>\`         | standard card children                                  |

@@ -141,6 +141,10 @@ export interface ChildLayerInfo {
   imageScaleMode?: 'FILL' | 'FIT' | 'TILE' | 'STRETCH' | 'CROP';
   /** Text content (only for TEXT nodes) */
   characters?: string;
+  /** Detected component category for INSTANCE/COMPONENT nodes */
+  instanceCategory?: ComponentCategory;
+  /** Semantic HTML tag hint (e.g., 'label', 'button', 'nav') */
+  instanceHtmlTag?: string;
 }
 
 export interface IconSlotProperty {
@@ -426,7 +430,7 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
   [/\bicon[-\s]?button\b/, 'icon-button'],
   [/\bbutton\b|\bbtn\b|\bcta\b/, 'button'],
   [/\btextarea\b|\btext[-\s]?area\b/, 'textarea'],
-  [/\binput\b|\btext[-\s]?field\b|\btext[-\s]?box\b/, 'input'],
+  [/\binput\b|\btext[-\s]?field\b|\btext[-\s]?box\b|\bsearch\b/, 'input'],
   [/\bcombobox\b|\bautocomplete\b/, 'select'],
   [/\bselect\b|\bdropdown\b/, 'select'],
   [/\bcheckbox\b/, 'checkbox'],
@@ -1094,6 +1098,24 @@ function extractChildLayers(
       const isCSSCircle = child.type === 'ELLIPSE' &&
         child.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
 
+      // Detect semantic category for nested INSTANCE/COMPONENT nodes
+      let instanceCategory: ComponentCategory | undefined;
+      let instanceHtmlTag: string | undefined;
+      if (['INSTANCE', 'COMPONENT'].includes(child.type)) {
+        let cat = detectComponentCategory(child.name);
+        if (cat === 'unknown' && child.mainComponent?.name) {
+          cat = detectComponentCategory(child.mainComponent.name);
+        }
+        if (cat === 'unknown') {
+          const childNames = (child.children ?? []).map((c: any) => c.name ?? '');
+          cat = detectComponentCategoryEnhanced(child.name, [], childNames);
+        }
+        if (cat !== 'unknown') {
+          instanceCategory = cat;
+          instanceHtmlTag = CATEGORY_HTML_TAGS[cat];
+        }
+      }
+
       layers.push({
         key,
         originalName: child.name,
@@ -1108,6 +1130,8 @@ function extractChildLayers(
         vectorInfo,
         imageScaleMode,
         characters: child.type === 'TEXT' ? (child.characters ?? undefined) : undefined,
+        instanceCategory,
+        instanceHtmlTag,
       });
       // ICON GUARD: Stop recursion at icon containers — their SVG internals
       // (VECTOR paths, nested INSTANCE/COMPONENT frames) are exported as assets,

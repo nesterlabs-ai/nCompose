@@ -24,9 +24,14 @@ function transformReactCode(
   let css = '';
 
   for (const line of lines) {
-    // Skip import lines
+    // Skip all import lines (including CSS imports and chart component imports)
     if (/^\s*import\s+/.test(line)) continue;
-    // Skip export default
+    // "export default function Foo() {" → keep as "function Foo() {" so the function is defined
+    if (/^\s*export\s+default\s+function\s+/.test(line)) {
+      codeLines.push(line.replace(/export\s+default\s+/, ''));
+      continue;
+    }
+    // Skip standalone "export default ComponentName;" lines
     if (/^\s*export\s+default\s+/.test(line)) continue;
     codeLines.push(line);
   }
@@ -244,9 +249,21 @@ export function generatePreviewHTML(
   componentName: string,
   sessionId: string,
   componentPropertyDefinitions?: Record<string, any>,
+  chartComponents?: Array<{ name: string; reactCode: string; css: string }>,
 ): string {
   const { code, css } = transformReactCode(reactCode, componentName, sessionId);
   const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions);
+
+  // Detect recharts usage in main code (chart code is now inlined into reactCode)
+  const usesRecharts = /from ['"]recharts['"]/.test(reactCode);
+  const rechartsScript = usesRecharts
+    ? '\n  <script src="https://unpkg.com/recharts@2/umd/Recharts.js" crossorigin></script>'
+    : '';
+  const rechartsGlobals = usesRecharts
+    ? `\n    const { AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+      XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+      ComposedChart, ReferenceLine, Brush } = Recharts;`
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -264,15 +281,14 @@ export function generatePreviewHTML(
     ${css}
   </style>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>${rechartsScript}
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
 
   <script type="text/babel" data-type="module">
-    const { useState, useEffect, useRef, useCallback, useMemo } = React;
-
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}
     ${code}
 
     ${appCode}

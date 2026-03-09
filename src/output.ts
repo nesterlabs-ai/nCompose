@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Framework, AssetEntry, FidelityReport } from './types/index.js';
+import type { Framework, AssetEntry, FidelityReport, ChartComponent } from './types/index.js';
 import { FRAMEWORK_EXTENSIONS } from './types/index.js';
 
 export interface WriteOutputOptions {
@@ -19,6 +19,8 @@ export interface WriteOutputOptions {
   };
   /** Fidelity diagnostics report */
   fidelityReport?: FidelityReport;
+  /** Standalone chart components generated from chart sections */
+  chartComponents?: ChartComponent[];
 }
 
 /**
@@ -43,6 +45,7 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     componentPropertyDefinitions,
     variantMetadata,
     fidelityReport,
+    chartComponents,
   } = options;
   const writtenPaths: string[] = [];
 
@@ -84,6 +87,9 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     writeFileSync(fidelityPath, JSON.stringify(fidelityReport, null, 2), 'utf-8');
     writtenPaths.push(fidelityPath);
   }
+
+  // Chart components are inlined directly into the main page JSX (Step C6 in convert.ts)
+  // — no separate files needed.
 
   // Write SVG assets to assets/ subdirectory
   if (assets && assets.length > 0) {

@@ -16,6 +16,10 @@ export interface SectionOutput {
   css: string;
   /** Whether this section's LLM call failed */
   failed?: boolean;
+  /** True when this section was detected as a chart — bypasses Mitosis/LLM */
+  isChart?: boolean;
+  /** PascalCase name of the generated chart component, e.g. "InterestEarnedChart" */
+  chartComponentName?: string;
 }
 
 export interface StitchedPage {
@@ -166,6 +170,20 @@ export function stitchPageComponent(
     if (section.failed) {
       sectionJSXParts.push(
         `      {/* Section "${section.info.name}" failed to generate */}`
+      );
+      continue;
+    }
+
+    // Chart sections bypass Mitosis: emit a section wrapper (same as other sections)
+    // so its base class CSS (position: absolute, top, left, width, height) is applied.
+    // Step C6 in convert.ts replaces the inner placeholder with the actual chart import.
+    if (section.isChart && section.chartComponentName) {
+      const tag = section.info.semanticTag;
+      const cls = section.info.baseClass;
+      sectionJSXParts.push(
+        `      <${tag} class="${cls}">\n` +
+        `        <div class="chart-section-${section.chartComponentName}" />\n` +
+        `      </${tag}>`
       );
       continue;
     }

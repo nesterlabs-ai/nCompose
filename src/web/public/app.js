@@ -691,7 +691,7 @@ function extractReactCodeAndCss(reactCode) {
   return { code, css };
 }
 
-function buildViteProjectTree(componentName, componentCode, componentCss, assets) {
+function buildViteProjectTree(componentName, componentCode, componentCss, assets, chartComponents) {
   const componentPath = `./components/${componentName}`;
   const appTsx = `import ${componentName} from "${componentPath}";
 function App() {
@@ -704,13 +704,18 @@ function App() {
 }
 export default App;
 `;
+  const hasCharts = (chartComponents && chartComponents.length > 0) ||
+    /from ['"]recharts['"]/.test(componentCode);
+  const deps = { react: '^18.3.1', 'react-dom': '^18.3.1' };
+  if (hasCharts) deps['recharts'] = '^2.12.0';
+
   const packageJson = JSON.stringify({
     name: 'preview-app',
     private: true,
     version: '0.0.0',
     type: 'module',
     scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
-    dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
+    dependencies: deps,
     devDependencies: {
       '@vitejs/plugin-react': '^4.3.4',
       autoprefixer: '^10.4.21',
@@ -726,11 +731,12 @@ export default App;
     'tailwind.config.js': 'export default { content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"], theme: { extend: {} }, plugins: [] };',
     'postcss.config.js': 'export default { plugins: { tailwindcss: {}, autoprefixer: {} } };',
     'src/main.tsx': 'import { createRoot } from "react-dom/client"; import App from "./App.tsx"; import "./index.css"; createRoot(document.getElementById("root")).render(<App />);',
-    'src/index.css': '@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody { margin: 0; padding: 40px; background: #0a0a0a; color: #f5f5f5; font-family: system-ui, sans-serif; min-height: 100vh; }',
+    'src/index.css': '@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody { margin: 0; padding: 40px; background: #ffffff; color: #111111; font-family: system-ui, sans-serif; min-height: 100vh; }',
     'src/App.tsx': appTsx,
     [`src/components/${componentName}.jsx`]: (componentCss ? `import "./${componentName}.css";\n` : '') + componentCode.replace(/\.\/assets\//g, '/assets/'),
     [`src/components/${componentName}.css`]: componentCss || `/* ${componentName} */`,
   };
+  // Chart components are inlined into the main React JSX — no separate files needed.
   if (assets && assets.length) {
     assets.forEach((a) => {
       files[`public/assets/${a.filename}`] = a.content;
@@ -869,6 +875,7 @@ function handleComplete(data) {
   const reactCode = currentFrameworkOutputs.react || '';
 
   if (hasReact && reactCode && !reactCode.startsWith('// Error') && isWebContainerSupported()) {
+    const currentChartComponents = data.chartComponents || [];
     fetch(`/api/session/${currentSessionId}/push-files`)
       .then((r) => r.json())
       .then((res) => {
@@ -884,7 +891,7 @@ function handleComplete(data) {
         }
         componentCode = componentCode.replace(/\.\/assets\//g, '/assets/');
         const assets = assetFiles.map((f) => ({ filename: f.name.replace('assets/', ''), content: f.content }));
-        const tree = buildViteProjectTree(currentComponentName, componentCode, componentCss, assets);
+        const tree = buildViteProjectTree(currentComponentName, componentCode, componentCss, assets, currentChartComponents);
         return bootWebContainer(tree);
       })
       .then((url) => {

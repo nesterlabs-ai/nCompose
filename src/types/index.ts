@@ -64,6 +64,18 @@ export interface FidelityReport {
 }
 
 /**
+ * A standalone chart component generated from a Figma chart section.
+ */
+export interface ChartComponent {
+  /** PascalCase component name, e.g. "InterestEarnedChart" */
+  name: string;
+  /** Complete React JSX source for the chart component file */
+  reactCode: string;
+  /** CSS for the chart component */
+  css: string;
+}
+
+/**
  * Output of the full pipeline for a single component.
  */
 export interface ConversionResult {
@@ -83,6 +95,8 @@ export interface ConversionResult {
   };
   /** Fidelity diagnostics report for this generation run */
   fidelityReport?: FidelityReport;
+  /** Standalone chart components generated from chart sections */
+  chartComponents?: ChartComponent[];
 }
 
 /**

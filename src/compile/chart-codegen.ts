@@ -11,7 +11,7 @@
  * - Period toggle buttons
  */
 
-import type { ChartMetadata, ChartType } from '../figma/chart-detection.js';
+import type { ChartMetadata, ChartType, SeriesInfo } from '../figma/chart-detection.js';
 
 export interface ChartCodeResult {
   reactCode: string;
@@ -30,7 +30,7 @@ export function generateChartCode(meta: ChartMetadata): ChartCodeResult {
 // ── React code generation ───────────────────────────────────────────────────
 
 function buildReactCode(meta: ChartMetadata): string {
-  const { componentName, bemBase, hasSwitcher, periodOptions, hasLegend, seriesName } = meta;
+  const { componentName, bemBase, hasSwitcher, periodOptions, hasLegend, series } = meta;
 
   const rechartsImports = getRechartsImports(meta.chartType);
   const dataCode = buildChartData(meta, componentName);
@@ -61,11 +61,30 @@ function buildReactCode(meta: ChartMetadata): string {
 
   const legendsSection = hasLegend
     ? `\n      <div className="${bemBase}__legends">\n` +
-      `        <div className="${bemBase}__legend">\n` +
-      `          <span className="${bemBase}__legend-dot" />\n` +
-      `          <span className="${bemBase}__legend-label">${seriesName}</span>\n` +
-      `        </div>\n` +
+      series.map((s, i) =>
+        `        <div className="${bemBase}__legend">\n` +
+        `          <span className="${bemBase}__legend-dot" style={{ background: '${s.legendColor}' }} />\n` +
+        `          <span className="${bemBase}__legend-label">${s.name}</span>\n` +
+        `        </div>`,
+      ).join('\n') + `\n` +
       `      </div>`
+    : '';
+
+  // Title/subtitle section above the chart
+  const titleSection = meta.chartTitle
+    ? `\n      <div className="${bemBase}__header">` +
+      `\n        <h3 className="${bemBase}__title">${meta.chartTitle}</h3>` +
+      (meta.chartSubtitle ? `\n        <p className="${bemBase}__subtitle">${meta.chartSubtitle}</p>` : '') +
+      `\n      </div>`
+    : '';
+
+  // Summary section below the chart (amount + description + CTA)
+  const summarySection = meta.summaryAmount
+    ? `\n      <div className="${bemBase}__summary">` +
+      `\n        <span className="${bemBase}__amount">${meta.summaryAmount}</span>` +
+      (meta.summaryText ? `\n        <p className="${bemBase}__summary-text">${meta.summaryText}</p>` : '') +
+      (meta.summaryCtaText ? `\n        <button className="${bemBase}__summary-cta">${meta.summaryCtaText}</button>` : '') +
+      `\n      </div>`
     : '';
 
   return `import { useState, useMemo } from 'react';
@@ -81,10 +100,10 @@ export default function ${componentName}() {
   const data = useMemo(() => CHART_DATA_${componentName}[view] ?? CHART_DATA_${componentName}['${defaultPeriod}'], [view]);
 
   return (
-    <figure className="${bemBase}">${legendsSection}
+    <figure className="${bemBase}">${titleSection}${legendsSection}
       <ResponsiveContainer width="100%" height={${meta.chartAreaHeight}}>
         ${chartJSX}
-      </ResponsiveContainer>${switcherSection}
+      </ResponsiveContainer>${switcherSection}${summarySection}
     </figure>
   );
 }
@@ -109,7 +128,7 @@ function getRechartsImports(chartType: ChartType): string[] {
 }
 
 function buildChartData(meta: ChartMetadata, componentName: string): string {
-  const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher } = meta;
+  const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher, series } = meta;
 
   const count = Math.max(dataPointCount, xAxisLabels.length || 1);
   const labels =
@@ -120,14 +139,26 @@ function buildChartData(meta: ChartMetadata, componentName: string): string {
   const periods =
     hasSwitcher && periodOptions.length >= 1 ? periodOptions : ['default'];
 
+  const seriesCount = series.length;
+
   const periodDataEntries = periods.map((period, periodIdx) => {
     const points = labels.map((name, i) => {
-      // Deterministic synthetic values using a sine curve
       const range = Math.max(yAxisMax - yAxisMin, 1);
       const base = yAxisMin + range * 0.5;
       const amplitude = range * 0.25;
-      const value = Math.round(base + amplitude * Math.sin((i + periodIdx * 3) * 0.8));
-      return `    { name: ${JSON.stringify(name)}, value: ${value} }`;
+
+      if (seriesCount <= 1) {
+        // Single series — use "value" key for backwards compatibility
+        const value = Math.round(base + amplitude * Math.sin((i + periodIdx * 3) * 0.8));
+        return `    { name: ${JSON.stringify(name)}, value: ${value} }`;
+      } else {
+        // Multi-series — one key per series
+        const seriesValues = Array.from({ length: seriesCount }, (_, si) => {
+          const value = Math.round(base + amplitude * Math.sin((i + periodIdx * 3 + si * 2) * 0.8));
+          return `series${si}: ${value}`;
+        });
+        return `    { name: ${JSON.stringify(name)}, ${seriesValues.join(', ')} }`;
+      }
     });
     return `  ${JSON.stringify(period)}: [\n${points.join(',\n')}\n  ]`;
   });
@@ -141,11 +172,14 @@ function buildChartData(meta: ChartMetadata, componentName: string): string {
 
 function buildChartJSX(meta: ChartMetadata): string {
   const {
-    chartType, seriesColor, axisLabelColor, bemBase, yAxisMin, yAxisMax,
+    chartType, series, axisLabelColor, bemBase, yAxisMin, yAxisMax,
     axisFontSize, gridLineColor, gridStrokeDasharray, yAxisWidth,
     dotRadius, dotStrokeColor, dotStrokeWidth, seriesStrokeWidth,
     gradientStartOpacity, barRadius, chartMargin,
   } = meta;
+
+  const primaryColor = series[0]?.color ?? '#9747ff';
+  const isMultiSeries = series.length > 1;
 
   const mTop = chartMargin.top;
   const mRight = chartMargin.right;
@@ -165,39 +199,80 @@ function buildChartJSX(meta: ChartMetadata): string {
     'domain={[' + yAxisMin + ', ' + yAxisMax + ']} ticks={[' + yTicks.join(', ') + ']} ' +
     'tick={{ fill: \'' + axisLabelColor + '\', fontSize: ' + axisFontSize + ' }} axisLine={false} tickLine={false} width={' + yAxisWidth + '}';
 
-  const activeDotRadius = dotRadius + 2;
-  const dotProps =
-    'dot={{ fill: \'' + seriesColor + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + dotRadius + ' }} ' +
-    'activeDot={{ fill: \'' + seriesColor + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + activeDotRadius + ' }}';
-
   const marginAttr = 'margin={{ top: ' + mTop + ', right: ' + mRight + ', left: ' + mLeft + ', bottom: ' + mBottom + ' }}';
 
+  const commonAxes =
+    '          <CartesianGrid ' + gridProps + ' />\n' +
+    '          <XAxis ' + xAxisProps + ' />\n' +
+    '          <YAxis ' + yAxisProps + ' />\n' +
+    '          <Tooltip />\n';
+
+  // Build per-series dot props helper
+  const buildDotProps = (color: string) => {
+    const activeDotRadius = dotRadius + 2;
+    return 'dot={{ fill: \'' + color + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + dotRadius + ' }} ' +
+      'activeDot={{ fill: \'' + color + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + activeDotRadius + ' }}';
+  };
+
+  // Build series data elements
+  const buildSeriesElements = (elementType: 'Area' | 'Bar' | 'Line'): string => {
+    if (!isMultiSeries) {
+      const color = primaryColor;
+      const dataKey = 'value';
+      switch (elementType) {
+        case 'Area':
+          return '          <Area type="monotone" dataKey="' + dataKey + '" stroke="' + color + '" strokeWidth={' + seriesStrokeWidth + '} fill="url(#' + bemBase + '-gradient)" ' + buildDotProps(color) + ' />\n';
+        case 'Bar':
+          return '          <Bar dataKey="' + dataKey + '" fill="' + color + '" radius={[' + barRadius.join(', ') + ']} />\n';
+        case 'Line':
+          return '          <Line type="monotone" dataKey="' + dataKey + '" stroke="' + color + '" strokeWidth={' + seriesStrokeWidth + '} ' + buildDotProps(color) + ' />\n';
+      }
+    }
+
+    return series.map((s, i) => {
+      const dataKey = `series${i}`;
+      const color = s.color;
+      switch (elementType) {
+        case 'Area':
+          return '          <Area type="monotone" dataKey="' + dataKey + '" stroke="' + color + '" strokeWidth={' + seriesStrokeWidth + '} fill="url(#' + bemBase + '-gradient-' + i + ')" ' + buildDotProps(color) + ' />';
+        case 'Bar':
+          return '          <Bar dataKey="' + dataKey + '" fill="' + color + '" radius={[' + barRadius.join(', ') + ']} />';
+        case 'Line':
+          return '          <Line type="monotone" dataKey="' + dataKey + '" stroke="' + color + '" strokeWidth={' + seriesStrokeWidth + '} ' + buildDotProps(color) + ' />';
+      }
+    }).join('\n') + '\n';
+  };
+
   switch (chartType) {
-    case 'area':
+    case 'area': {
+      const gradientDefs = isMultiSeries
+        ? series.map((s, i) =>
+            '            <linearGradient id="' + bemBase + '-gradient-' + i + '" x1="0" y1="0" x2="0" y2="1">\n' +
+            '              <stop offset="0%" stopColor="' + s.color + '" stopOpacity={' + gradientStartOpacity + '} />\n' +
+            '              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n' +
+            '            </linearGradient>',
+          ).join('\n')
+        : '            <linearGradient id="' + bemBase + '-gradient" x1="0" y1="0" x2="0" y2="1">\n' +
+          '              <stop offset="0%" stopColor="' + primaryColor + '" stopOpacity={' + gradientStartOpacity + '} />\n' +
+          '              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n' +
+          '            </linearGradient>';
+
       return (
         '<AreaChart data={data} ' + marginAttr + '>\n' +
         '          <defs>\n' +
-        '            <linearGradient id="' + bemBase + '-gradient" x1="0" y1="0" x2="0" y2="1">\n' +
-        '              <stop offset="0%" stopColor="' + seriesColor + '" stopOpacity={' + gradientStartOpacity + '} />\n' +
-        '              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n' +
-        '            </linearGradient>\n' +
+        gradientDefs + '\n' +
         '          </defs>\n' +
-        '          <CartesianGrid ' + gridProps + ' />\n' +
-        '          <XAxis ' + xAxisProps + ' />\n' +
-        '          <YAxis ' + yAxisProps + ' />\n' +
-        '          <Tooltip />\n' +
-        '          <Area type="monotone" dataKey="value" stroke="' + seriesColor + '" strokeWidth={' + seriesStrokeWidth + '} fill="url(#' + bemBase + '-gradient)" ' + dotProps + ' />\n' +
+        commonAxes +
+        buildSeriesElements('Area') +
         '        </AreaChart>'
       );
+    }
 
     case 'bar':
       return (
         '<BarChart data={data} ' + marginAttr + '>\n' +
-        '          <CartesianGrid ' + gridProps + ' />\n' +
-        '          <XAxis ' + xAxisProps + ' />\n' +
-        '          <YAxis ' + yAxisProps + ' />\n' +
-        '          <Tooltip />\n' +
-        '          <Bar dataKey="value" fill="' + seriesColor + '" radius={[' + barRadius.join(', ') + ']} />\n' +
+        commonAxes +
+        buildSeriesElements('Bar') +
         '        </BarChart>'
       );
 
@@ -206,11 +281,8 @@ function buildChartJSX(meta: ChartMetadata): string {
     default:
       return (
         '<LineChart data={data} ' + marginAttr + '>\n' +
-        '          <CartesianGrid ' + gridProps + ' />\n' +
-        '          <XAxis ' + xAxisProps + ' />\n' +
-        '          <YAxis ' + yAxisProps + ' />\n' +
-        '          <Tooltip />\n' +
-        '          <Line type="monotone" dataKey="value" stroke="' + seriesColor + '" strokeWidth={' + seriesStrokeWidth + '} ' + dotProps + ' />\n' +
+        commonAxes +
+        buildSeriesElements('Line') +
         '        </LineChart>'
       );
   }
@@ -220,7 +292,7 @@ function buildChartJSX(meta: ChartMetadata): string {
 
 function buildCSS(meta: ChartMetadata): string {
   const {
-    bemBase, backgroundColor, seriesColor,
+    bemBase, backgroundColor, series,
     containerBorderRadius, containerPadding,
     legendGap, legendItemGap, legendDotSize, legendDotBorderRadius,
     legendDotOpacity, legendLabelFontSize, legendLabelColor, legendMarginBottom,
@@ -238,6 +310,8 @@ function buildCSS(meta: ChartMetadata): string {
   padding: ${padStr};
   width: 100%;
   box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
 }
 
 .${bemBase}__legends {
@@ -256,7 +330,6 @@ function buildCSS(meta: ChartMetadata): string {
 .${bemBase}__legend-dot {
   width: ${legendDotSize}px;
   height: ${legendDotSize}px;
-  background: ${seriesColor};
   border-radius: ${legendDotBorderRadius};
   display: inline-block;
   opacity: ${legendDotOpacity};
@@ -292,6 +365,59 @@ function buildCSS(meta: ChartMetadata): string {
   color: ${switcherActiveColor};
   font-weight: ${switcherActiveFontWeight};
   box-shadow: ${switcherActiveBoxShadow};
+}
+
+.${bemBase}__header {
+  margin-bottom: 8px;
+}
+
+.${bemBase}__title {
+  font-size: ${meta.titleFontSize}px;
+  font-weight: ${meta.titleFontWeight};
+  margin: 0 0 4px 0;
+  color: ${meta.titleColor};
+}
+
+.${bemBase}__subtitle {
+  font-size: ${meta.subtitleFontSize}px;
+  color: ${meta.subtitleColor};
+  margin: 0;
+}
+
+.${bemBase}__summary {
+  margin-top: 16px;
+  padding: ${meta.summaryPadding};
+  border-radius: ${meta.summaryBorderRadius}px;
+  border: ${meta.summaryBorderWidth}px solid ${meta.summaryBorderColor};
+  background: ${meta.summaryBg};
+}
+
+.${bemBase}__amount {
+  display: block;
+  font-size: ${meta.amountFontSize}px;
+  font-weight: ${meta.amountFontWeight};
+  color: ${meta.amountColor};
+  margin-bottom: 4px;
+}
+
+.${bemBase}__summary-text {
+  font-size: ${meta.summaryTextFontSize}px;
+  color: ${meta.summaryTextColor};
+  margin: 0 0 12px 0;
+}
+
+.${bemBase}__summary-cta {
+  display: block;
+  width: 100%;
+  padding: ${meta.ctaPadding};
+  font-size: ${meta.ctaFontSize}px;
+  font-weight: ${meta.ctaFontWeight};
+  color: ${meta.ctaColor};
+  background: ${meta.ctaBg};
+  border: 1px solid ${meta.ctaBorderColor};
+  border-radius: ${meta.ctaBorderRadius}px;
+  cursor: pointer;
+  text-align: center;
 }
 `;
 }

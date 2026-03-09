@@ -1305,8 +1305,8 @@ async function convertPage(
         const meta = await extractChartMetadata(child, llm);
 
         // Use the section name as fallback if series name is the generic default "Chart"
-        if (meta.seriesName === 'Chart' && sectionInfo.name) {
-          meta.seriesName = sectionInfo.name;
+        if (meta.series[0]?.name === 'Chart' && sectionInfo.name) {
+          meta.series[0].name = sectionInfo.name;
           const pascal = sectionInfo.name
             .replace(/[^a-zA-Z0-9\s]/g, ' ')
             .split(/\s+/).filter(Boolean)

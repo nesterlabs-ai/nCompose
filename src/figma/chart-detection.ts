@@ -13,14 +13,21 @@ import type { LLMProvider } from '../llm/provider.js';
 
 export type ChartType = 'area' | 'line' | 'bar' | 'pie' | 'donut' | 'unknown';
 
+export interface SeriesInfo {
+  /** Series label, e.g. "Total invested" */
+  name: string;
+  /** Visually dominant data element fill, e.g. "#6f86fc" */
+  color: string;
+  /** Legend dot fill color, e.g. "#9747ff" */
+  legendColor: string;
+}
+
 export interface ChartMetadata {
   chartType: ChartType;
   width: number;
   height: number;
-  /** Stroke color of the main line/series, e.g. "#7C3AED" */
-  seriesColor: string;
-  /** Series label from Legends, e.g. "Interest earned" */
-  seriesName: string;
+  /** All chart series (multi-series support) */
+  series: SeriesInfo[];
   /** PascalCase component name, e.g. "InterestEarnedChart" */
   componentName: string;
   /** Kebab-case BEM base class, e.g. "interest-earned-chart" */
@@ -41,6 +48,51 @@ export interface ChartMetadata {
   periodOptions: string[];
   hasSwitcher: boolean;
   hasLegend: boolean;
+
+  // ── Title/subtitle/summary text extracted from non-chart children ──
+
+  /** Chart section title, e.g. "Earning Potential" */
+  chartTitle: string;
+  /** Chart section subtitle, e.g. "See how much your money could grow with Banky" */
+  chartSubtitle: string;
+  /** Summary amount displayed below the chart, e.g. "$1,525" */
+  summaryAmount: string;
+  /** Summary description text below the amount */
+  summaryText: string;
+  /** CTA button text, e.g. "Learn how this is calculated here" */
+  summaryCtaText: string;
+
+  // ── Title/subtitle styling ──
+  titleFontSize: number;
+  titleFontWeight: number;
+  titleColor: string;
+  subtitleFontSize: number;
+  subtitleColor: string;
+
+  // ── Summary container styling ──
+  summaryBg: string;
+  summaryBorderRadius: number;
+  summaryBorderColor: string;
+  summaryBorderWidth: number;
+  summaryPadding: string;
+
+  // ── Amount styling ──
+  amountFontSize: number;
+  amountFontWeight: number;
+  amountColor: string;
+
+  // ── Summary text styling ──
+  summaryTextFontSize: number;
+  summaryTextColor: string;
+
+  // ── CTA button styling ──
+  ctaFontSize: number;
+  ctaFontWeight: number;
+  ctaColor: string;
+  ctaBg: string;
+  ctaBorderColor: string;
+  ctaBorderRadius: number;
+  ctaPadding: string;
 
   // ── Styling extracted from Figma (no hardcoded values) ──
 
@@ -264,32 +316,11 @@ export async function extractChartMetadata(
     ? await detectChartTypeWithLLM(node, llmProvider)
     : detectChartType(node);
 
-  // Series color — find the primary data element's fill or stroke color.
-  // Strategy: look for colored fills on data elements (BOOLEAN_OPERATION, RECTANGLE, VECTOR)
-  // that are NOT black/white/gray (those are typically text/grid/background).
-  let seriesColor = '#9747ff'; // fallback purple
-  const dataNodes = findAllNodes(node, (n: any) => {
-    const type = n.type ?? '';
-    return ['BOOLEAN_OPERATION', 'RECTANGLE', 'VECTOR', 'ELLIPSE'].includes(type);
-  });
-  for (const dn of dataNodes) {
-    // Check fills first (for bars/shapes)
-    for (const f of dn.fills ?? []) {
-      if (f.type === 'SOLID' && f.color && isChromatic(f.color)) {
-        seriesColor = figmaColorToHex(f.color);
-        break;
-      }
-    }
-    if (seriesColor !== '#9747ff') break;
-    // Then strokes (for lines)
-    for (const s of dn.strokes ?? []) {
-      if (s.type === 'SOLID' && s.color && isChromatic(s.color)) {
-        seriesColor = figmaColorToHex(s.color);
-        break;
-      }
-    }
-    if (seriesColor !== '#9747ff') break;
-  }
+  // ── Multi-series extraction ──
+  // Strategy: extract from legend items. Each legend child = one series.
+  // For each series, find the legend dot color and the actual data element color
+  // (walking deepest into bar structures for the visually dominant fill).
+  const series: SeriesInfo[] = extractSeriesFromLegends(node);
 
   // Find axis frames — only match frames/groups whose name starts with x/y + axis
   // (e.g. "xAxis", "yAxisLeft") to avoid matching parent containers like "Chart&Axis"
@@ -335,18 +366,11 @@ export async function extractChartMetadata(
   // Data point count — prefer x-axis label count, fallback 12
   const dataPointCount = xAxisLabels.length || 12;
 
-  // Series name — from any "legend" descendant's TEXT content
-  let seriesName = 'Chart';
+  // Legends frame — used for legend styling extraction below
   const legendsFrame = findNodeByName(node, LEGEND_RE);
-  if (legendsFrame) {
-    const textNodes = collectTextNodes(legendsFrame);
-    const labelNode = textNodes.find(
-      (t: any) => (t.characters ?? t.content ?? '').length > 1,
-    );
-    if (labelNode) {
-      seriesName = labelNode.characters ?? labelNode.content ?? 'Chart';
-    }
-  }
+
+  // Series name for component naming — use first series name
+  const seriesName = series[0]?.name ?? 'Chart';
 
   // Period options — from any "switcher"/"tab" descendant's TEXT content
   let periodOptions: string[] = [];
@@ -420,12 +444,15 @@ export async function extractChartMetadata(
   // ── Switcher styling ──
   const switcherStyle = extractSwitcherStyle(switcherFrame);
 
+  // ── Title/subtitle/summary text + styling from non-chart children ──
+  const textContentStyle =
+    extractChartTextContent(node, legendsFrame, switcherFrame, effectiveXAxis, effectiveYAxis);
+
   return {
     chartType,
     width: Math.round(w),
     height: Math.round(h),
-    seriesColor,
-    seriesName,
+    series,
     componentName,
     bemBase,
     xAxisLabels,
@@ -437,6 +464,9 @@ export async function extractChartMetadata(
     periodOptions,
     hasSwitcher,
     hasLegend: legendsFrame !== null,
+
+    // Title/subtitle/summary text + styling
+    ...textContentStyle,
 
     // Styling from Figma
     gridLineColor,
@@ -458,6 +488,417 @@ export async function extractChartMetadata(
   };
 }
 
+/** Return type for extractChartTextContent — text content + styling. */
+interface ChartTextContentResult {
+  chartTitle: string;
+  chartSubtitle: string;
+  summaryAmount: string;
+  summaryText: string;
+  summaryCtaText: string;
+  // Title/subtitle styling
+  titleFontSize: number;
+  titleFontWeight: number;
+  titleColor: string;
+  subtitleFontSize: number;
+  subtitleColor: string;
+  // Summary container styling
+  summaryBg: string;
+  summaryBorderRadius: number;
+  summaryBorderColor: string;
+  summaryBorderWidth: number;
+  summaryPadding: string;
+  // Amount styling
+  amountFontSize: number;
+  amountFontWeight: number;
+  amountColor: string;
+  // Summary text styling
+  summaryTextFontSize: number;
+  summaryTextColor: string;
+  // CTA button styling
+  ctaFontSize: number;
+  ctaFontWeight: number;
+  ctaColor: string;
+  ctaBg: string;
+  ctaBorderColor: string;
+  ctaBorderRadius: number;
+  ctaPadding: string;
+}
+
+/**
+ * Extract title, subtitle, summary amount, summary text, and CTA from non-chart
+ * TEXT nodes in the chart section — plus the **CSS styling** of each element.
+ */
+function extractChartTextContent(
+  rootNode: any,
+  legendsFrame: any,
+  switcherFrame: any,
+  xAxisFrame: any,
+  yAxisFrame: any,
+): ChartTextContentResult {
+  // Defaults
+  const result: ChartTextContentResult = {
+    chartTitle: '', chartSubtitle: '', summaryAmount: '', summaryText: '', summaryCtaText: '',
+    titleFontSize: 18, titleFontWeight: 700, titleColor: '#262626',
+    subtitleFontSize: 14, subtitleColor: '#737373',
+    summaryBg: '#ffffff', summaryBorderRadius: 12, summaryBorderColor: '#e5e7eb',
+    summaryBorderWidth: 1, summaryPadding: '16px',
+    amountFontSize: 28, amountFontWeight: 700, amountColor: '#7C3AED',
+    summaryTextFontSize: 14, summaryTextColor: '#737373',
+    ctaFontSize: 14, ctaFontWeight: 500, ctaColor: '#262626',
+    ctaBg: '#ffffff', ctaBorderColor: '#e5e7eb', ctaBorderRadius: 100, ctaPadding: '12px',
+  };
+
+  // Collect all TEXT nodes in the root, but exclude those inside known chart subframes
+  const excludeFrames = new Set([legendsFrame, switcherFrame, xAxisFrame, yAxisFrame].filter(Boolean));
+
+  // Also exclude frames with chart/axis/grid keywords
+  const chartSubframes = findAllNodes(rootNode, (n: any) => {
+    const name = (n.name ?? '').toLowerCase();
+    return (n.type === 'FRAME' || n.type === 'GROUP') &&
+      (/axis|grid|line|bar\s*area|graph|chart/i.test(name));
+  });
+  for (const f of chartSubframes) excludeFrames.add(f);
+
+  // Collect TEXT nodes that are NOT inside excluded frames
+  const allTextNodes = findAllNodes(rootNode, (n: any) => n.type === 'TEXT');
+  const outsideTexts = allTextNodes.filter((t: any) => {
+    for (const excluded of excludeFrames) {
+      if (isDescendantOf(t, excluded)) return false;
+    }
+    return true;
+  });
+
+  // Track specific text nodes so we can extract parent frame styling afterwards
+  let amountTextNode: any = null;
+  let ctaTextNode: any = null;
+
+  // Classify text nodes by their content patterns
+  for (const textNode of outsideTexts) {
+    const text = (textNode.characters ?? textNode.content ?? '').trim();
+    if (!text || text.length <= 1) continue;
+
+    const fontSize = textNode.style?.fontSize ?? 14;
+    const fontWeight = textNode.style?.fontWeight ?? 400;
+    const textColor = textNode.fills?.[0]?.color
+      ? figmaColorToHex(textNode.fills[0].color)
+      : undefined;
+
+    // Money amount pattern: starts with $ or contains number with comma
+    if (/^\$[\d,]+/.test(text)) {
+      result.summaryAmount = text;
+      result.amountFontSize = fontSize;
+      result.amountFontWeight = fontWeight;
+      if (textColor) result.amountColor = textColor;
+      amountTextNode = textNode;
+      continue;
+    }
+
+    // CTA-like text (contains "learn", "how", "calculated", etc.)
+    if (/\b(learn|calculated|how|click|tap)\b/i.test(text) && text.length < 80) {
+      result.summaryCtaText = text;
+      result.ctaFontSize = fontSize;
+      result.ctaFontWeight = fontWeight;
+      if (textColor) result.ctaColor = textColor;
+      ctaTextNode = textNode;
+      continue;
+    }
+
+    // Title: larger font or bold, short text
+    if ((fontSize >= 16 || fontWeight >= 600) && text.length < 60 && !result.chartTitle) {
+      result.chartTitle = text;
+      result.titleFontSize = fontSize;
+      result.titleFontWeight = fontWeight;
+      if (textColor) result.titleColor = textColor;
+      continue;
+    }
+
+    // Subtitle/description: medium-length text
+    if (text.length > 15 && text.length < 200 && !result.summaryText) {
+      result.summaryText = text;
+      result.summaryTextFontSize = fontSize;
+      if (textColor) result.summaryTextColor = textColor;
+      continue;
+    }
+
+    // Short subtitle
+    if (!result.chartSubtitle && text.length >= 5 && text.length <= 100) {
+      result.chartSubtitle = text;
+      result.subtitleFontSize = fontSize;
+      if (textColor) result.subtitleColor = textColor;
+    }
+  }
+
+  // ── Summary container styling — find the parent FRAME of the amount text node ──
+  if (amountTextNode) {
+    const summaryContainer = findParentFrame(rootNode, amountTextNode);
+    if (summaryContainer) {
+      const fill = (summaryContainer.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+      if (fill) result.summaryBg = figmaColorToHex(fill.color);
+      if (summaryContainer.cornerRadius !== undefined) result.summaryBorderRadius = summaryContainer.cornerRadius;
+      const stroke = (summaryContainer.strokes ?? [])[0];
+      if (stroke?.color) result.summaryBorderColor = figmaColorToHex(stroke.color);
+      if (summaryContainer.strokeWeight !== undefined) result.summaryBorderWidth = summaryContainer.strokeWeight;
+      result.summaryPadding = formatPadding(summaryContainer, result.summaryPadding);
+    }
+  }
+
+  // ── CTA button styling — find the parent FRAME of the CTA text node ──
+  if (ctaTextNode) {
+    const ctaContainer = findParentFrame(rootNode, ctaTextNode);
+    if (ctaContainer) {
+      const fill = (ctaContainer.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+      if (fill) result.ctaBg = figmaColorToHex(fill.color);
+      const stroke = (ctaContainer.strokes ?? [])[0];
+      if (stroke?.color) result.ctaBorderColor = figmaColorToHex(stroke.color);
+      if (ctaContainer.cornerRadius !== undefined) result.ctaBorderRadius = ctaContainer.cornerRadius;
+      result.ctaPadding = formatPadding(ctaContainer, result.ctaPadding);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Find the nearest parent FRAME that contains a given target node as a descendant.
+ * Walks the tree from rootNode looking for FRAMEs whose children contain the target.
+ */
+function findParentFrame(rootNode: any, target: any): any | null {
+  if (!rootNode || !target) return null;
+
+  const stack: any[] = [rootNode];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    for (const child of current.children ?? []) {
+      if (child === target && (current.type === 'FRAME' || current.type === 'GROUP' || current.type === 'INSTANCE')) {
+        return current;
+      }
+      stack.push(child);
+    }
+  }
+
+  // Fallback: recurse to find any FRAME ancestor containing target
+  return findParentFrameRecursive(rootNode, target);
+}
+
+function findParentFrameRecursive(node: any, target: any): any | null {
+  if (!node) return null;
+  for (const child of node.children ?? []) {
+    if (child === target) {
+      if (node.type === 'FRAME' || node.type === 'GROUP' || node.type === 'INSTANCE') return node;
+      return null;
+    }
+    if (isDescendantOf(target, child)) {
+      // Target is in this subtree — check if child is a FRAME
+      const childResult = findParentFrameRecursive(child, target);
+      if (childResult) return childResult;
+      // If child is a FRAME itself and contains target, return it
+      if ((child.type === 'FRAME' || child.type === 'GROUP' || child.type === 'INSTANCE') && isDescendantOf(target, child)) {
+        return child;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if a node is a descendant of a given ancestor node.
+ */
+function isDescendantOf(node: any, ancestor: any): boolean {
+  if (!ancestor || !node) return false;
+  if (node === ancestor) return true;
+  for (const child of ancestor.children ?? []) {
+    if (isDescendantOf(node, child)) return true;
+  }
+  return false;
+}
+
+// ── Series extraction ────────────────────────────────────────────────────────
+
+/**
+ * Extract series info from legend items in the Figma tree.
+ * Each child frame/group in the Legends container represents one series,
+ * but ONLY if it contains both a dot/shape AND a TEXT label.
+ * Children without text (e.g. info icons ⓘ) are skipped.
+ * Falls back to scanning data elements if no legends are found.
+ */
+function extractSeriesFromLegends(rootNode: any): SeriesInfo[] {
+  const legendsFrame = findNodeByName(rootNode, LEGEND_RE);
+
+  if (legendsFrame) {
+    const legendChildren = (legendsFrame.children ?? []).filter(
+      (c: any) => c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE',
+    );
+
+    if (legendChildren.length > 0) {
+      const seriesList: SeriesInfo[] = [];
+
+      for (const legendItem of legendChildren) {
+        // Find TEXT node → must have meaningful text (>1 char) to be a real legend item
+        const textNode = findNodeByType(legendItem, 'TEXT');
+        const text = (textNode?.characters ?? textNode?.content ?? '').trim();
+        if (!textNode || text.length <= 1) continue; // skip info icons, empty items
+
+        // Find dot node (ELLIPSE, RECTANGLE, or LINE) → legendColor
+        const dotNode =
+          findNodeByType(legendItem, 'ELLIPSE') ??
+          findNodeByType(legendItem, 'RECTANGLE') ??
+          findNodeByType(legendItem, 'LINE');
+        let legendColor = '#9747ff';
+        if (dotNode) {
+          const fill = (dotNode.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+          if (fill) legendColor = figmaColorToCss(fill.color, fill.opacity);
+        }
+
+        seriesList.push({ name: text, color: legendColor, legendColor });
+      }
+
+      if (seriesList.length > 0) {
+        // Now try to find actual data element colors for each series
+        // by looking for colored fills in the chart data area (BarArea, graph frame, etc.)
+        const dataColors = extractDataElementColors(rootNode);
+        for (let i = 0; i < seriesList.length; i++) {
+          if (dataColors[i]) {
+            seriesList[i].color = dataColors[i];
+          }
+        }
+
+        return seriesList;
+      }
+    }
+  }
+
+  // Fallback: no legends — extract a single series from data elements
+  const fallbackColor = extractSingleSeriesColor(rootNode);
+  return [{ name: 'Chart', color: fallbackColor, legendColor: fallbackColor }];
+}
+
+/**
+ * Extract data element colors by walking deepest into bar/shape structures.
+ * For 3D cylinder bars, the innermost child (barAdorn/Rectangle) has the
+ * visually dominant fill, not the BOOLEAN_OPERATION parent.
+ *
+ * Returns an array of unique chromatic colors found in data elements.
+ */
+function extractDataElementColors(rootNode: any): string[] {
+  // Find data area frames (BarArea, graph, chart content)
+  const dataAreaFrame =
+    findNodeByName(rootNode, /bar\s*area|graph|chart/i) ?? rootNode;
+
+  // Collect all potential data element containers
+  const dataContainers = findAllNodes(dataAreaFrame, (n: any) => {
+    const type = n.type ?? '';
+    return ['BOOLEAN_OPERATION', 'GROUP', 'FRAME'].includes(type) &&
+      (n.children ?? []).length > 0;
+  });
+
+  const colors: string[] = [];
+  const seenColors = new Set<string>();
+
+  // For each container, walk to the innermost fill
+  for (const container of dataContainers) {
+    const innerColor = findInnermostFill(container);
+    if (innerColor && !seenColors.has(innerColor)) {
+      seenColors.add(innerColor);
+      colors.push(innerColor);
+    }
+  }
+
+  // Also check direct RECTANGLE/VECTOR fills if no containers found
+  if (colors.length === 0) {
+    const directNodes = findAllNodes(dataAreaFrame, (n: any) => {
+      const type = n.type ?? '';
+      return ['RECTANGLE', 'VECTOR', 'ELLIPSE'].includes(type);
+    });
+    for (const dn of directNodes) {
+      for (const f of dn.fills ?? []) {
+        if (f.type === 'SOLID' && f.color && isChromatic(f.color)) {
+          const hex = figmaColorToHex(f.color);
+          if (!seenColors.has(hex)) {
+            seenColors.add(hex);
+            colors.push(hex);
+          }
+        }
+      }
+    }
+  }
+
+  return colors;
+}
+
+/**
+ * Walk deepest into a node tree to find the innermost chromatic fill.
+ * Specifically targets children named "barAdorn", "Rectangle", or similar
+ * inside BOOLEAN_OPERATION containers (3D cylinder bars).
+ */
+function findInnermostFill(node: any, depth = 0): string | null {
+  if (!node || depth > 8) return null;
+
+  const children = node.children ?? [];
+
+  // Prioritize children named barAdorn, Rectangle (inner fill of 3D bars)
+  const priorityChild = children.find((c: any) => {
+    const name = (c.name ?? '').toLowerCase();
+    return name.includes('baradorn') || name.includes('rectangle');
+  });
+
+  if (priorityChild) {
+    const fill = (priorityChild.fills ?? []).find(
+      (f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color),
+    );
+    if (fill) return figmaColorToHex(fill.color);
+  }
+
+  // Recurse into children — deepest fill wins
+  for (const child of children) {
+    const innerResult = findInnermostFill(child, depth + 1);
+    if (innerResult) return innerResult;
+  }
+
+  // If no children had a fill, check this node
+  for (const f of node.fills ?? []) {
+    if (f.type === 'SOLID' && f.color && isChromatic(f.color)) {
+      return figmaColorToHex(f.color);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fallback: extract a single series color from data elements (original approach
+ * but preferring innermost fills).
+ */
+function extractSingleSeriesColor(rootNode: any): string {
+  const dataNodes = findAllNodes(rootNode, (n: any) => {
+    const type = n.type ?? '';
+    return ['BOOLEAN_OPERATION', 'RECTANGLE', 'VECTOR', 'ELLIPSE'].includes(type);
+  });
+
+  // For BOOLEAN_OPERATION nodes, try innermost fill first
+  for (const dn of dataNodes) {
+    if (dn.type === 'BOOLEAN_OPERATION') {
+      const inner = findInnermostFill(dn);
+      if (inner) return inner;
+    }
+  }
+
+  // Then check direct fills/strokes
+  for (const dn of dataNodes) {
+    for (const f of dn.fills ?? []) {
+      if (f.type === 'SOLID' && f.color && isChromatic(f.color)) {
+        return figmaColorToHex(f.color);
+      }
+    }
+    for (const s of dn.strokes ?? []) {
+      if (s.type === 'SOLID' && s.color && isChromatic(s.color)) {
+        return figmaColorToHex(s.color);
+      }
+    }
+  }
+
+  return '#9747ff'; // fallback purple
+}
+
 // ── Styling extraction helpers ───────────────────────────────────────────────
 
 /** Extract grid line color and dash pattern from LINE/VECTOR nodes in grid-like frames. */
@@ -472,7 +913,7 @@ function extractGridStyle(node: any): { gridLineColor: string; gridStrokeDasharr
       findNodeByType(gridFrame, 'LINE') ?? findNodeByType(gridFrame, 'VECTOR');
     if (lineNode) {
       const stroke = (lineNode.strokes ?? [])[0];
-      if (stroke?.color) gridLineColor = figmaColorToHex(stroke.color);
+      if (stroke?.color) gridLineColor = figmaColorToCss(stroke.color, stroke.opacity);
       if (lineNode.strokeDashes && Array.isArray(lineNode.strokeDashes)) {
         gridStrokeDasharray =
           lineNode.strokeDashes.length > 0
@@ -1065,6 +1506,16 @@ function isChromatic(c: any): boolean {
   // Check if all channels are roughly equal (grayscale)
   const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
   return maxDiff > 0.05; // needs at least 5% channel difference to be "colorful"
+}
+
+function figmaColorToCss(c: any, paintOpacity?: number): string {
+  if (!c) return '#000000';
+  const r = Math.round((c.r ?? 0) * 255);
+  const g = Math.round((c.g ?? 0) * 255);
+  const b = Math.round((c.b ?? 0) * 255);
+  const a = paintOpacity ?? c.a ?? 1;
+  if (a >= 1) return figmaColorToHex(c);
+  return `rgba(${r}, ${g}, ${b}, ${parseFloat(a.toFixed(2))})`;
 }
 
 function figmaColorToHex(c: any): string {

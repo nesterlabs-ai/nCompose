@@ -51,6 +51,13 @@ setInterval(() => {
 // Middleware
 app.use(express.json({ limit: config.server.jsonLimit }));
 
+// Required for WebContainer (SharedArrayBuffer needs cross-origin isolation)
+app.use((_req: any, res: any, next: any) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  next();
+});
+
 // Serve static files
 app.use(express.static(join(__dirname, 'public')));
 
@@ -132,6 +139,7 @@ app.post('/api/convert', (req: any, res: any) => {
           componentPropertyDefinitions: result.componentPropertyDefinitions,
           variantMetadata: result.variantMetadata,
           fidelityReport: result.fidelityReport,
+          chartComponents: result.chartComponents,
         });
         sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
       } catch (writeErr) {
@@ -172,6 +180,11 @@ app.post('/api/convert', (req: any, res: any) => {
         mitosisSource: result.mitosisSource,
         templateWired,
         assetCount: result.assets?.length ?? 0,
+        chartComponents: result.chartComponents?.map((c) => ({
+          name: c.name,
+          reactCode: c.reactCode,
+          css: c.css,
+        })) ?? [],
         fidelity: result.fidelityReport
           ? {
               overallPassed: result.fidelityReport.overallPassed,
@@ -231,6 +244,8 @@ app.get('/api/download/:sessionId', (req: any, res: any) => {
       });
     }
   }
+
+  // Chart components are inlined into the main React JSX — no separate files needed.
 
   // Add SVG assets
   if (result.assets) {
@@ -388,6 +403,8 @@ app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
     }
   }
 
+  // Chart components are inlined into the main React JSX — no separate files needed.
+
   // Assets
   if (result.assets) {
     for (const asset of result.assets) {
@@ -461,6 +478,7 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
     result.componentName,
     sessionId,
     result.componentPropertyDefinitions,
+    result.chartComponents,
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);

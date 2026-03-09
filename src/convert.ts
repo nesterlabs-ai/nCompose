@@ -42,12 +42,46 @@ import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
 import { config } from './config.js';
-import type { ConvertOptions, ConversionResult, Framework, AssetEntry } from './types/index.js';
+import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent } from './types/index.js';
+import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
+import { generateChartCode } from './compile/chart-codegen.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void;
   onDebugData?: (data: { yamlContent: string; rawLLMOutput: string }) => void;
+}
+
+/**
+ * Converts HTML-style JSX attributes to valid React JSX.
+ *
+ * 1. `class="foo"` → `className="foo"` (skips already-correct `className=`)
+ * 2. `style="prop: val; ..."` → `style={{ prop: 'val', ... }}` (object literal)
+ *
+ * LLM-generated section bodies often use HTML conventions; this post-processing
+ * step prevents React runtime errors that would cause a blank/black render.
+ */
+function sanitizeJSXAttributes(jsx: string): string {
+  // 1. class="..." → className="..." (skip if already className=)
+  let result = jsx.replace(/\bclass(?!Name)="/g, 'className="');
+
+  // 2. style="css string" → style={{ camelProp: 'value', ... }}
+  result = result.replace(/\bstyle="([^"]*)"/g, (_match: string, cssString: string) => {
+    const declarations = cssString.split(';').map((d: string) => d.trim()).filter(Boolean);
+    if (declarations.length === 0) return 'style={{}}';
+    const props = declarations.map((decl: string) => {
+      const colonIdx = decl.indexOf(':');
+      if (colonIdx === -1) return null;
+      const prop = decl.slice(0, colonIdx).trim();
+      const value = decl.slice(colonIdx + 1).trim();
+      const camelProp = prop.replace(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
+      const escapedValue = value.replace(/'/g, "\\'");
+      return `${camelProp}: '${escapedValue}'`;
+    }).filter(Boolean);
+    return `style={{ ${props.join(', ')} }}`;
+  });
+
+  return result;
 }
 
 /**
@@ -585,6 +619,12 @@ export async function convertFigmaToCode(
   // --- PATH C: Multi-section page ---
   if (isMultiSectionPage(enhanced)) {
     return convertPage(enhanced, fileKey, client, options, callbacks);
+  }
+
+  // --- PATH D: Chart node → Recharts codegen (LLM decides chart type) ---
+  // enhanced.nodes[0] is the actual root node (same pattern as isComponentSet / isMultiSectionPage)
+  if (isChartSection(enhanced?.nodes?.[0] ?? enhanced)) {
+    return convertChart(enhanced, options, callbacks);
   }
 
   // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
@@ -1145,6 +1185,56 @@ function toPascalCase(name: string): string {
 }
 
 /**
+ * PATH D: Chart node → Recharts codegen (no LLM).
+ *
+ * When the user points directly at a chart/graph Figma node, skip the LLM
+ * entirely and generate a Recharts component deterministically from the tree.
+ *
+ * The generated React file IS the primary output; other frameworks get a
+ * placeholder comment directing devs to use the React version with Recharts.
+ */
+async function convertChart(
+  enhanced: any,
+  options: ConvertOptions,
+  callbacks?: ConvertCallbacks,
+): Promise<ConversionResult> {
+  const { onStep } = callbacks ?? {};
+
+  const rootNode = enhanced?.nodes?.[0] ?? enhanced;
+  const llm = createLLMProvider(options.llm);
+  onStep?.('Detected chart node → asking LLM to identify chart type...');
+
+  const meta = await extractChartMetadata(rootNode, llm);
+  const componentName = options.name
+    ? toPascalCase(options.name) + (options.name.toLowerCase().endsWith('chart') ? '' : 'Chart')
+    : meta.componentName;
+
+  const metaWithName = { ...meta, componentName, bemBase: toKebabCase(componentName) };
+  const { reactCode, css } = generateChartCode(metaWithName);
+
+  onStep?.(`Chart component "${componentName}" generated (${meta.chartType}, ${meta.dataPointCount} data points).`);
+
+  const placeholder = (fw: string) =>
+    `// ${componentName} is a Recharts chart — use the React (.jsx) output.\n` +
+    `// Install recharts: npm install recharts\n` +
+    `// Framework: ${fw} — port the React implementation to your framework.\n`;
+
+  const frameworkOutputs: Record<string, string> = {};
+  for (const fw of options.frameworks) {
+    frameworkOutputs[fw] = fw === 'react' ? reactCode : placeholder(fw);
+  }
+
+  return {
+    componentName,
+    mitosisSource: `// Chart component — generated via Recharts codegen (PATH D), bypasses Mitosis.\n${reactCode}`,
+    frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+    assets: [],
+    css,
+    chartComponents: [{ name: componentName, reactCode, css }],
+  };
+}
+
+/**
  * PATH C: Multi-section page → per-section LLM calls → stitch → compile.
  *
  * 1. Extract deterministic page layout CSS from Figma auto-layout data
@@ -1177,6 +1267,7 @@ async function convertPage(
   const sectionSystemPrompt = assemblePageSectionSystemPrompt(options.templateMode);
   const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
+  const allChartComponents: ChartComponent[] = [];
 
   // Compute page-level context once — passed to every section prompt so the
   // LLM knows the canvas width, section gap, page padding, and neighbor names.
@@ -1208,6 +1299,24 @@ async function convertPage(
     onStep?.(`[${i + 1}/${children.length}] Generating section "${sectionInfo.name}"...`);
 
     try {
+      // Check if section is a chart/graph — LLM identifies chart type, codegen generates Recharts
+      if (isChartSection(child)) {
+        onStep?.(`  Detected chart section "${sectionInfo.name}" → asking LLM to identify chart type...`);
+        const meta = await extractChartMetadata(child, llm);
+        const { reactCode, css } = generateChartCode(meta);
+        allChartComponents.push({ name: meta.componentName, reactCode, css });
+        sectionOutputs.push({
+          info: sectionInfo,
+          rawCode: '',
+          css: '',
+          failed: false,
+          isChart: true,
+          chartComponentName: meta.componentName,
+        });
+        onStep?.(`  Chart component "${meta.componentName}" generated (${meta.chartType}, ${meta.dataPointCount} data points).`);
+        continue;
+      }
+
       // Check if section is a COMPONENT_SET (use PATH A prompt chain)
       if (child.type === 'COMPONENT_SET') {
         const sectionDesign = buildSectionDesign(enhanced, child);
@@ -1301,7 +1410,7 @@ async function convertPage(
 
   // Step C3: Stitch into one page component
   onStep?.('Stitching sections into page component...');
-  const { mitosisSource, mergedCSS } = stitchPageComponent(
+  let { mitosisSource, mergedCSS } = stitchPageComponent(
     pageName,
     pageBaseClass,
     layoutResult.css,
@@ -1327,9 +1436,74 @@ async function convertPage(
   // Step C6: Inject merged CSS into each framework output
   onStep?.('Injecting page CSS...');
   const frameworkOutputs: Record<string, string> = {};
+  const hasCharts = allChartComponents.length > 0;
   for (const fw of options.frameworks) {
-    const rawCode = rawFrameworkOutputs[fw as Framework];
+    let rawCode = rawFrameworkOutputs[fw as Framework];
     if (rawCode && !rawCode.startsWith('// Error')) {
+      // Sanitize HTML-style attributes (class→className, style string→object) that
+      // survive Mitosis compilation and would cause React runtime errors.
+      if (fw === 'react') rawCode = sanitizeJSXAttributes(rawCode);
+
+      // For React: inline chart component code + CSS directly into the main file
+      // (no separate import — avoids WebContainer/preview dependency issues)
+      if (fw === 'react' && hasCharts) {
+        const rechartsImportSet = new Set<string>();
+        const chartDefinitions: string[] = [];
+
+        for (const chart of allChartComponents) {
+          const { name, reactCode, css: chartCss } = chart;
+
+          // Replace placeholder with the chart component tag
+          const placeholderRe = new RegExp(
+            `<div\\s+className="chart-section-${name}"\\s*/>`,
+            'g',
+          );
+          rawCode = rawCode.replace(placeholderRe, `<${name} />`);
+
+          // Extract recharts imports from the chart code (handles multi-line imports)
+          const rechartsMatch = reactCode.match(
+            /import\s*\{([^}]+)\}\s*from\s*['"]recharts['"]/s,
+          );
+          if (rechartsMatch) {
+            rechartsMatch[1].split(',').forEach((s: string) => {
+              const name = s.trim();
+              if (name) rechartsImportSet.add(name);
+            });
+          }
+
+          // Strip all import statements (including multi-line imports like
+          // `import {\n  LineChart,\n  ...\n} from 'recharts';`)
+          // and CSS side-effect imports (`import './Foo.css';`).
+          const body = reactCode
+            .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]+['"]\s*;?/g, '')
+            .replace(/import\s+['"][^'"]+['"]\s*;?/g, '')
+            .replace(/export\s+default\s+function/, 'function')
+            .trim();
+          chartDefinitions.push(body);
+
+          // Merge chart CSS into page CSS
+          if (chartCss) {
+            mergedCSS += '\n' + chartCss;
+          }
+        }
+
+        // Add recharts import + { useState, useMemo } at the top
+        const rechartsImports =
+          rechartsImportSet.size > 0
+            ? `import { ${[...rechartsImportSet].join(', ')} } from 'recharts';\n`
+            : '';
+        const hooksImport = `import { useState, useMemo } from 'react';\n`;
+
+        // Prepend: hooks import, recharts import, then chart definitions, then main code
+        rawCode =
+          hooksImport +
+          rechartsImports +
+          '\n' +
+          chartDefinitions.join('\n\n') +
+          '\n\n' +
+          rawCode;
+      }
+
       frameworkOutputs[fw] = injectCSS(rawCode, mergedCSS, fw as Framework);
     } else {
       frameworkOutputs[fw] = rawCode;
@@ -1364,5 +1538,6 @@ async function convertPage(
     assets: dedupedAssets,
     css: mergedCSS,
     fidelityReport,
+    chartComponents: allChartComponents.length > 0 ? allChartComponents : undefined,
   };
 }

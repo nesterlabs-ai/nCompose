@@ -33,7 +33,7 @@ function buildReactCode(meta: ChartMetadata): string {
   const { componentName, bemBase, hasSwitcher, periodOptions, hasLegend, seriesName } = meta;
 
   const rechartsImports = getRechartsImports(meta.chartType);
-  const dataCode = buildChartData(meta);
+  const dataCode = buildChartData(meta, componentName);
   const chartJSX = buildChartJSX(meta);
 
   // Default state: second option or first if only one
@@ -78,11 +78,11 @@ ${dataCode}
 
 export default function ${componentName}() {
   const [view, setView] = useState('${defaultPeriod}');
-  const data = useMemo(() => CHART_DATA[view] ?? CHART_DATA['${defaultPeriod}'], [view]);
+  const data = useMemo(() => CHART_DATA_${componentName}[view] ?? CHART_DATA_${componentName}['${defaultPeriod}'], [view]);
 
   return (
     <figure className="${bemBase}">${legendsSection}
-      <ResponsiveContainer width="100%" height={229}>
+      <ResponsiveContainer width="100%" height={${meta.chartAreaHeight}}>
         ${chartJSX}
       </ResponsiveContainer>${switcherSection}
     </figure>
@@ -108,7 +108,7 @@ function getRechartsImports(chartType: ChartType): string[] {
   }
 }
 
-function buildChartData(meta: ChartMetadata): string {
+function buildChartData(meta: ChartMetadata, componentName: string): string {
   const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher } = meta;
 
   const count = Math.max(dataPointCount, xAxisLabels.length || 1);
@@ -133,71 +133,85 @@ function buildChartData(meta: ChartMetadata): string {
   });
 
   return (
-    `const CHART_DATA = {\n` +
+    `const CHART_DATA_${componentName} = {\n` +
     `${periodDataEntries.join(',\n')}\n` +
     `};`
   );
 }
 
 function buildChartJSX(meta: ChartMetadata): string {
-  const { chartType, seriesColor, axisLabelColor, bemBase, yAxisMin, yAxisMax } = meta;
+  const {
+    chartType, seriesColor, axisLabelColor, bemBase, yAxisMin, yAxisMax,
+    axisFontSize, gridLineColor, gridStrokeDasharray, yAxisWidth,
+    dotRadius, dotStrokeColor, dotStrokeWidth, seriesStrokeWidth,
+    gradientStartOpacity, barRadius, chartMargin,
+  } = meta;
 
-  const xAxisProps = `dataKey="name" tick={{ fill: '${axisLabelColor}', fontSize: 10 }} axisLine={false} tickLine={false}`;
-  // Include both vertical and horizontal grid lines (matching Figma)
-  const gridProps = `strokeDasharray="3 3" stroke="#E5E7EB"`;
+  const mTop = chartMargin.top;
+  const mRight = chartMargin.right;
+  const mBottom = chartMargin.bottom;
+  const mLeft = chartMargin.left;
+
+  const xAxisProps = 'dataKey="name" tick={{ fill: \'' + axisLabelColor + '\', fontSize: ' + axisFontSize + ' }} axisLine={false} tickLine={false}';
+  const gridProps = gridStrokeDasharray
+    ? 'strokeDasharray="' + gridStrokeDasharray + '" stroke="' + gridLineColor + '"'
+    : 'stroke="' + gridLineColor + '"';
 
   // Build Y-axis ticks from extracted Figma values
   const yRange = yAxisMax - yAxisMin;
   const yStep = yRange > 0 ? Math.round(yRange / 4) : 10;
   const yTicks = [yAxisMin, yAxisMin + yStep, yAxisMin + yStep * 2, yAxisMin + yStep * 3, yAxisMax];
   const yAxisProps =
-    `domain={[${yAxisMin}, ${yAxisMax}]} ticks={[${yTicks.join(', ')}]} ` +
-    `tick={{ fill: '${axisLabelColor}', fontSize: 10 }} axisLine={false} tickLine={false} width={28}`;
+    'domain={[' + yAxisMin + ', ' + yAxisMax + ']} ticks={[' + yTicks.join(', ') + ']} ' +
+    'tick={{ fill: \'' + axisLabelColor + '\', fontSize: ' + axisFontSize + ' }} axisLine={false} tickLine={false} width={' + yAxisWidth + '}';
 
-  // Dot styling: purple fill + white border (matching Figma LegendNode ELLIPSE)
-  const dotProps = `dot={{ fill: '${seriesColor}', stroke: '#ffffff', strokeWidth: 2, r: 3 }} activeDot={{ fill: '${seriesColor}', stroke: '#ffffff', strokeWidth: 2, r: 5 }}`;
+  const activeDotRadius = dotRadius + 2;
+  const dotProps =
+    'dot={{ fill: \'' + seriesColor + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + dotRadius + ' }} ' +
+    'activeDot={{ fill: \'' + seriesColor + '\', stroke: \'' + dotStrokeColor + '\', strokeWidth: ' + dotStrokeWidth + ', r: ' + activeDotRadius + ' }}';
+
+  const marginAttr = 'margin={{ top: ' + mTop + ', right: ' + mRight + ', left: ' + mLeft + ', bottom: ' + mBottom + ' }}';
 
   switch (chartType) {
     case 'area':
       return (
-        `<AreaChart data={data} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>\n` +
-        `          <defs>\n` +
-        `            <linearGradient id="${bemBase}-gradient" x1="0" y1="0" x2="0" y2="1">\n` +
-        // Figma bg vector: GRADIENT_LINEAR from rgba(series,0.75) → rgba(white,0)
-        `              <stop offset="0%" stopColor="${seriesColor}" stopOpacity={0.75} />\n` +
-        `              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n` +
-        `            </linearGradient>\n` +
-        `          </defs>\n` +
-        `          <CartesianGrid ${gridProps} />\n` +
-        `          <XAxis ${xAxisProps} />\n` +
-        `          <YAxis ${yAxisProps} />\n` +
-        `          <Tooltip />\n` +
-        `          <Area type="monotone" dataKey="value" stroke="${seriesColor}" strokeWidth={2} fill="url(#${bemBase}-gradient)" ${dotProps} />\n` +
-        `        </AreaChart>`
+        '<AreaChart data={data} ' + marginAttr + '>\n' +
+        '          <defs>\n' +
+        '            <linearGradient id="' + bemBase + '-gradient" x1="0" y1="0" x2="0" y2="1">\n' +
+        '              <stop offset="0%" stopColor="' + seriesColor + '" stopOpacity={' + gradientStartOpacity + '} />\n' +
+        '              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n' +
+        '            </linearGradient>\n' +
+        '          </defs>\n' +
+        '          <CartesianGrid ' + gridProps + ' />\n' +
+        '          <XAxis ' + xAxisProps + ' />\n' +
+        '          <YAxis ' + yAxisProps + ' />\n' +
+        '          <Tooltip />\n' +
+        '          <Area type="monotone" dataKey="value" stroke="' + seriesColor + '" strokeWidth={' + seriesStrokeWidth + '} fill="url(#' + bemBase + '-gradient)" ' + dotProps + ' />\n' +
+        '        </AreaChart>'
       );
 
     case 'bar':
       return (
-        `<BarChart data={data} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>\n` +
-        `          <CartesianGrid ${gridProps} />\n` +
-        `          <XAxis ${xAxisProps} />\n` +
-        `          <YAxis ${yAxisProps} />\n` +
-        `          <Tooltip />\n` +
-        `          <Bar dataKey="value" fill="${seriesColor}" radius={[4, 4, 0, 0]} />\n` +
-        `        </BarChart>`
+        '<BarChart data={data} ' + marginAttr + '>\n' +
+        '          <CartesianGrid ' + gridProps + ' />\n' +
+        '          <XAxis ' + xAxisProps + ' />\n' +
+        '          <YAxis ' + yAxisProps + ' />\n' +
+        '          <Tooltip />\n' +
+        '          <Bar dataKey="value" fill="' + seriesColor + '" radius={[' + barRadius.join(', ') + ']} />\n' +
+        '        </BarChart>'
       );
 
     case 'line':
     case 'unknown':
     default:
       return (
-        `<LineChart data={data} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>\n` +
-        `          <CartesianGrid ${gridProps} />\n` +
-        `          <XAxis ${xAxisProps} />\n` +
-        `          <YAxis ${yAxisProps} />\n` +
-        `          <Tooltip />\n` +
-        `          <Line type="monotone" dataKey="value" stroke="${seriesColor}" strokeWidth={2} ${dotProps} />\n` +
-        `        </LineChart>`
+        '<LineChart data={data} ' + marginAttr + '>\n' +
+        '          <CartesianGrid ' + gridProps + ' />\n' +
+        '          <XAxis ' + xAxisProps + ' />\n' +
+        '          <YAxis ' + yAxisProps + ' />\n' +
+        '          <Tooltip />\n' +
+        '          <Line type="monotone" dataKey="value" stroke="' + seriesColor + '" strokeWidth={' + seriesStrokeWidth + '} ' + dotProps + ' />\n' +
+        '        </LineChart>'
       );
   }
 }
@@ -205,12 +219,23 @@ function buildChartJSX(meta: ChartMetadata): string {
 // ── CSS generation ──────────────────────────────────────────────────────────
 
 function buildCSS(meta: ChartMetadata): string {
-  const { bemBase, backgroundColor, seriesColor } = meta;
+  const {
+    bemBase, backgroundColor, seriesColor,
+    containerBorderRadius, containerPadding,
+    legendGap, legendItemGap, legendDotSize, legendDotBorderRadius,
+    legendDotOpacity, legendLabelFontSize, legendLabelColor, legendMarginBottom,
+    switcherBg, switcherBorderRadius, switcherPadding, switcherMarginTop,
+    switcherButtonPadding, switcherButtonFontSize, switcherButtonColor,
+    switcherButtonBorderRadius, switcherActiveBg, switcherActiveColor,
+    switcherActiveFontWeight, switcherActiveBoxShadow,
+  } = meta;
+
+  const padStr = `${containerPadding.top}px ${containerPadding.right}px ${containerPadding.bottom}px ${containerPadding.left}px`;
 
   return `.${bemBase} {
   background: ${backgroundColor};
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: ${containerBorderRadius}px;
+  padding: ${padStr};
   width: 100%;
   box-sizing: border-box;
 }
@@ -218,55 +243,55 @@ function buildCSS(meta: ChartMetadata): string {
 .${bemBase}__legends {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: ${legendGap}px;
+  margin-bottom: ${legendMarginBottom}px;
 }
 
 .${bemBase}__legend {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: ${legendItemGap}px;
 }
 
 .${bemBase}__legend-dot {
-  width: 10px;
-  height: 10px;
+  width: ${legendDotSize}px;
+  height: ${legendDotSize}px;
   background: ${seriesColor};
-  border-radius: 50%;
+  border-radius: ${legendDotBorderRadius};
   display: inline-block;
-  opacity: 0.75;
+  opacity: ${legendDotOpacity};
 }
 
 .${bemBase}__legend-label {
-  font-size: 12px;
-  color: #262626;
+  font-size: ${legendLabelFontSize}px;
+  color: ${legendLabelColor};
 }
 
 .${bemBase}__switchers {
   display: flex;
-  background: #F5F5F5;
-  border-radius: 6px;
-  padding: 3px;
-  margin-top: 12px;
+  background: ${switcherBg};
+  border-radius: ${switcherBorderRadius}px;
+  padding: ${switcherPadding};
+  margin-top: ${switcherMarginTop}px;
 }
 
 .${bemBase}__switcher {
   flex: 1;
-  padding: 6px 12px;
-  font-size: 14px;
-  color: #737373;
+  padding: ${switcherButtonPadding};
+  font-size: ${switcherButtonFontSize}px;
+  color: ${switcherButtonColor};
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: ${switcherButtonBorderRadius}px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
 .${bemBase}__switcher--active {
-  background: #ffffff;
-  color: #262626;
-  font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: ${switcherActiveBg};
+  color: ${switcherActiveColor};
+  font-weight: ${switcherActiveFontWeight};
+  box-shadow: ${switcherActiveBoxShadow};
 }
 `;
 }

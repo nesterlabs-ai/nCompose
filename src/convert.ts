@@ -1303,6 +1303,34 @@ async function convertPage(
       if (isChartSection(child)) {
         onStep?.(`  Detected chart section "${sectionInfo.name}" → asking LLM to identify chart type...`);
         const meta = await extractChartMetadata(child, llm);
+
+        // Use the section name as fallback if series name is the generic default "Chart"
+        if (meta.seriesName === 'Chart' && sectionInfo.name) {
+          meta.seriesName = sectionInfo.name;
+          const pascal = sectionInfo.name
+            .replace(/[^a-zA-Z0-9\s]/g, ' ')
+            .split(/\s+/).filter(Boolean)
+            .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join('');
+          meta.componentName = pascal + (pascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
+          meta.bemBase = meta.componentName
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '');
+        }
+
+        // Deduplicate: if another chart already has this name, append a suffix
+        const existingNames = new Set(allChartComponents.map((c) => c.name));
+        if (existingNames.has(meta.componentName)) {
+          let suffix = 2;
+          while (existingNames.has(`${meta.componentName}${suffix}`)) suffix++;
+          meta.componentName = `${meta.componentName}${suffix}`;
+          meta.bemBase = meta.componentName
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '');
+        }
+
         const { reactCode, css } = generateChartCode(meta);
         allChartComponents.push({ name: meta.componentName, reactCode, css });
         sectionOutputs.push({

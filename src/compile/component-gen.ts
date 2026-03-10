@@ -96,7 +96,10 @@ const FORM_ROLE_HINTS: Record<string, string> = {
     'Use `<button type="button">` with `aria-label`. Place icon SVG inside.',
   chip:
     'This is a **chip/tag**. ' +
-    'Use a `<span>` with label text. Add a remove `<button>` if the design shows an X icon.',
+    'Use a `<span>` with label text. If the design shows an X/close icon, add a `<button type="button" aria-label="Remove">` ' +
+    'containing a `<span>` styled as a CSS × mark (two rotated lines via `::before`/`::after` pseudo-elements). ' +
+    'Use `position: relative` on the span, and `position: absolute; top: 50%; left: 0; width: 100%; height: 1.5px; background: currentColor;` ' +
+    'on both pseudo-elements, with `transform: rotate(45deg)` and `transform: rotate(-45deg)` respectively.',
   tab:
     'This is a **tab button**. ' +
     'Use `<button role="tab">` with `aria-selected` attribute.',
@@ -192,11 +195,21 @@ export async function generateSingleComponent(
     ? `Use BEM classes prefixed with "${bemPrefix}" (e.g., "${bemPrefix}__${kebabName}", "${bemPrefix}__${kebabName}-label").`
     : '';
 
+  // Static content restriction: this component is part of a static page section.
+  // The LLM must NOT use useStore, Show, For, or any dynamic expressions.
+  const staticContentRule =
+    '## Static Content Only\n' +
+    'This component is part of a **static page layout**. ' +
+    'Do NOT use `useStore`, `Show`, `For`, or any props/state. ' +
+    'All text content, values, and options MUST be hardcoded directly in the JSX. ' +
+    'Do NOT generate `{state.label}`, `{state.selectedValue}`, or similar dynamic expressions. ' +
+    'Copy text VERBATIM from the YAML `text` or `characters` field.\n';
+
   const systemPrompt = assembleSystemPrompt(templateMode);
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
-    semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
+    staticContentRule + semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
     templateMode,
     assetHints,
   );
@@ -222,8 +235,13 @@ export async function generateSingleComponent(
       return { name: componentName, formRole, html: '', css: '', success: false };
     }
 
+    // Strip dynamic state from the generated code.
+    // PATH 1 components are part of static page sections — useStore, state.*,
+    // and event handlers must be removed and replaced with static content.
+    const cleanedCode = stripDynamicState(result.rawCode, expectedTexts);
+
     // Extract the JSX body (strip export default function wrapper)
-    const html = extractJSXBody(result.rawCode);
+    const html = extractJSXBody(cleanedCode);
     return {
       name: componentName,
       formRole,
@@ -350,6 +368,13 @@ export async function generateCompoundSection(
     `  Pass 1 complete: ${successCount}/${discovery.components.length} components generated`,
   );
 
+  // ── Step 2.5: Fix class name collisions ────────────────────────────────
+  // If a component's root CSS class matches the section slug, the section
+  // layout CSS and component CSS will share the same selector after scoping,
+  // causing parent styles to leak into the component and vice-versa.
+  // Rename the colliding component's root class to use BEM child naming.
+  fixComponentClassCollisions(componentCache, slug, onStep);
+
   // ── Step 3: Build substituted section YAML ──────────────────────────────
   const substitutedNode = substituteComponents(
     sectionNode,
@@ -357,6 +382,13 @@ export async function generateCompoundSection(
     componentCache,
     serializeNode,
   );
+
+  // Fix stretch dimension conflicts: when a node has alignSelf: stretch,
+  // remove the cross-axis pixel dimension (width in column parent, height
+  // in row parent) since stretch handles the sizing. The serializer can't
+  // always do this because substituteComponents() does its own recursion
+  // without passing parent layout direction.
+  fixStretchDimensions(substitutedNode);
 
   // Deduplicate sibling names: same-named nodes with different visual
   // properties (dimensions, colors, etc.) get unique suffixes so the
@@ -487,16 +519,20 @@ function substituteComponents(
         ...(node.layoutGrow ? { flexGrow: node.layoutGrow } : {}),
       };
 
-      // Width: fill → widthMode, otherwise pixel value
+      // Width: fill → widthMode, hug → widthMode, fixed → pixel value
       if (hSizing === 'FILL') {
         ref.widthMode = 'fill';
+      } else if (hSizing === 'HUG') {
+        ref.widthMode = 'hug';
       } else if (node.absoluteBoundingBox?.width) {
         ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
       }
 
-      // Height: fill → heightMode, otherwise pixel value
+      // Height: fill → heightMode, hug → heightMode, fixed → pixel value
       if (vSizing === 'FILL') {
         ref.heightMode = 'fill';
+      } else if (vSizing === 'HUG') {
+        ref.heightMode = 'hug';
       } else if (node.absoluteBoundingBox?.height) {
         ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
       }
@@ -742,6 +778,77 @@ function injectComponentReferences(userPrompt: string, refBlock: string): string
   );
 }
 
+// ── Class Name Collision Fix ─────────────────────────────────────────────────
+
+/**
+ * Escapes special regex characters in a string.
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Detects and fixes class name collisions between component root classes
+ * and the section slug.
+ *
+ * When a component's root CSS class exactly matches the section name
+ * (e.g., both using "frame-2147225790"), the section layout CSS and
+ * component CSS end up with identical selectors after scoping, causing
+ * cross-contamination: section styles apply to the component and vice-versa.
+ *
+ * Fix: rename the component's root class to use BEM child naming
+ * (e.g., "frame-2147225790" → "frame-2147225790__button").
+ *
+ * Mutates the component entries in the cache.
+ */
+function fixComponentClassCollisions(
+  cache: Map<string, GeneratedComponent>,
+  sectionSlug: string,
+  onStep?: (msg: string) => void,
+): void {
+  for (const [key, comp] of cache) {
+    if (!comp.success || !comp.html || !comp.css) continue;
+
+    const rootClass = extractComponentRootClass(comp.html);
+    if (!rootClass || rootClass !== sectionSlug) continue;
+
+    // Collision detected — rename using BEM child naming
+    const roleSuffix = comp.formRole
+      ? comp.formRole.replace(/([A-Z])/g, '-$1').toLowerCase()
+      : 'component';
+    const newRootClass = `${sectionSlug}__${roleSuffix}`;
+
+    onStep?.(
+      `  ⚠ Class collision: component "${comp.name}" root class "${rootClass}" ` +
+      `matches section slug — renaming to "${newRootClass}"`,
+    );
+
+    // Rename in HTML: class="old" → class="new"
+    // Only rename standalone root class, not BEM children (old__child stays)
+    const rootClassPattern = new RegExp(
+      `class="(${escapeRegex(rootClass)})"`,
+      'g',
+    );
+    comp.html = comp.html.replace(rootClassPattern, `class="${newRootClass}"`);
+
+    // Also fix multi-class attributes: class="old other-class"
+    comp.html = comp.html.replace(
+      new RegExp(`class="${escapeRegex(rootClass)}(\\s)`, 'g'),
+      `class="${newRootClass}$1`,
+    );
+
+    // Rename in CSS: .old (standalone) → .new
+    // Match .rootClass when NOT followed by __ or - (which would be BEM children)
+    // Must be followed by whitespace, {, :, [, ., , or end
+    comp.css = comp.css.replace(
+      new RegExp(`\\.${escapeRegex(rootClass)}(?![_a-zA-Z0-9-])`, 'g'),
+      `.${newRootClass}`,
+    );
+
+    cache.set(key, comp);
+  }
+}
+
 // ── CSS Merging ─────────────────────────────────────────────────────────────
 
 /**
@@ -809,6 +916,7 @@ async function fallbackMonolithicGeneration(
   assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
+  fixStretchDimensions(serialized);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
   const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
@@ -848,6 +956,119 @@ async function fallbackMonolithicGeneration(
       discovery,
     };
   }
+}
+
+// ── Stretch Dimension Fix ────────────────────────────────────────────────────
+
+/**
+ * Walks a serialized YAML tree and removes conflicting pixel dimensions
+ * when a node has `alignSelf: stretch`.
+ *
+ * In Figma, `layoutAlign: STRETCH` means the element fills the parent's
+ * cross-axis. The pixel dimension (from absoluteBoundingBox) is just the
+ * rendered result, not a constraint. Emitting both causes the LLM to
+ * output `width: 1080px; align-self: stretch;` — the pixel value defeats
+ * the stretch and prevents responsive layout.
+ *
+ * - Column parent → cross-axis is horizontal → remove `width`
+ * - Row parent → cross-axis is vertical → remove `height`
+ *
+ * Mutates the tree in place.
+ */
+function fixStretchDimensions(node: any, parentDirection?: 'row' | 'column'): void {
+  if (!node) return;
+
+  // Fix this node if it stretches and we know the parent direction
+  if (node.alignSelf === 'stretch' && parentDirection) {
+    if (parentDirection === 'column') {
+      delete node.width;
+      delete node.widthMode;
+    } else {
+      delete node.height;
+      delete node.heightMode;
+    }
+  }
+
+  // Determine this node's layout direction for its children
+  const thisDirection: 'row' | 'column' | undefined =
+    node.layout?.direction === 'row' ? 'row'
+    : node.layout?.direction === 'column' ? 'column'
+    : undefined;
+
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      fixStretchDimensions(child, thisDirection ?? parentDirection);
+    }
+  }
+}
+
+// ── Static Content Post-Processing ──────────────────────────────────────────
+
+/**
+ * Strips dynamic state usage from generated component code.
+ *
+ * PATH 1 components are part of static page sections — they should never
+ * use `useStore`, `state.*`, or event handlers. Despite prompt instructions,
+ * LLMs often generate dynamic state for form elements (selects, inputs,
+ * checkboxes). This function cleans up the output:
+ *
+ * 1. Removes `useStore` import and `const state = useStore({...})` block
+ * 2. Replaces `value={state.xxx}` with empty `value=""`
+ * 3. Replaces `checked={state.xxx}` with nothing (removes the attr)
+ * 4. Removes `onChange={(event) => ...}` handlers
+ * 5. Replaces `{state.xxx}` text expressions with the nearest matching
+ *    expected text from the node tree
+ *
+ * Mutates the rawCode string and returns the cleaned version.
+ */
+function stripDynamicState(rawCode: string, expectedTexts: string[]): string {
+  let code = rawCode;
+
+  // 1. Remove useStore import
+  code = code.replace(/import\s*\{[^}]*useStore[^}]*\}\s*from\s*['"]@builder\.io\/mitosis['"];?\s*\n?/g, '');
+
+  // 2. Remove const state = useStore({...}); block
+  // Handle multi-line useStore declarations with nested braces
+  code = code.replace(/const\s+state\s*=\s*useStore\(\{[\s\S]*?\}\);?\s*\n?/g, '');
+
+  // 3. Replace value={state.xxx} with value="" (keeps select/input working)
+  code = code.replace(/\bvalue=\{state\.\w+\}/g, 'value=""');
+
+  // 4. Remove checked={state.xxx}
+  code = code.replace(/\s*checked=\{state\.\w+\}/g, '');
+
+  // 5. Remove onChange handlers
+  code = code.replace(/\s*onChange=\{[^}]*\}/g, '');
+  // Also handle multi-line onChange with arrow functions
+  code = code.replace(/\s*onChange=\{\(event\)\s*=>\s*\([^)]*\)\}/g, '');
+  code = code.replace(/\s*onChange=\{\(event\)\s*=>\s*\{[^}]*\}\}/g, '');
+
+  // 6. Replace {state.xxx} text content with best matching expected text
+  // Find all {state.xxx} patterns and try to match them to expected texts
+  code = code.replace(/\{state\.(\w+)\}/g, (_match, propName: string) => {
+    // Try to find a matching text from expected texts
+    // Use heuristics: prop name might hint at the text
+    // (e.g., "label" → button label, "value" → input value)
+    // If no match, use empty string
+    if (expectedTexts.length === 1) {
+      return expectedTexts[0]; // Only one text — use it
+    }
+
+    // Try to match by position: {state.label} is usually the last text
+    const lowerProp = propName.toLowerCase();
+    if (lowerProp === 'label' || lowerProp === 'text' || lowerProp === 'title') {
+      // Use the first expected text that hasn't been used as a structural text
+      // (i.e., skip texts that appear as labels like "Label", "Field Name")
+      const buttonText = expectedTexts.find(t =>
+        !t.match(/^(Label|Field|Type|Select|Choose|Enter)/) && t.length > 0
+      );
+      if (buttonText) return buttonText;
+    }
+
+    return '';
+  });
+
+  return code;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -194,16 +194,29 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       }
 
       let css = `.${baseClass} {\n`;
-      const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
-      if (childWidth) css += `  width: ${childWidth}px;\n`;
-      else css += `  width: 100%;\n`;
 
+      // Respect Figma sizing modes: FILL → 100%, HUG → auto, FIXED → pixel value
+      const horizontalSizing = child.layoutSizingHorizontal ?? child.layoutSizing?.horizontal;
+      if (horizontalSizing === 'FILL') {
+        css += `  width: 100%;\n`;
+      } else if (horizontalSizing === 'HUG') {
+        css += `  width: fit-content;\n`;
+      } else {
+        const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
+        if (childWidth) css += `  width: ${childWidth}px;\n`;
+        else css += `  width: 100%;\n`;
+      }
+
+      const verticalSizing = child.layoutSizingVertical ?? child.layoutSizing?.vertical;
       const childHeight = child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y;
-      const verticalSizing = child.layoutSizingVertical ?? child.sizing?.vertical;
-      if (verticalSizing === 'FIXED' && childHeight) css += `  height: ${childHeight}px;\n`;
+      if (verticalSizing === 'FILL') {
+        css += `  flex: 1;\n`;
+      } else if (verticalSizing === 'FIXED' && childHeight) {
+        css += `  height: ${childHeight}px;\n`;
+      }
+      // HUG → height: auto (default, no CSS needed)
 
-      const layoutGrow = child.layoutGrow ?? child.layoutAlign;
-      if (layoutGrow === 1 || layoutGrow === 'STRETCH') css += `  flex: 1;\n`;
+      if (child.layoutGrow === 1) css += `  flex-grow: 1;\n`;
       css += '}\n';
       sectionCSS += css;
     }

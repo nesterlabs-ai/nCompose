@@ -75,8 +75,11 @@ The input is a simplified Figma design in YAML. It is a recursive tree of nodes.
 - `border`: Object with color, width, style, position
 - `shadows`: Array of ready-to-use CSS box-shadow strings
 - `textStyle`: Object with fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, color — all in CSS format
-- `width`, `height`: Pixel dimensions (e.g. `"349px"`)
-- `widthMode`, `heightMode`: `fill` or `hug`
+- `width`, `height`: Pixel dimensions (e.g. `"349px"`) — only present when sizing is FIXED (no widthMode/heightMode)
+- `widthMode`, `heightMode`: `fill` or `hug` — **when present, always use the mode, NEVER a fixed pixel value**
+- `flexGrow`: Flex grow factor (1 = grow to fill available space)
+- `alignSelf`: Cross-axis self-alignment override (`stretch`, `center`, `flex-start`, `flex-end`). When `stretch` is set, the cross-axis dimension (width in column parent, height in row parent) has been removed from the YAML — do NOT invent a pixel value for it; `align-self: stretch` handles the sizing automatically.
+- `minWidth`, `maxWidth`, `minHeight`, `maxHeight`: Dimension constraints (e.g. `"100px"`)
 - `borderRadius`, `opacity`, `filter`, `backdropFilter`: CSS-ready values
 - `children`: Nested child nodes
 
@@ -107,10 +110,20 @@ Convert YAML properties to CSS rules in the `---CSS---` block:
 - `layout.rowGap: "20px"` → `row-gap: 20px;`
 
 ### Sizing
-- `widthMode: fill` → `width: 100%;` (or `flex: 1;` inside a flex parent)
-- `widthMode: hug` → omit width (auto)
-- `width: "349px"` (with no widthMode) → `width: 349px;` (fixed)
-- Same logic for height/heightMode
+- **`widthMode` and `heightMode` ALWAYS take precedence over pixel values.** When a sizing mode is present, IGNORE any `width`/`height` pixel value — use the mode instead.
+- `widthMode: fill` → `width: 100%;` (or `flex: 1;` if this child is in a flex row and should grow)
+- `widthMode: hug` → omit width entirely (let content determine size, i.e. `width: auto` or `width: fit-content`)
+- `width: "349px"` (with NO widthMode) → `width: 349px;` (fixed)
+- Same logic for `height` / `heightMode`
+- `flexGrow: 1` → `flex-grow: 1;` (grow to fill available space in flex parent)
+- `alignSelf: stretch` → `align-self: stretch;` (stretch to fill cross-axis of flex parent)
+- `alignSelf: center` → `align-self: center;`
+- `alignSelf: flex-start` → `align-self: flex-start;`
+- `alignSelf: flex-end` → `align-self: flex-end;`
+- `minWidth: "100px"` → `min-width: 100px;`
+- `maxWidth: "400px"` → `max-width: 400px;`
+- `minHeight: "48px"` → `min-height: 48px;`
+- `maxHeight: "200px"` → `max-height: 200px;`
 
 ### Position
 - `position: absolute` + `left: "10px"` + `top: "20px"` → `position: absolute; left: 10px; top: 20px;`
@@ -157,7 +170,7 @@ Convert YAML properties to CSS rules in the `---CSS---` block:
 
 Rules:
 1. **`type: ICON` nodes with `assetFile`** → **MUST** render as `<img src="{assetFile}" alt="" />` with the exact `width` and `height` from the YAML. This is a pre-exported SVG icon. Do NOT render it as an empty `<div>`, `<span>`, or CSS shape. Always use `<img>`.
-2. **VECTOR, BOOLEAN_OPERATION, LINE, ELLIPSE, STAR** nodes with no `text` field and no `assetFile` → render as empty decorative `<div>` or `<span>` with CSS dimensions only. NEVER invent text content.
+2. **VECTOR, BOOLEAN_OPERATION, LINE, ELLIPSE, STAR** nodes with no `text` field and no `assetFile` → render as a `<span>` with CSS dimensions. NEVER invent text content. **Exception for close/dismiss icons**: if the node name contains "X", "Close", "Cross", "Remove", or "Dismiss" (case-insensitive), OR if it has strokes and dimensions ≤12px, render it as a **CSS × mark** using `::before` and `::after` pseudo-elements (two rotated lines). Example: `<span class="chip__x-icon"></span>` with CSS `.chip__x-icon { position: relative; width: 8px; height: 8px; } .chip__x-icon::before, .chip__x-icon::after { content: ''; position: absolute; top: 50%; left: 0; width: 100%; height: 1.5px; background: currentColor; } .chip__x-icon::before { transform: rotate(45deg); } .chip__x-icon::after { transform: rotate(-45deg); }`
 3. **Small INSTANCE or FRAME nodes (≤80px)** without TEXT children → icon containers. Render as a sized `<div>` or `<img>` — do NOT generate a text label from the layer name.
 4. **Only TEXT nodes have user-facing content** — and only when they have a `text` or `characters` field. If a node has no `text` field, it has no visible text.
 

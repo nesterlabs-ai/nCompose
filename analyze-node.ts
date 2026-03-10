@@ -1,10 +1,10 @@
 import 'dotenv/config';
 import { FigmaClient } from './src/figma/fetch.js';
 import { parseFigmaUrl } from './src/utils/figma-url-parser.js';
-import { isChartSection, detectChartType, extractChartMetadata } from './src/figma/chart-detection.js';
+import { isChartSection, detectChartType, extractChartMetadata, _debugHasDataShapeCluster } from './src/figma/chart-detection.js';
 import { generateChartCode } from './src/compile/chart-codegen.js';
 
-const url = 'https://www.figma.com/design/MgOxwvJAELcnhDCncMOKeH/Sqrx-Admin-Portal-Redesign?node-id=340-51529&m=dev';
+const url = 'https://www.figma.com/design/MgOxwvJAELcnhDCncMOKeH/Sqrx-Admin-Portal-Redesign?node-id=340-46823&m=dev';
 const { fileKey, nodeId } = parseFigmaUrl(url);
 
 const token = process.env.FIGMA_TOKEN;
@@ -137,8 +137,43 @@ if (legendFrame) {
 
 // ── 7. DETECTION RESULT ──
 console.log('\n=== 7. DETECTION RESULT ===\n');
-console.log(`  isChartSection: ${isChartSection(node)}`);
+console.log(`  isChartSection(root): ${isChartSection(node)}`);
 console.log(`  detectChartType: ${detectChartType(node)}`);
+for (const child of node.children ?? []) {
+  const isChart = isChartSection(child);
+  console.log(`  child "${child.name}" → isChartSection: ${isChart}`);
+  if (!isChart) {
+    // Debug: show ellipse fills for non-chart children
+    const childEllipses = findAll(child, (n: any) => n.type === 'ELLIPSE');
+    console.log(`    ellipses: ${childEllipses.length}`);
+    for (const e of childEllipses.slice(0, 8)) {
+      const vis = e.visible === false ? '[HIDDEN]' : '';
+      const fills = (e.fills ?? []).map((f: any) => f.type + (f.color ? ':' + toHex(f.color) : '')).join(', ');
+      const sz = e.absoluteBoundingBox ? Math.round(e.absoluteBoundingBox.width) : '?';
+      console.log(`      ${e.name} ${sz}px ${vis} fills=[${fills}]`);
+    }
+    // Check multi-chart guard
+    const grandchildren = child.children ?? [];
+    let chartGC = 0;
+    for (const gc of grandchildren) {
+      const gcE = findAll(gc, (n: any) => n.type === 'ELLIPSE');
+      const large = gcE.filter((e: any) => (e.absoluteBoundingBox?.width ?? 0) >= 50);
+      console.log(`    gc "${gc.name}" (${gc.type}): ${gcE.length} ellipses (${large.length} large)`);
+      if (large.length >= 2) chartGC++;
+    }
+    console.log(`    chartGrandchildren: ${chartGC} (guard triggers if >= 2)`);
+    // Direct signal A test
+    const sigA = _debugHasDataShapeCluster(child);
+    console.log(`    signalA direct: detected=${sigA.detected} highConf=${sigA.highConfidence}`);
+    // Check guard result
+    for (const gc of grandchildren) {
+      if (gc.type === 'FRAME' || gc.type === 'GROUP' || gc.type === 'INSTANCE') {
+        const gcSigA = _debugHasDataShapeCluster(gc);
+        if (gcSigA.detected) console.log(`    guard: "${gc.name}" → detected`);
+      }
+    }
+  }
+}
 
 // ── 8. EXTRACTED METADATA ──
 const meta = await extractChartMetadata(node);
@@ -159,6 +194,12 @@ if (meta.rings.length > 0) {
   for (const r of meta.rings) {
     console.log(`    ◎ "${r.name}" → color: ${r.color} | track: ${r.trackColor} | progress: ${r.progress}% | radii: ${r.innerRadius}-${r.outerRadius}`);
   }
+}
+if (meta.donutCenterText) {
+  console.log(`  centerText: "${meta.donutCenterText}" (${meta.donutCenterFontSize}px, wt:${meta.donutCenterFontWeight}, ${meta.donutCenterColor})`);
+}
+if (meta.centerSubtext) {
+  console.log(`  centerSubtext: "${meta.centerSubtext}" (${meta.centerSubtextFontSize}px, wt:${meta.centerSubtextFontWeight}, ${meta.centerSubtextColor})`);
 }
 
 // ── 9. GENERATED CODE ──

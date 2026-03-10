@@ -88,9 +88,14 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     writtenPaths.push(fidelityPath);
   }
 
-  // Write standalone chart component CSS files
+  // Write standalone chart component files (JSX + CSS)
   if (chartComponents && chartComponents.length > 0) {
     for (const chart of chartComponents) {
+      if (chart.reactCode) {
+        const jsxPath = join(outputDir, `${chart.name}.jsx`);
+        writeFileSync(jsxPath, chart.reactCode, 'utf-8');
+        writtenPaths.push(jsxPath);
+      }
       if (chart.css) {
         const cssPath = join(outputDir, `${chart.name}.css`);
         writeFileSync(cssPath, chart.css, 'utf-8');

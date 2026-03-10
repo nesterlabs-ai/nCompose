@@ -116,7 +116,7 @@ export interface ChartMetadata {
   /** Concentric ring data for radial charts. Each ring has a name, color, and progress (0–100). */
   rings: Array<{ name: string; color: string; trackColor: string; progress: number; innerRadius: number; outerRadius: number }>;
 
-  /** Center text inside a donut chart hole, e.g. "9.2K" */
+  /** Center text inside a donut/radial chart hole, e.g. "9.2K" */
   donutCenterText: string;
   /** Font size of the donut center text */
   donutCenterFontSize: number;
@@ -124,6 +124,14 @@ export interface ChartMetadata {
   donutCenterFontWeight: number;
   /** Color of the donut center text */
   donutCenterColor: string;
+  /** Secondary center text (subtitle below the main center text), e.g. "Active users" */
+  centerSubtext: string;
+  /** Font size of the center subtext */
+  centerSubtextFontSize: number;
+  /** Font weight of the center subtext */
+  centerSubtextFontWeight: number;
+  /** Color of the center subtext */
+  centerSubtextColor: string;
 
   /** Container corner radius */
   containerBorderRadius: number;
@@ -230,6 +238,23 @@ const SIZE_TOLERANCE = 5;
 export function isChartSection(node: any): boolean {
   if (!node) return false;
 
+  // If the node has multiple children that are each independently chart sections,
+  // it's a multi-chart container (e.g. a row of 3 pie charts), not a single chart.
+  // Return false so the pipeline routes it to PATH C (multi-section page) or PATH B.
+  const children: any[] = node.children ?? [];
+  if (children.length >= 2) {
+    let chartChildCount = 0;
+    for (const child of children) {
+      if (child.type === 'FRAME' || child.type === 'GROUP' || child.type === 'INSTANCE') {
+        const childSignalA = hasDataShapeCluster(child);
+        // Only count high-confidence chart signals to avoid false positives
+        // from legend frames (small dots, single decorative vectors, etc.)
+        if (childSignalA.detected && childSignalA.highConfidence) chartChildCount++;
+      }
+      if (chartChildCount >= 2) return false; // multi-chart container, not a single chart
+    }
+  }
+
   const signalA = hasDataShapeCluster(node);
   const signalB = hasAxisLikeTextArrangement(node);
   const signalC = hasParallelGridLines(node);
@@ -249,6 +274,7 @@ interface ShapeClusterResult {
   highConfidence: boolean;
 }
 
+export function _debugHasDataShapeCluster(node: any): ShapeClusterResult { return hasDataShapeCluster(node); }
 function hasDataShapeCluster(node: any): ShapeClusterResult {
   const none: ShapeClusterResult = { detected: false, highConfidence: false };
 
@@ -612,7 +638,37 @@ export async function extractChartMetadata(
     : detectChartType(node);
 
   // ── Multi-series extraction ──
-  const series: SeriesInfo[] = extractSeriesFromLegends(node, legendsFrame, chartAreaFrame);
+  let series: SeriesInfo[] = extractSeriesFromLegends(node, legendsFrame, chartAreaFrame);
+
+  // Fallback for pie/donut with no legends: extract series directly from visible arc ellipses.
+  // Triggers when series is just the generic 1-item fallback (no real legend found).
+  const isGenericFallback = series.length === 1 && series[0].name === 'Chart';
+  if ((series.length === 0 || isGenericFallback) && (chartType === 'pie' || chartType === 'donut')) {
+    const TWO_PI = 2 * Math.PI;
+    const visibleEllipses = findVisibleNodes(node, (n: any) =>
+      n.type === 'ELLIPSE' && (n.absoluteBoundingBox?.width ?? 0) >= 50,
+    );
+    // Filter to partial arcs only (skip full-circle backgrounds)
+    const sliceEllipses = visibleEllipses.filter((e: any) => {
+      if (!e.arcData) return false;
+      const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+      return Math.abs(sweep - TWO_PI) > 0.05; // not a full circle
+    });
+    if (sliceEllipses.length > 0) {
+      // Sort by startingAngle for consistent order
+      sliceEllipses.sort((a: any, b: any) =>
+        (a.arcData?.startingAngle ?? 0) - (b.arcData?.startingAngle ?? 0),
+      );
+      series = sliceEllipses.map((e: any, i: number) => {
+        const solidFill = (e.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+        const color = solidFill ? figmaColorToHex(solidFill.color) : '#9747ff';
+        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+        const value = Math.round((sweep / TWO_PI) * 100);
+        const name = e.name && e.name !== 'Ellipse' ? e.name : `Series ${i + 1}`;
+        return { name, color, legendColor: color, value };
+      });
+    }
+  }
 
   // Axis label color
   let axisLabelColor = '#A1A1A1';
@@ -677,7 +733,9 @@ export async function extractChartMetadata(
   };
 
   // ── Chart area height ──
-  const chartAreaHeight = extractChartAreaHeight(chartAreaFrame, h);
+  // If no structural landmarks found (no legend, switcher, axes), use full node height
+  const hasNonChartChildren = legendsFrame || switcherFrame || xAxisFrame || yAxisFrame;
+  const chartAreaHeight = extractChartAreaHeight(chartAreaFrame, h, !hasNonChartChildren);
 
   // ── Inner radius ratio for donut charts (from visible Figma arcData) ──
   let innerRadiusRatio = 0;
@@ -697,12 +755,16 @@ export async function extractChartMetadata(
     }
   }
 
-  // ── Donut center text (TEXT node in the center of the pie/donut ellipses) ──
+  // ── Center text (TEXT node in the center of the pie/donut/radial ellipses) ──
   let donutCenterText = '';
   let donutCenterFontSize = 24;
   let donutCenterFontWeight = 600;
   let donutCenterColor = '#101828';
-  if (chartType === 'donut' || chartType === 'pie') {
+  let centerSubtext = '';
+  let centerSubtextFontSize = 14;
+  let centerSubtextFontWeight = 400;
+  let centerSubtextColor = '#667085';
+  if (chartType === 'donut' || chartType === 'pie' || chartType === 'radial') {
     const visibleEllipses = findAllNodes(node, (n: any) =>
       n.type === 'ELLIPSE' && n.visible !== false && (n.absoluteBoundingBox?.width ?? 0) >= 50,
     );
@@ -721,7 +783,7 @@ export async function extractChartMetadata(
         return Math.abs(tcx - cx) < radius * 0.4 && Math.abs(tcy - cy) < radius * 0.4;
       });
       if (centerTexts.length > 0) {
-        // Pick the largest font-size text as the center label
+        // Sort by font-size descending — largest is main label, second is subtitle
         centerTexts.sort((a: any, b: any) => (b.style?.fontSize ?? 0) - (a.style?.fontSize ?? 0));
         const ct = centerTexts[0];
         donutCenterText = (ct.characters ?? ct.content ?? '').trim();
@@ -729,12 +791,24 @@ export async function extractChartMetadata(
         donutCenterFontWeight = ct.style?.fontWeight ?? 600;
         const textFill = (ct.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
         if (textFill) donutCenterColor = figmaColorToCss(textFill.color, textFill.opacity);
+
+        // Secondary center text (subtitle)
+        if (centerTexts.length > 1) {
+          const st = centerTexts[1];
+          centerSubtext = (st.characters ?? st.content ?? '').trim();
+          centerSubtextFontSize = st.style?.fontSize ?? 14;
+          centerSubtextFontWeight = st.style?.fontWeight ?? 400;
+          const stFill = (st.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+          if (stFill) centerSubtextColor = figmaColorToCss(stFill.color, stFill.opacity);
+        }
       }
     }
   }
 
   // ── Pie/donut arc sweep values → derive actual data proportions ──
-  if ((chartType === 'pie' || chartType === 'donut') && series.length > 0) {
+  // Skip if series already have values (e.g. extracted directly from ellipses)
+  const seriesNeedValues = series.some((s) => s.value === undefined);
+  if ((chartType === 'pie' || chartType === 'donut') && series.length > 0 && seriesNeedValues) {
     const visibleEllipses = findAllNodes(node, (n: any) =>
       n.type === 'ELLIPSE' && n.visible !== false && (n.absoluteBoundingBox?.width ?? 0) >= 50,
     );
@@ -854,6 +928,10 @@ export async function extractChartMetadata(
     donutCenterFontSize,
     donutCenterFontWeight,
     donutCenterColor,
+    centerSubtext,
+    centerSubtextFontSize,
+    centerSubtextFontWeight,
+    centerSubtextColor,
     containerBorderRadius,
     containerPadding,
     axisFontSize,
@@ -1726,8 +1804,13 @@ function extractRadialRings(
     const strokeW = progressEllipse?.strokeWeight ?? backgroundEllipse?.strokeWeight ?? Math.round(size * 0.1);
     const ringInner = Math.max(ringOuter - strokeW, 0);
 
+    // Use parent frame name (e.g. "Ring outer") instead of ellipse name (e.g. "Line")
+    const ringEllipse = progressEllipse ?? backgroundEllipse ?? group[0];
+    const parentFrame = findParentFrame(node, ringEllipse);
+    const ringName = parentFrame?.name ?? ringEllipse?.name ?? `Ring ${i + 1}`;
+
     rings.push({
-      name: progressEllipse?.name ?? backgroundEllipse?.name ?? `Ring ${i + 1}`,
+      name: ringName,
       color: progressColor,
       trackColor,
       progress,
@@ -1739,9 +1822,13 @@ function extractRadialRings(
   return rings;
 }
 
-function extractChartAreaHeight(chartAreaFrame: any | null, fallbackHeight: number): number {
+function extractChartAreaHeight(chartAreaFrame: any | null, fallbackHeight: number, isChartOnly = false): number {
   if (chartAreaFrame?.absoluteBoundingBox?.height) {
     return Math.round(chartAreaFrame.absoluteBoundingBox.height);
+  }
+  // If the node is purely chart (no legends, header, axes), use full height
+  if (isChartOnly) {
+    return Math.round(fallbackHeight);
   }
   return Math.round(fallbackHeight * 0.7);
 }

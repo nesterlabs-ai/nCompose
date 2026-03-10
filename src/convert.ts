@@ -622,9 +622,13 @@ export async function convertFigmaToCode(
   }
 
   // --- PATH D: Chart node → Recharts codegen (LLM decides chart type) ---
-  // enhanced.nodes[0] is the actual root node (same pattern as isComponentSet / isMultiSectionPage)
-  if (isChartSection(enhanced?.nodes?.[0] ?? enhanced)) {
-    return convertChart(enhanced, options, callbacks);
+  // Use the raw Figma document node for chart detection and metadata extraction,
+  // because the enhanced node strips properties like arcData, paddingTop, etc.
+  const rawDocumentNode = nodeId
+    ? (rawData as any)?.nodes?.[nodeId]?.document ?? enhanced?.nodes?.[0] ?? enhanced
+    : enhanced?.nodes?.[0] ?? enhanced;
+  if (isChartSection(rawDocumentNode)) {
+    return convertChart(rawDocumentNode, options, callbacks);
   }
 
   // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
@@ -1194,17 +1198,16 @@ function toPascalCase(name: string): string {
  * placeholder comment directing devs to use the React version with Recharts.
  */
 async function convertChart(
-  enhanced: any,
+  rawNode: any,
   options: ConvertOptions,
   callbacks?: ConvertCallbacks,
 ): Promise<ConversionResult> {
   const { onStep } = callbacks ?? {};
 
-  const rootNode = enhanced?.nodes?.[0] ?? enhanced;
   const llm = createLLMProvider(options.llm);
-  onStep?.('Detected chart node → asking LLM to identify chart type...');
+  onStep?.('Detected chart node → extracting chart metadata...');
 
-  const meta = await extractChartMetadata(rootNode, llm);
+  const meta = await extractChartMetadata(rawNode, llm);
   const componentName = options.name
     ? toPascalCase(options.name) + (options.name.toLowerCase().endsWith('chart') ? '' : 'Chart')
     : meta.componentName;

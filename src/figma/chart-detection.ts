@@ -14,7 +14,7 @@
 
 import type { LLMProvider } from '../llm/provider.js';
 
-export type ChartType = 'area' | 'line' | 'bar' | 'pie' | 'donut' | 'unknown';
+export type ChartType = 'area' | 'line' | 'bar' | 'pie' | 'donut' | 'radial' | 'unknown';
 
 export interface SeriesInfo {
   /** Series label, e.g. "Total invested" */
@@ -23,6 +23,8 @@ export interface SeriesInfo {
   color: string;
   /** Legend dot fill color, e.g. "#9747ff" */
   legendColor: string;
+  /** Data value derived from Figma (e.g. arc sweep percentage for pie/donut). Optional — codegen uses fallback if missing. */
+  value?: number;
 }
 
 export interface ChartMetadata {
@@ -110,6 +112,18 @@ export interface ChartMetadata {
   /** Inner radius ratio for donut charts (0–1, from Figma arcData.innerRadius).
    *  0 = pie (no hole), >0 = donut. Defaults to 0. */
   innerRadiusRatio: number;
+
+  /** Concentric ring data for radial charts. Each ring has a name, color, and progress (0–100). */
+  rings: Array<{ name: string; color: string; trackColor: string; progress: number; innerRadius: number; outerRadius: number }>;
+
+  /** Center text inside a donut chart hole, e.g. "9.2K" */
+  donutCenterText: string;
+  /** Font size of the donut center text */
+  donutCenterFontSize: number;
+  /** Font weight of the donut center text */
+  donutCenterFontWeight: number;
+  /** Color of the donut center text */
+  donutCenterColor: string;
 
   /** Container corner radius */
   containerBorderRadius: number;
@@ -253,6 +267,27 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
       ).length;
       if (chromaticCount >= MIN_PIE_ELLIPSES) {
         return { detected: true, highConfidence: group.length >= 3 };
+      }
+    }
+  }
+
+  // Check for concentric ring charts (same center, different sizes)
+  // These are multi-ring progress/donut charts where each ring is a pair of
+  // ellipses (background track + progress arc) at different radii.
+  const concentricGroups = groupByCenterOnly(ellipses, POS_TOLERANCE);
+  for (const group of concentricGroups) {
+    if (group.length >= 4) { // At least 2 rings (2 ellipses each: background + progress)
+      // Check that there are multiple distinct sizes (concentric rings)
+      const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
+      const uniqueSizes = new Set(sizes);
+      // Check that some ellipses have partial arcs (progress indicators)
+      const hasPartialArcs = group.some((e: any) => {
+        if (!e.arcData) return false;
+        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+        return sweep > 0.01 && Math.abs(sweep - 2 * Math.PI) > 0.01;
+      });
+      if (uniqueSizes.size >= 2 && hasPartialArcs) {
+        return { detected: true, highConfidence: group.length >= 6 };
       }
     }
   }
@@ -457,6 +492,23 @@ export function detectChartType(node: any): ChartType {
     }
   }
 
+  // 1b. RADIAL: concentric ring chart (same center, different sizes, partial arcs)
+  const concentricGroups = groupByCenterOnly(ellipses, POS_TOLERANCE);
+  for (const group of concentricGroups) {
+    if (group.length >= 4) {
+      const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
+      const uniqueSizes = new Set(sizes);
+      const hasPartialArcs = group.some((e: any) => {
+        if (!e.arcData) return false;
+        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+        return sweep > 0.01 && Math.abs(sweep - 2 * Math.PI) > 0.01;
+      });
+      if (uniqueSizes.size >= 2 && hasPartialArcs) {
+        return 'radial';
+      }
+    }
+  }
+
   // 2. BAR: aligned rectangles with chromatic fills, similar width, varying height
   const rects = findAllNodes(node, (n: any) => {
     if (n.type !== 'RECTANGLE') return false;
@@ -645,6 +697,93 @@ export async function extractChartMetadata(
     }
   }
 
+  // ── Donut center text (TEXT node in the center of the pie/donut ellipses) ──
+  let donutCenterText = '';
+  let donutCenterFontSize = 24;
+  let donutCenterFontWeight = 600;
+  let donutCenterColor = '#101828';
+  if (chartType === 'donut' || chartType === 'pie') {
+    const visibleEllipses = findAllNodes(node, (n: any) =>
+      n.type === 'ELLIPSE' && n.visible !== false && (n.absoluteBoundingBox?.width ?? 0) >= 50,
+    );
+    if (visibleEllipses.length > 0) {
+      const ref = visibleEllipses[0].absoluteBoundingBox;
+      const cx = ref.x + ref.width / 2;
+      const cy = ref.y + ref.height / 2;
+      const radius = Math.max(ref.width, ref.height) / 2;
+      // Find TEXT nodes near the center of the ellipse cluster
+      const centerTexts = findAllNodes(node, (n: any) => {
+        if (n.type !== 'TEXT' || n.visible === false) return false;
+        const bb = n.absoluteBoundingBox;
+        if (!bb) return false;
+        const tcx = bb.x + bb.width / 2;
+        const tcy = bb.y + bb.height / 2;
+        return Math.abs(tcx - cx) < radius * 0.4 && Math.abs(tcy - cy) < radius * 0.4;
+      });
+      if (centerTexts.length > 0) {
+        // Pick the largest font-size text as the center label
+        centerTexts.sort((a: any, b: any) => (b.style?.fontSize ?? 0) - (a.style?.fontSize ?? 0));
+        const ct = centerTexts[0];
+        donutCenterText = (ct.characters ?? ct.content ?? '').trim();
+        donutCenterFontSize = ct.style?.fontSize ?? 24;
+        donutCenterFontWeight = ct.style?.fontWeight ?? 600;
+        const textFill = (ct.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+        if (textFill) donutCenterColor = figmaColorToCss(textFill.color, textFill.opacity);
+      }
+    }
+  }
+
+  // ── Pie/donut arc sweep values → derive actual data proportions ──
+  if ((chartType === 'pie' || chartType === 'donut') && series.length > 0) {
+    const visibleEllipses = findAllNodes(node, (n: any) =>
+      n.type === 'ELLIPSE' && n.visible !== false && (n.absoluteBoundingBox?.width ?? 0) >= 50,
+    );
+    const TWO_PI = 2 * Math.PI;
+
+    // Extract sweep data from each visible ellipse, sorted by startingAngle
+    const slices = visibleEllipses
+      .filter((e: any) => e.arcData)
+      .map((e: any) => {
+        const solidFill = (e.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+        const color = solidFill ? figmaColorToCss(solidFill.color, solidFill.opacity) : '';
+        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+        const sweepNorm = sweep < 0 ? sweep + TWO_PI : sweep;
+        return { color, value: Math.round((sweepNorm / TWO_PI) * 100), start: e.arcData.startingAngle };
+      })
+      .sort((a, b) => a.start - b.start);
+
+    // Strategy 1: match by color (legend dot color === slice fill color)
+    for (const s of series) {
+      const match = slices.find((sl) => sl.color === s.legendColor);
+      if (match) {
+        s.value = match.value;
+        s.color = match.color; // use the actual slice color from Figma
+      }
+    }
+
+    // Strategy 2: for unmatched series, assign slices by order
+    const unmatchedSeries = series.filter((s) => s.value === undefined);
+    const usedColors = new Set(series.filter((s) => s.value !== undefined).map((s) => s.color));
+    const unmatchedSlices = slices.filter((sl) => !usedColors.has(sl.color));
+
+    for (let i = 0; i < unmatchedSeries.length && i < unmatchedSlices.length; i++) {
+      unmatchedSeries[i].value = unmatchedSlices[i].value;
+      unmatchedSeries[i].color = unmatchedSlices[i].color; // use actual slice color
+    }
+
+    // Fallback: if still unmatched, assign equal proportions
+    if (series.every((s) => s.value === undefined)) {
+      const equalValue = Math.round(100 / series.length);
+      for (const s of series) s.value = equalValue;
+    }
+  }
+
+  // ── Radial chart ring extraction ──
+  let rings: ChartMetadata['rings'] = [];
+  if (chartType === 'radial') {
+    rings = extractRadialRings(node, chartAreaHeight);
+  }
+
   // ── Axis font size ──
   let axisFontSize = 10;
   if (anyAxisFrame) {
@@ -710,6 +849,11 @@ export async function extractChartMetadata(
     gridStrokeDasharray,
     chartAreaHeight,
     innerRadiusRatio,
+    rings,
+    donutCenterText,
+    donutCenterFontSize,
+    donutCenterFontWeight,
+    donutCenterColor,
     containerBorderRadius,
     containerPadding,
     axisFontSize,
@@ -807,9 +951,10 @@ function findLegendFrameStructurally(node: any): any | null {
   let bestScore = 0;
 
   // Helper: count legend items in a frame (direct children that have text + dot)
+  // Respects visible: false — hidden items are not counted
   const countLegendItems = (frame: any): { matchCount: number; dotColors: Set<string> } => {
     const children = (frame.children ?? []).filter(
-      (c: any) => c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE',
+      (c: any) => (c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE') && c.visible !== false,
     );
     let matchCount = 0;
     const dotColors = new Set<string>();
@@ -1028,12 +1173,13 @@ function extractChartTextContent(
     [chartAreaFrame, legendsFrame, switcherFrame, xAxisFrame, yAxisFrame].filter(Boolean),
   );
 
-  // Also exclude any frame containing >= 3 shape nodes with chromatic fills (data areas)
+  // Also exclude any frame containing >= 3 VISIBLE shape nodes with chromatic fills (data areas)
   // Skip the root node itself — it contains everything, excluding it would block all text.
-  const dataAreas = findAllNodes(rootNode, (n: any) => {
+  // Uses findVisibleNodes so hidden subtrees are not walked into.
+  const dataAreas = findVisibleNodes(rootNode, (n: any) => {
     if (n === rootNode) return false;
     if (n.type !== 'FRAME' && n.type !== 'GROUP') return false;
-    const shapes = findAllNodes(n, (c: any) =>
+    const shapes = findVisibleNodes(n, (c: any) =>
       ['RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE'].includes(c.type) &&
       (c.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color)),
     );
@@ -1041,8 +1187,8 @@ function extractChartTextContent(
   });
   for (const da of dataAreas) excludeFrames.add(da);
 
-  // Collect TEXT nodes NOT inside excluded frames
-  const allTextNodes = findAllNodes(rootNode, (n: any) => n.type === 'TEXT');
+  // Collect visible TEXT nodes NOT inside excluded frames
+  const allTextNodes = findVisibleNodes(rootNode, (n: any) => n.type === 'TEXT');
   const outsideTexts = allTextNodes.filter((t: any) => {
     for (const excluded of excludeFrames) {
       if (isDescendantOf(t, excluded)) return false;
@@ -1262,6 +1408,7 @@ function extractSeriesFromLegends(
     // Legends may be nested in rows, so we search recursively.
     const legendItems = findAllNodes(legendsFrame, (n: any) => {
       if (n === legendsFrame) return false;
+      if (n.visible === false) return false;
       if (n.type !== 'FRAME' && n.type !== 'GROUP' && n.type !== 'INSTANCE') return false;
       const directChildren = n.children ?? [];
       const hasText = directChildren.some((c: any) => c.type === 'TEXT');
@@ -1300,9 +1447,9 @@ function extractSeriesFromLegends(
       }
     }
 
-    // Fallback: direct children of legend frame (flat layout)
+    // Fallback: direct children of legend frame (flat layout), skip hidden
     const legendChildren = (legendsFrame.children ?? []).filter(
-      (c: any) => c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE',
+      (c: any) => (c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE') && c.visible !== false,
     );
 
     if (legendChildren.length > 0) {
@@ -1505,6 +1652,93 @@ function extractGridStyle(node: any): { gridLineColor: string; gridStrokeDasharr
 }
 
 /** Extract chart area height from the chart area frame (found structurally). */
+/**
+ * Extract concentric ring data for radial charts.
+ * Figma structure: pairs of ellipses at each ring size (background track + progress arc).
+ * Returns rings sorted outermost-first with colors, progress %, and Recharts radii.
+ */
+function extractRadialRings(
+  node: any,
+  chartAreaHeight: number,
+): ChartMetadata['rings'] {
+  const allEllipses = findAllNodes(node, (n: any) => n.type === 'ELLIPSE' && n.visible !== false);
+  if (allEllipses.length === 0) return [];
+
+  // Group ellipses by size (each ring has 2 ellipses of the same size: background + progress)
+  const sizeGroups = new Map<number, any[]>();
+  for (const e of allEllipses) {
+    const w = Math.round(e.absoluteBoundingBox?.width ?? 0);
+    if (w === 0) continue;
+    const existing = [...sizeGroups.keys()].find((k) => Math.abs(k - w) < SIZE_TOLERANCE);
+    const key = existing ?? w;
+    if (!sizeGroups.has(key)) sizeGroups.set(key, []);
+    sizeGroups.get(key)!.push(e);
+  }
+
+  // Sort by size descending (outermost ring first)
+  const sortedSizes = [...sizeGroups.keys()].sort((a, b) => b - a);
+
+  const outerRadius = Math.round(chartAreaHeight / 2);
+  const rings: ChartMetadata['rings'] = [];
+
+  for (let i = 0; i < sortedSizes.length; i++) {
+    const size = sortedSizes[i];
+    const group = sizeGroups.get(size) ?? [];
+
+    // Find the progress arc (partial) and background (full circle)
+    let progressEllipse: any = null;
+    let backgroundEllipse: any = null;
+    for (const e of group) {
+      if (!e.arcData) continue;
+      const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+      const isFull = Math.abs(sweep - 2 * Math.PI) < 0.01;
+      if (isFull) {
+        backgroundEllipse = e;
+      } else {
+        progressEllipse = e;
+      }
+    }
+
+    // Calculate progress percentage from arc sweep
+    let progress = 75; // fallback
+    if (progressEllipse?.arcData) {
+      const sweep = Math.abs(progressEllipse.arcData.endingAngle - progressEllipse.arcData.startingAngle);
+      progress = Math.round((sweep / (2 * Math.PI)) * 100);
+    }
+
+    // Extract colors from strokes (ring charts use stroke-based rendering)
+    const getStrokeColor = (e: any): string => {
+      const stroke = (e?.strokes ?? []).find((s: any) => s.type === 'SOLID' && s.color);
+      if (stroke) return figmaColorToHex(stroke.color);
+      // Fall back to fills
+      const fill = (e?.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+      if (fill) return figmaColorToHex(fill.color);
+      return '#9747ff';
+    };
+
+    const progressColor = getStrokeColor(progressEllipse ?? group[0]);
+    const trackColor = getStrokeColor(backgroundEllipse ?? group[0]);
+
+    // Compute Recharts radii proportional to Figma sizes
+    const scale = outerRadius / (sortedSizes[0] / 2);
+    const ringOuter = Math.round((size / 2) * scale);
+    // Estimate stroke width from the ellipse (Figma strokeWeight)
+    const strokeW = progressEllipse?.strokeWeight ?? backgroundEllipse?.strokeWeight ?? Math.round(size * 0.1);
+    const ringInner = Math.max(ringOuter - strokeW, 0);
+
+    rings.push({
+      name: progressEllipse?.name ?? backgroundEllipse?.name ?? `Ring ${i + 1}`,
+      color: progressColor,
+      trackColor,
+      progress,
+      innerRadius: ringInner,
+      outerRadius: ringOuter,
+    });
+  }
+
+  return rings;
+}
+
 function extractChartAreaHeight(chartAreaFrame: any | null, fallbackHeight: number): number {
   if (chartAreaFrame?.absoluteBoundingBox?.height) {
     return Math.round(chartAreaFrame.absoluteBoundingBox.height);
@@ -1854,6 +2088,12 @@ async function detectChartTypeWithLLM(
   node: any,
   llmProvider: LLMProvider,
 ): Promise<ChartType> {
+  // Always try structural detection first — it's more reliable for pie/donut
+  // because it uses arcData.innerRadius and visibility which the LLM summary lacks.
+  const structuralResult = detectChartType(node);
+  if (structuralResult !== 'unknown') return structuralResult;
+
+  // Structural detection couldn't determine — fall back to LLM
   const summary = buildNodeSummary(node);
 
   const systemPrompt = `You are a design analysis expert. Given a Figma layer tree, identify the chart/graph type.
@@ -1867,6 +2107,7 @@ Chart type values:
 - "bar"     — vertical or horizontal bars/columns
 - "pie"     — circular segments (full circle, no hole)
 - "donut"   — circular segments with hollow center (has inner cutout, text in center, or smaller concentric element)
+- "radial"  — concentric rings/progress bars (multiple rings at different radii, each showing progress)
 - "unknown" — cannot determine
 
 Analyze the node types (VECTOR, RECTANGLE, ELLIPSE, LINE), their sizes, positions, fills, strokes, and spatial arrangement.
@@ -1879,14 +2120,14 @@ Do NOT rely on layer names — focus on structural properties like overlapping s
     const jsonMatch = response.match(/\{[\s\S]*?"chartType"\s*:\s*"([^"]+)"[\s\S]*?\}/);
     if (jsonMatch) {
       const chartType = jsonMatch[1] as ChartType;
-      const valid: ChartType[] = ['area', 'line', 'bar', 'pie', 'donut', 'unknown'];
+      const valid: ChartType[] = ['area', 'line', 'bar', 'pie', 'donut', 'radial', 'unknown'];
       if (valid.includes(chartType)) return chartType;
     }
   } catch {
     // fall through to structural detection
   }
 
-  return detectChartType(node);
+  return structuralResult;
 }
 
 /**
@@ -1971,6 +2212,18 @@ function findAllNodes(node: any, predicate: (n: any) => boolean): any[] {
   return results;
 }
 
+/** Like findAllNodes but skips hidden subtrees (visible: false). */
+function findVisibleNodes(node: any, predicate: (n: any) => boolean): any[] {
+  const results: any[] = [];
+  if (!node) return results;
+  if (node.visible === false) return results;
+  if (predicate(node)) results.push(node);
+  for (const child of node.children ?? []) {
+    results.push(...findVisibleNodes(child, predicate));
+  }
+  return results;
+}
+
 function collectTextNodes(node: any): any[] {
   return findAllNodes(node, (n) => n.type === 'TEXT');
 }
@@ -1990,6 +2243,38 @@ function findDirectTextNodes(node: any, depth = 0): any[] {
  * Group nodes by their bounding-box center point and size.
  * Returns arrays of nodes that share the same center and size within tolerance.
  */
+function groupByCenterOnly(nodes: any[], posTolerance: number): any[][] {
+  const groups: any[][] = [];
+  const assigned = new Set<number>();
+
+  for (let i = 0; i < nodes.length; i++) {
+    if (assigned.has(i)) continue;
+    const bb1 = nodes[i].absoluteBoundingBox;
+    if (!bb1) continue;
+
+    const group = [nodes[i]];
+    assigned.add(i);
+    const cx1 = bb1.x + bb1.width / 2;
+    const cy1 = bb1.y + bb1.height / 2;
+
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (assigned.has(j)) continue;
+      const bb2 = nodes[j].absoluteBoundingBox;
+      if (!bb2) continue;
+      const cx2 = bb2.x + bb2.width / 2;
+      const cy2 = bb2.y + bb2.height / 2;
+      if (Math.abs(cx1 - cx2) < posTolerance && Math.abs(cy1 - cy2) < posTolerance) {
+        group.push(nodes[j]);
+        assigned.add(j);
+      }
+    }
+
+    groups.push(group);
+  }
+
+  return groups;
+}
+
 function groupByCenter(nodes: any[], posTolerance: number, sizeTolerance: number): any[][] {
   const groups: any[][] = [];
   const assigned = new Set<number>();

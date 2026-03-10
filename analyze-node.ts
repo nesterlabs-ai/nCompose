@@ -2,8 +2,9 @@ import 'dotenv/config';
 import { FigmaClient } from './src/figma/fetch.js';
 import { parseFigmaUrl } from './src/utils/figma-url-parser.js';
 import { isChartSection, detectChartType, extractChartMetadata } from './src/figma/chart-detection.js';
+import { generateChartCode } from './src/compile/chart-codegen.js';
 
-const url = 'https://www.figma.com/design/M46FYTFlAJJEgxC3j7phKV/%E2%9D%96-Untitled-UI-%E2%80%93-FREE-Figma-UI-kit-and-design-system-v2.0--Community-?node-id=1084-2339&m=dev';
+const url = 'https://www.figma.com/design/MgOxwvJAELcnhDCncMOKeH/Sqrx-Admin-Portal-Redesign?node-id=340-51529&m=dev';
 const { fileKey, nodeId } = parseFigmaUrl(url);
 
 const token = process.env.FIGMA_TOKEN;
@@ -151,5 +152,18 @@ console.log(`  innerRadiusRatio: ${meta.innerRadiusRatio}`);
 console.log(`  padding: T${meta.containerPadding.top} R${meta.containerPadding.right} B${meta.containerPadding.bottom} L${meta.containerPadding.left}`);
 console.log(`  series: ${meta.series.length} items`);
 for (const s of meta.series) {
-  console.log(`    • "${s.name}" → legendColor: ${s.legendColor}`);
+  console.log(`    • "${s.name}" → color: ${s.color} | legendColor: ${s.legendColor} | value: ${s.value}`);
 }
+if (meta.rings.length > 0) {
+  console.log(`  rings: ${meta.rings.length} items`);
+  for (const r of meta.rings) {
+    console.log(`    ◎ "${r.name}" → color: ${r.color} | track: ${r.trackColor} | progress: ${r.progress}% | radii: ${r.innerRadius}-${r.outerRadius}`);
+  }
+}
+
+// ── 9. GENERATED CODE ──
+const { reactCode, css } = generateChartCode(meta);
+console.log('\n=== 9. GENERATED REACT CODE ===\n');
+console.log(reactCode);
+console.log('\n=== 9. GENERATED CSS ===\n');
+console.log(css);

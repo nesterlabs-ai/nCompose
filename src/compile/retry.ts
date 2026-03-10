@@ -7,6 +7,7 @@ import { validateBEMConsistency } from './bem-validate.js';
 import { getExpectedElement, validateSemanticElement } from './semantic-validate.js';
 import { validateLayoutFidelity } from './layout-fidelity-validate.js';
 import { validateTextFidelity } from './text-fidelity-validate.js';
+import { validateCSSFidelity } from './css-fidelity-validate.js';
 import { config } from '../config.js';
 
 const MAX_RETRIES = config.generation.maxRetries;
@@ -124,6 +125,7 @@ async function validateGeneratedOutput(
   componentCategory?: string,
   expectedTextLiterals?: string[],
   enforceLayoutFidelity?: boolean,
+  sourceYaml?: string,
 ): Promise<ValidationSummary> {
   const blocking: string[] = [];
   const advisory: string[] = [];
@@ -194,6 +196,22 @@ async function validateGeneratedOutput(
     }
   }
 
+  // CSS fidelity — advisory only. Checks that design colors, fonts, borders
+  // from the YAML actually appear in the generated CSS output.
+  if (sourceYaml) {
+    const cssToCheck = css || parseResult.css;
+    if (cssToCheck) {
+      try {
+        const cssResult = validateCSSFidelity(sourceYaml, cssToCheck, config.fidelity.minCSSCoverage);
+        if (!cssResult.passed && cssResult.summary) {
+          advisory.push(cssResult.summary);
+        }
+      } catch {
+        // Don't fail hard if validator itself crashes
+      }
+    }
+  }
+
   return { blocking, advisory };
 }
 
@@ -227,6 +245,7 @@ export async function generateWithRetry(
   componentCategory?: string,
   expectedTextLiterals?: string[],
   enforceLayoutFidelity?: boolean,
+  sourceYaml?: string,
 ): Promise<ParseResult> {
   let lastError = '';
 
@@ -275,6 +294,7 @@ export async function generateWithRetry(
       componentCategory,
       expectedTextLiterals,
       enforceLayoutFidelity,
+      sourceYaml,
     );
     const allErrors = [...validation.blocking, ...validation.advisory];
 
@@ -323,6 +343,7 @@ export async function generateWithRetry(
     componentCategory,
     expectedTextLiterals,
     enforceLayoutFidelity,
+    sourceYaml,
   );
   if (config.generation.strictValidation && finalValidation.blocking.length > 0) {
     return {

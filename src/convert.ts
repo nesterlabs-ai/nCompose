@@ -226,12 +226,37 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
  * - Border radius, opacity, overflow, absolute positioning, rotation
  * - Text content and styling
  */
-function serializeNodeForPrompt(node: any): any {
+const MAX_SERIALIZE_DEPTH = 15;
+
+function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>): any {
   if (!node) return null;
   if (node.name?.startsWith('_')) return null;
+
+  // If this node is an exported SVG asset, emit a compact ICON marker
+  // instead of serializing the full subtree. This tells the LLM to
+  // render it as <img src="./assets/filename.svg"> at this position.
+  // Check BEFORE visibility — some icon slots may be invisible in Figma
+  // but we still have exported SVGs for them.
+  if (assetMap && node.id && assetMap.has(node.id)) {
+    const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+    const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+    return {
+      name: node.name,
+      type: 'ICON',
+      assetFile: assetMap.get(node.id),
+      ...(w ? { width: `${Math.round(w)}px` } : {}),
+      ...(h ? { height: `${Math.round(h)}px` } : {}),
+    };
+  }
+
   // Prune invisible subtrees entirely — they bloat the YAML with hidden
   // error states, chip lists, descriptions etc. that are useless for static output.
   if (node.visible === false) return null;
+
+  if (depth > MAX_SERIALIZE_DEPTH) {
+    console.warn(`[serializeNodeForPrompt] Depth limit (${MAX_SERIALIZE_DEPTH}) reached at "${node.name ?? 'unknown'}" — subtree truncated`);
+    return { name: node.name, type: node.type, truncated: true };
+  }
 
   const result: any = { name: node.name, type: node.type };
 
@@ -301,7 +326,9 @@ function serializeNodeForPrompt(node: any): any {
   if (h) result.height = `${Math.round(h)}px`;
 
   // ── Fills → CSS colors / gradients ─────────────────────────────────
-  if (node.fills && Array.isArray(node.fills)) {
+  // Skip fills on TEXT nodes — their fills represent text color (already in textStyle.color),
+  // NOT background-color. Emitting fills on TEXT causes black bars.
+  if (node.type !== 'TEXT' && node.fills && Array.isArray(node.fills)) {
     const visible = node.fills.filter((f: any) => f.visible !== false);
     if (visible.length > 0) {
       result.fills = visible.map((f: any) => {
@@ -347,15 +374,16 @@ function serializeNodeForPrompt(node: any): any {
   if (node.strokes && Array.isArray(node.strokes) && node.strokes.length > 0) {
     const s = node.strokes.find((st: any) => st.visible !== false);
     if (s?.color) {
+      const sw = node.strokeWeight ?? 1;
       const border: any = {
         color: figmaColorToCSS(s.color, s.opacity),
-        width: `${node.strokeWeight ?? 1}px`,
+        width: `${Math.round(sw * 100) / 100}px`,
       };
       if (node.strokeAlign) border.position = node.strokeAlign.toLowerCase();
       if (node.strokeDashes?.length > 0) border.style = 'dashed';
       if (node.individualStrokeWeights) {
         const isw = node.individualStrokeWeights;
-        border.widths = `${isw.top}px ${isw.right}px ${isw.bottom}px ${isw.left}px`;
+        border.widths = `${Math.round(isw.top * 100) / 100}px ${Math.round(isw.right * 100) / 100}px ${Math.round(isw.bottom * 100) / 100}px ${Math.round(isw.left * 100) / 100}px`;
       }
       result.border = border;
     }
@@ -373,7 +401,7 @@ function serializeNodeForPrompt(node: any): any {
           : 'rgba(0,0,0,0.25)';
         const inset = effect.type === 'INNER_SHADOW' ? 'inset ' : '';
         result.shadows.push(
-          `${inset}${effect.offset?.x ?? 0}px ${effect.offset?.y ?? 0}px ${effect.radius ?? 0}px ${effect.spread ?? 0}px ${color}`,
+          `${inset}${Math.round(effect.offset?.x ?? 0)}px ${Math.round(effect.offset?.y ?? 0)}px ${Math.round(effect.radius ?? 0)}px ${Math.round(effect.spread ?? 0)}px ${color}`,
         );
       } else if (effect.type === 'LAYER_BLUR') {
         result.filter = `blur(${effect.radius}px)`;
@@ -471,7 +499,7 @@ function serializeNodeForPrompt(node: any): any {
 
   // ── Opacity ────────────────────────────────────────────────────────
   if (node.opacity !== undefined && node.opacity < 1) {
-    result.opacity = node.opacity;
+    result.opacity = Math.round(node.opacity * 100) / 100;
   }
 
   // ── Overflow ───────────────────────────────────────────────────────
@@ -518,7 +546,7 @@ function serializeNodeForPrompt(node: any): any {
 
   // ── Children (recursive) ───────────────────────────────────────────
   if (node.children && Array.isArray(node.children)) {
-    const mapped = node.children.map(serializeNodeForPrompt).filter(Boolean);
+    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap)).filter(Boolean);
     if (mapped.length > 0) {
       // Deduplicate sibling names: same-named children with different visual
       // properties get unique suffixes so the LLM generates distinct CSS classes.
@@ -528,6 +556,37 @@ function serializeNodeForPrompt(node: any): any {
   }
 
   return result;
+}
+
+/**
+ * Build human-readable asset placement hints for PATH B.
+ * Walks the raw Figma node tree and for each node whose id is in the asset map,
+ * emits a line describing where the icon is and what file to use.
+ */
+function buildPathBAssetHints(assets: AssetEntry[], rootNode: any): string {
+  if (!assets.length || !rootNode) return '';
+  const assetMap = buildAssetMap(assets);
+  const lines: string[] = [];
+
+  function walk(node: any, ancestors: string[]): void {
+    if (!node) return;
+    const path = node.name ? [...ancestors, node.name] : ancestors;
+    if (node.id && assetMap.has(node.id)) {
+      const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+      const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+      const dims = w && h ? ` (${Math.round(w)}×${Math.round(h)})` : '';
+      const location = path.length > 1 ? path.slice(0, -1).join(' > ') : 'root';
+      lines.push(`- Node "${node.name}"${dims} inside "${location}" → \`${assetMap.get(node.id)}\``);
+    }
+    if (node.children && Array.isArray(node.children)) {
+      for (const child of node.children) walk(child, path);
+    }
+  }
+
+  walk(rootNode, []);
+  if (lines.length === 0) return '';
+
+  return `\n**Icon/Asset slots in this design:**\n${lines.join('\n')}\nRender these as \`<img src="./assets/..." alt="" />\` at the matching position.\n`;
 }
 
 /**
@@ -997,13 +1056,18 @@ async function convertSingleComponent(
   // Assemble prompts
   onStep?.('Assembling prompts...');
   const systemPrompt = assembleSystemPrompt(options.templateMode);
+  // Build asset map so serialization can annotate icon nodes with their SVG filenames.
+  // This embeds `type: ICON, assetFile: "./assets/foo.svg"` directly in the YAML,
+  // giving the LLM clear context to generate <img> tags at the right positions.
+  const pathBAssetMap = buildAssetMap(assets);
   // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
   // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
-  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode) : null;
+  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
-    : dump(rootNode ? serializeNodeForPrompt(rootNode) : enhanced, { lineWidth: 120, noRefs: true });
-  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
+    : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : enhanced, { lineWidth: 120, noRefs: true });
+  const assetHints = buildPathBAssetHints(assets, rootNode);
+  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode, assetHints);
 
   // Generate Mitosis code via LLM with retry
   const llm = createLLMProvider(options.llm);
@@ -1024,6 +1088,7 @@ async function convertSingleComponent(
   const parseResult = await generateWithRetry(
     llm, systemPrompt, userPrompt, onAttempt, undefined,
     pathBExpectedTag, pathBCategory !== 'unknown' ? pathBCategory : undefined, expectedTextLiterals,
+    undefined, llmYaml,
   );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
@@ -1128,10 +1193,9 @@ async function convertPage(
 
   onStep?.(`Page "${pageName}" with ${sections.length} sections: ${sections.map((s) => s.name).join(', ')}`);
 
-  // Step C2: Generate each section via LLM
+  // Step C2: Generate all sections via LLM (in parallel for speed)
   const llm = createLLMProvider(options.llm);
   const sectionSystemPrompt = assemblePageSectionSystemPrompt(options.templateMode);
-  const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
 
   // Compute page-level context once — passed to every section prompt so the
@@ -1156,10 +1220,10 @@ async function convertPage(
     pageBackground,
   };
 
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i];
+  // Generate all sections in parallel — each section is independent
+  const sectionPromises = children.map(async (child, i) => {
     const sectionInfo = sections[i];
-    if (!sectionInfo) continue;
+    if (!sectionInfo) return null;
 
     onStep?.(`[${i + 1}/${children.length}] Generating section "${sectionInfo.name}"...`);
 
@@ -1195,13 +1259,15 @@ async function convertPage(
           collectExpectedTextsFromComponentSet(componentSetData),
           true,
         );
-        allAssets.push(...assets);
-        sectionOutputs.push({
-          info: sectionInfo,
-          rawCode: parseResult.rawCode,
-          css: variantCSS,
-          failed: !parseResult.success,
-        });
+        return {
+          output: {
+            info: sectionInfo,
+            rawCode: parseResult.rawCode,
+            css: variantCSS,
+            failed: !parseResult.success,
+          } as SectionOutput,
+          assets,
+        };
       } else {
         // Regular section: use hierarchical component-first generation.
         // PATH 2 discovers UI components (dropdowns, inputs, buttons),
@@ -1209,47 +1275,84 @@ async function convertPage(
 
         // Export any SVG assets from this section
         const iconNodes = collectAssetNodes(child);
-        if (iconNodes.length > 0) {
-          const assets = await exportAssets(iconNodes, fileKey, client).catch(() => []);
-          allAssets.push(...assets);
-        }
+        const sectionAssets = iconNodes.length > 0
+          ? await exportAssets(iconNodes, fileKey, client).catch((err) => {
+              console.warn(`[exportAssets] Failed for section "${sectionInfo.name}": ${err instanceof Error ? err.message : err}`);
+              return [] as AssetEntry[];
+            })
+          : [];
 
+        const hSizing = child.layoutSizing?.horizontal ?? child.layoutSizingHorizontal;
+        const vSizing = child.layoutSizing?.vertical ?? child.layoutSizingVertical;
         const sectionCtx: PageSectionContext = {
           ...basePageCtx,
           prevSectionName: i > 0 ? (sections[i - 1]?.name ?? null) : null,
           nextSectionName: i < sections.length - 1 ? (sections[i + 1]?.name ?? null) : null,
+          sectionWidth: child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? undefined,
+          sectionHeight: child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y ?? undefined,
+          sectionPositioning: child.layoutPositioning === 'ABSOLUTE' ? 'absolute' : 'flex',
+          sectionWidthMode: hSizing === 'FILL' ? 'fill' : hSizing === 'HUG' ? 'hug' : 'fixed',
+          sectionHeightMode: vSizing === 'FILL' ? 'fill' : vSizing === 'HUG' ? 'hug' : 'fixed',
+          pageLayoutDirection: rootNode.layoutMode === 'HORIZONTAL' ? 'row'
+            : rootNode.layoutMode === 'VERTICAL' ? 'column' : 'none',
         };
+
+        // Build asset map so serialization annotates icon nodes with SVG filenames.
+        // Creates an asset-aware serializer that embeds `type: ICON, assetFile` directly
+        // in the YAML, giving the LLM structural context to place <img> tags.
+        const sectionAssetMap = buildAssetMap(sectionAssets);
+        const assetAwareSerializer = (node: any) => serializeNodeForPrompt(node, 0, sectionAssetMap);
+
+        // Also keep text-based hints as supplementary guidance
+        const sectionAssetHints = buildPathBAssetHints(sectionAssets, child);
 
         const compoundResult = await generateCompoundSection(
           child,
           sectionInfo.name,
           i + 1,
           children.length,
-          serializeNodeForPrompt,
+          assetAwareSerializer,
           llm,
           sectionCtx,
           onStep,
           onAttempt,
           options.templateMode,
+          sectionAssetHints,
         );
 
-        sectionOutputs.push({
-          info: sectionInfo,
-          rawCode: compoundResult.rawCode,
-          css: compoundResult.css,
-          failed: !compoundResult.success,
-        });
+        return {
+          output: {
+            info: sectionInfo,
+            rawCode: compoundResult.rawCode,
+            css: compoundResult.css,
+            failed: !compoundResult.success,
+          } as SectionOutput,
+          assets: sectionAssets,
+        };
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       onStep?.(`  Section "${sectionInfo.name}" failed: ${msg}`);
-      sectionOutputs.push({
-        info: sectionInfo,
-        rawCode: '',
-        css: '',
-        failed: true,
-      });
+      return {
+        output: {
+          info: sectionInfo,
+          rawCode: '',
+          css: '',
+          failed: true,
+        } as SectionOutput,
+        assets: [] as AssetEntry[],
+      };
     }
+  });
+
+  const sectionResults = await Promise.all(sectionPromises);
+
+  // Collect outputs in order (matching original section indices)
+  const sectionOutputs: SectionOutput[] = [];
+  for (const result of sectionResults) {
+    if (!result) continue;
+    sectionOutputs.push(result.output);
+    allAssets.push(...result.assets);
   }
 
   const successCount = sectionOutputs.filter((s) => !s.failed).length;

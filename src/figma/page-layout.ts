@@ -186,6 +186,8 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
           sectionCSS += `  top: ${Math.round(bounds.y - parentBounds.y)}px;\n`;
           sectionCSS += `  width: ${Math.round(bounds.width)}px;\n`;
           sectionCSS += `  height: ${Math.round(bounds.height)}px;\n`;
+          sectionCSS += `  z-index: ${ci};\n`;
+          if (child.clipsContent) sectionCSS += `  overflow: hidden;\n`;
           sectionCSS += '}\n';
           continue;
         }
@@ -239,6 +241,8 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
         css += `  top: ${Math.round(bounds.y - rootBounds.y)}px;\n`;
         css += `  width: ${Math.round(bounds.width)}px;\n`;
         css += `  height: ${Math.round(bounds.height)}px;\n`;
+        css += `  z-index: ${ci};\n`;
+        if (child.clipsContent) css += `  overflow: hidden;\n`;
       } else {
         // No bounding box — fallback to full-width flow
         const childWidth = child.dimensions?.width ?? child.size?.x;

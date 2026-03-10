@@ -479,6 +479,12 @@ function startConversion() {
   if (codeViewModeEl) codeViewModeEl.style.display = 'none';
   updateCodeActionsState();
 
+  // Reset chat state
+  if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+  if (chatInputGroup) chatInputGroup.style.display = 'none';
+  if (urlInputGroup) urlInputGroup.style.display = 'block';
+  chatRefining = false;
+
   // Start SSE request (always enable template wiring for now)
   const body = JSON.stringify({ figmaUrl, figmaToken, frameworks, template: true });
 
@@ -899,6 +905,252 @@ function handleComplete(data) {
     const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : '';
     setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
   }
+
+  // Initialize chat for iterative refinement
+  initChat();
+}
+
+// ── Chat Refinement ──
+const chatMessages = document.getElementById('chat-messages');
+const chatInputGroup = document.getElementById('chat-input-group');
+const urlInputGroup = document.getElementById('url-input-group');
+const chatInput = document.getElementById('chat-input');
+const chatSendBtn = document.getElementById('chat-send-btn');
+const chatSpinner = document.getElementById('chat-spinner');
+const chatSendIcon = document.getElementById('chat-send-icon');
+let chatRefining = false;
+
+function initChat() {
+  if (!currentSessionId) return;
+  // Switch input bar from URL to chat mode
+  if (urlInputGroup) urlInputGroup.style.display = 'none';
+  if (chatInputGroup) chatInputGroup.style.display = 'block';
+  // Show chat messages container
+  if (chatMessages) chatMessages.classList.add('visible');
+  // Add a system message
+  addChatMessage('system', 'Conversion complete. Describe changes to refine the component.');
+}
+
+function addChatMessage(role, content) {
+  if (!chatMessages) return;
+  const div = document.createElement('div');
+  div.className = `chat-message chat-message--${role}`;
+  if (role === 'system' && content.includes('...')) {
+    div.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(content)}`;
+  } else {
+    div.textContent = content;
+  }
+  chatMessages.appendChild(div);
+  // Scroll to bottom
+  const panelBodyEl = document.getElementById('panel-body');
+  if (panelBodyEl) panelBodyEl.scrollTop = panelBodyEl.scrollHeight;
+  return div;
+}
+
+function removeChatMessage(el) {
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function setChatLoading(loading) {
+  chatRefining = loading;
+  if (chatSpinner) chatSpinner.style.display = loading ? 'inline-block' : 'none';
+  if (chatSendIcon) chatSendIcon.style.display = loading ? 'none' : 'inline';
+  if (chatInput) chatInput.disabled = loading;
+  if (chatSendBtn) chatSendBtn.disabled = loading;
+}
+
+function sendChatMessage() {
+  if (chatRefining || !currentSessionId) return;
+  const prompt = chatInput?.value?.trim();
+  if (!prompt) return;
+
+  // Add user message to chat
+  addChatMessage('user', prompt);
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+
+  // Show loading indicator
+  setChatLoading(true);
+  const loadingMsg = addChatMessage('system', 'Generating...');
+
+  const body = JSON.stringify({ sessionId: currentSessionId, prompt });
+
+  fetch('/api/refine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  }).then((response) => {
+    if (!response.ok) {
+      return response.json().then((data) => {
+        throw new Error(data.error || `Server error: ${response.status}`);
+      });
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    function readStream() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          setChatLoading(false);
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const eventStr of events) {
+          if (!eventStr.trim()) continue;
+          parseRefineSSEEvent(eventStr, loadingMsg);
+        }
+        readStream();
+      }).catch((err) => {
+        setChatLoading(false);
+        removeChatMessage(loadingMsg);
+        addChatMessage('system', `Connection lost: ${err.message}`);
+      });
+    }
+    readStream();
+  }).catch((err) => {
+    setChatLoading(false);
+    removeChatMessage(loadingMsg);
+    addChatMessage('system', `Error: ${err.message}`);
+  });
+}
+
+function parseRefineSSEEvent(eventStr, loadingMsg) {
+  const lines = eventStr.split('\n');
+  let eventType = '';
+  let eventData = '';
+  for (const line of lines) {
+    if (line.startsWith('event: ')) eventType = line.slice(7);
+    else if (line.startsWith('data: ')) eventData = line.slice(6);
+  }
+  if (!eventType || !eventData) return;
+  let data;
+  try { data = JSON.parse(eventData); } catch { return; }
+
+  switch (eventType) {
+    case 'step':
+      // Update the loading message text
+      if (loadingMsg) {
+        loadingMsg.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(data.message)}`;
+      }
+      break;
+    case 'complete':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      handleRefineComplete(data);
+      addChatMessage('assistant', 'Component updated successfully.');
+      break;
+    case 'error':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      addChatMessage('system', `Error: ${data.message}`);
+      break;
+  }
+}
+
+function handleRefineComplete(data) {
+  console.log('[refine] handleRefineComplete called', {
+    hasFrameworkOutputs: !!data.frameworkOutputs,
+    hasMitosisSource: !!data.mitosisSource,
+    frameworks: data.frameworkOutputs ? Object.keys(data.frameworkOutputs) : [],
+    reactCodeLen: data.frameworkOutputs?.react?.length || 0,
+  });
+
+  // Update stored outputs
+  if (data.frameworkOutputs) {
+    currentFrameworkOutputs = data.frameworkOutputs;
+  }
+  if (data.mitosisSource) {
+    // Update the mitosis tab data
+    const mitosisTab = tabsData.find(t => t.key === 'mitosis');
+    if (mitosisTab) mitosisTab.code = data.mitosisSource;
+  }
+  // Update framework tab data
+  for (const [fw, code] of Object.entries(currentFrameworkOutputs)) {
+    const tab = tabsData.find(t => t.key === fw);
+    if (tab) tab.code = code;
+  }
+
+  // Keep generatedTabsData in sync (for Generated/Wired toggle)
+  generatedTabsData = tabsData.map(t => ({ ...t }));
+
+  // Refresh Monaco if a tab is open
+  if (activeFile && monacoEditor) {
+    const currentTab = tabsData.find(t => t.key === activeFile);
+    if (currentTab) {
+      monacoEditor.setValue(currentTab.code || '');
+    }
+  }
+
+  // Update preview
+  const reactCode = currentFrameworkOutputs.react || '';
+  console.log('[refine] preview update:', {
+    webContainerSyncEnabled,
+    hasWebContainer: !!webContainerInstance,
+    componentName: currentComponentName,
+    reactCodeLen: reactCode.length,
+    sessionId: currentSessionId,
+    previewFrameDisplay: previewFrame?.style?.display,
+    previewFrameSrc: previewFrame?.src?.substring(0, 80),
+  });
+
+  if (currentSessionId && previewFrame) {
+    if (webContainerSyncEnabled && webContainerInstance && currentComponentName && reactCode) {
+      // WebContainer path: write React code + CSS directly for Vite HMR
+      const { code, css } = extractReactCodeAndCss(reactCode);
+      const componentCode = code.replace(/\.\/assets\//g, '/assets/');
+      const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
+      const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
+      const wcPath = `src/components/${currentComponentName}.jsx`;
+      const cssPath = `src/components/${currentComponentName}.css`;
+      console.log('[refine] writing to WebContainer:', { wcPath, cssPath, codeLen: finalCode.length, cssLen: css.length });
+      // Clear the cache so writeWebContainerFiles doesn't skip
+      delete webContainerLastWritten[wcPath];
+      delete webContainerLastWritten[cssPath];
+      writeWebContainerFiles({
+        [wcPath]: finalCode,
+        [cssPath]: css || `/* ${currentComponentName} */`,
+      }).then(() => {
+        console.log('[refine] WebContainer files written, waiting for HMR...');
+        // Force reload the Vite preview after a short delay if HMR doesn't trigger
+        setTimeout(() => {
+          if (previewFrame && webContainerPreviewUrl) {
+            console.log('[refine] Force-reloading Vite preview');
+            previewFrame.src = webContainerPreviewUrl;
+          }
+        }, 1500);
+      }).catch((err) => {
+        console.warn('[refine] WebContainer write failed, using static preview:', err);
+        previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+      });
+    } else {
+      // Static preview path: reload iframe with cache bust
+      console.log('[refine] using static preview reload');
+      previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+    }
+  }
+}
+
+// Chat input events
+if (chatSendBtn) {
+  chatSendBtn.addEventListener('click', sendChatMessage);
+}
+if (chatInput) {
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  // Auto-resize textarea
+  chatInput.addEventListener('input', () => {
+    chatInput.style.height = 'auto';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+  });
 }
 
 // ── Monaco Editor ──

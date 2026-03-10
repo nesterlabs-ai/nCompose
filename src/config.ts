@@ -85,6 +85,8 @@ export interface FidelityConfig {
   minLayoutCoverage: number;
   forbidInlineSizing: boolean;
   requireReportPass: boolean;
+  /** Minimum fraction of expected YAML CSS values that must appear in generated CSS (0-1) */
+  minCSSCoverage: number;
 }
 
 // ── Server (web UI) ────────────────────────────────────────────────────────
@@ -178,6 +180,7 @@ export const config = {
     minLayoutCoverage: envFloat('FIDELITY_MIN_LAYOUT_COVERAGE', 0.9),
     forbidInlineSizing: envBool('FIDELITY_FORBID_INLINE_SIZING', true),
     requireReportPass: envBool('FIDELITY_REQUIRE_REPORT_PASS', false),
+    minCSSCoverage: envFloat('FIDELITY_MIN_CSS_COVERAGE', 0.5),
   } as FidelityConfig,
 
   server: {

@@ -137,6 +137,7 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param onAttempt - Progress callback
  * @param bemSuffix - Optional variant suffix to produce unique class names (e.g., "-v2")
  * @param templateMode - When true, use Tailwind + CSS variables for the starter
+ * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateSingleComponent(
   node: any,
@@ -147,6 +148,7 @@ export async function generateSingleComponent(
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   bemSuffix?: string,
   templateMode?: boolean,
+  assetHints?: string,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -196,6 +198,7 @@ export async function generateSingleComponent(
     componentName,
     semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
     templateMode,
+    assetHints,
   );
 
   // Collect expected text for fidelity validation
@@ -211,6 +214,8 @@ export async function generateSingleComponent(
       undefined,        // no expected root tag (let hint guide)
       undefined,        // no category (using formRole hint instead)
       expectedTexts,
+      undefined,        // no layout fidelity enforcement
+      yaml,             // source YAML for CSS fidelity validation
     );
 
     if (!result.success) {
@@ -253,6 +258,7 @@ export async function generateSingleComponent(
  * @param onStep - Progress callback
  * @param onAttempt - Retry attempt callback
  * @param templateMode - When true, prompts use Tailwind + CSS variables for the starter
+ * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateCompoundSection(
   sectionNode: any,
@@ -265,6 +271,7 @@ export async function generateCompoundSection(
   onStep?: (msg: string) => void,
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   templateMode?: boolean,
+  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -276,7 +283,7 @@ export async function generateCompoundSection(
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery, templateMode,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode, assetHints,
     );
   }
 
@@ -327,6 +334,7 @@ export async function generateCompoundSection(
       onAttempt,
       suffix || undefined,
       templateMode,
+      assetHints,
     );
     componentCache.set(comp.variantKey, generated);
     onStep?.(
@@ -376,8 +384,16 @@ export async function generateCompoundSection(
     templateMode,
   );
 
-  // Insert component references before the YAML block
-  const userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
+  // Insert component references and asset hints before the YAML block
+  let userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
+  if (assetHints) {
+    const yamlIdx = userPrompt.indexOf('```yaml');
+    if (yamlIdx !== -1) {
+      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
+    } else {
+      userPrompt += '\n\n' + assetHints;
+    }
+  }
 
   onStep?.(`  [PATH 2] Generating section layout with ${successCount} pre-built components...`);
 
@@ -387,6 +403,8 @@ export async function generateCompoundSection(
       sectionSystemPrompt,
       userPrompt,
       onAttempt,
+      undefined, undefined, undefined, undefined, undefined,
+      sectionYaml,  // source YAML for CSS fidelity validation
     );
 
     return {
@@ -788,17 +806,32 @@ async function fallbackMonolithicGeneration(
   onAttempt: ((attempt: number, maxRetries: number, error?: string) => void) | undefined,
   discovery: ComponentDiscoveryResult,
   templateMode?: boolean,
+  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
   const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
-  const userPrompt = assemblePageSectionUserPrompt(
+  let userPrompt = assemblePageSectionUserPrompt(
     yaml, sectionName, sectionIndex, totalSections, ctx, templateMode,
   );
 
+  // Inject asset hints so the LLM knows about available SVG files
+  if (assetHints) {
+    const yamlIdx = userPrompt.indexOf('```yaml');
+    if (yamlIdx !== -1) {
+      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
+    } else {
+      userPrompt += '\n\n' + assetHints;
+    }
+  }
+
   try {
-    const result = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt);
+    const result = await generateWithRetry(
+      llm, systemPrompt, userPrompt, onAttempt,
+      undefined, undefined, undefined, undefined, undefined,
+      yaml,  // source YAML for CSS fidelity validation
+    );
     return {
       rawCode: result.rawCode,
       css: result.css ?? '',

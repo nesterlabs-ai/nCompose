@@ -559,6 +559,39 @@ export function stripRedundantSVGFills(jsx: string): string {
 }
 
 /**
+ * Converts HTML-style `style="prop: val; prop: val;"` attributes to
+ * Mitosis-compatible `css={{prop: 'val', prop: 'val'}}` objects.
+ *
+ * LLMs sometimes emit HTML-style inline style strings which are invalid
+ * in both Mitosis (.lite.tsx) and React JSX (which expects style objects).
+ * In Mitosis, inline styles should use the `css={{}}` prop.
+ */
+export function fixInlineStyleStrings(code: string): string {
+  // Match style="..." attributes (not inside SVG tags where style is valid HTML)
+  return code.replace(
+    /\bstyle="([^"]+)"/g,
+    (_match, styleStr: string) => {
+      const props = styleStr
+        .split(';')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((decl) => {
+          const colonIdx = decl.indexOf(':');
+          if (colonIdx === -1) return null;
+          const prop = decl.substring(0, colonIdx).trim();
+          const val = decl.substring(colonIdx + 1).trim();
+          // Convert kebab-case to camelCase
+          const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+          return `${camelProp}: '${val}'`;
+        })
+        .filter(Boolean);
+
+      return `css={{${props.join(', ')}}}`;
+    },
+  );
+}
+
+/**
  * Full cleanup pipeline: extracts CSS block, strips fences, fixes Mitosis
  * compliance issues, auto-fixes root element, hoists consts, and fixes imports.
  * Returns both the cleaned JSX and extracted CSS.
@@ -571,7 +604,8 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: s
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
   const fixedSVG = fixSVGAttributes(fixedClassName);
-  const strippedSVG = stripRedundantSVGFills(fixedSVG);
+  const fixedStyles = fixInlineStyleStrings(fixedSVG);
+  const strippedSVG = stripRedundantSVGFills(fixedStyles);
   const wrapped = wrapBareJSX(strippedSVG);
   const fixedRoot = fixRootElement(wrapped, expectedRootTag);
   const fixedMap = fixMapToFor(fixedRoot);

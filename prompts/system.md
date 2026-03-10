@@ -65,68 +65,101 @@ CRITICAL — violating ANY of these causes a compilation failure:
 
 ## How to Read the Input
 
-The input is a simplified Figma design in YAML. It has two main sections:
-
-**nodes** — A tree of UI elements. Each node has:
-- `type`: FRAME, TEXT, RECTANGLE, INSTANCE, IMAGE-SVG, etc.
-- `name`: The Figma layer name (use for semantic hints — e.g. "PrimaryButton", "NavLinks", "HeroTitle")
+The input is a simplified Figma design in YAML. It is a recursive tree of nodes. Each node has:
+- `name`: The Figma layer name (use for semantic hints — e.g. "PrimaryButton", "NavLinks")
+- `type`: FRAME, TEXT, RECTANGLE, INSTANCE, VECTOR, ICON, etc.
 - `text`: The actual text content (only on TEXT nodes)
-- `layout`, `fills`, `strokes`, `effects`, `textStyle`: References to entries in globalVars.styles
+- `assetFile`: SVG file path (only on `type: ICON` nodes) — render as `<img src="..." alt="" />`
+- `layout`: Flex layout info (direction, justifyContent, alignItems, gap, padding)
+- `fills`: Array of CSS color/gradient strings — ready to use directly
+- `border`: Object with color, width, style, position
+- `shadows`: Array of ready-to-use CSS box-shadow strings
+- `textStyle`: Object with fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, color — all in CSS format
+- `width`, `height`: Pixel dimensions (e.g. `"349px"`)
+- `widthMode`, `heightMode`: `fill` or `hug`
+- `borderRadius`, `opacity`, `filter`, `backdropFilter`: CSS-ready values
+- `children`: Nested child nodes
 
-**globalVars.styles** — A dictionary of deduplicated style values. Nodes reference these by ID (e.g. `layout: layout_ABC123`). Look up the ID to get actual values.
+**All values are pre-formatted as CSS** — copy them verbatim into your CSS rules.
+
+## CSS Fidelity — CRITICAL
+
+**EVERY visual property in the YAML MUST appear in your CSS output.** This is the #1 priority.
+
+Rules:
+1. **Copy values VERBATIM** — if YAML says `fills: ["rgb(236, 237, 239)"]`, output `background-color: rgb(236, 237, 239);` EXACTLY. Do NOT approximate, round, or convert formats.
+2. **Every node with visual properties MUST have a CSS rule** — if a node has fills, border, shadows, textStyle, borderRadius, or opacity, it MUST get a CSS class with those exact values.
+3. **NEVER invent CSS values** — if a property is not in the YAML, do NOT guess. Only output CSS that maps directly to YAML data.
+4. **NEVER omit CSS values** — if YAML provides a color, dimension, shadow, or font property, it MUST appear in the CSS output.
 
 ## Styling Mappings
 
-Convert the simplified design properties to CSS rules in the `---CSS---` block:
+Convert YAML properties to CSS rules in the `---CSS---` block:
 
 ### Layout
-- `mode: row` → `display: flex; flex-direction: row;`
-- `mode: column` → `display: flex; flex-direction: column;`
-- `mode: none` → no display:flex (default block or use position:absolute for children)
-- `justifyContent` → `justify-content` (direct: flex-start, flex-end, center, space-between)
-- `alignItems` → `align-items` (direct: flex-start, flex-end, center, stretch, baseline)
-- `gap: "12px"` → `gap: 12px;`
-- `padding: "16px 24px"` → `padding: 16px 24px;`
-- `wrap: true` → `flex-wrap: wrap;`
-- `counterAxisSpacing: "20px"` → `row-gap: 20px;` (for wrapping layouts)
+- `layout.direction: row` → `display: flex; flex-direction: row;`
+- `layout.direction: column` → `display: flex; flex-direction: column;`
+- `layout.justifyContent` → `justify-content` (flex-start, flex-end, center, space-between)
+- `layout.alignItems` → `align-items` (flex-start, flex-end, center, stretch)
+- `layout.gap: "12px"` → `gap: 12px;`
+- `layout.padding: "16px 24px"` → `padding: 16px 24px;`
+- `layout.wrap: true` → `flex-wrap: wrap;`
+- `layout.rowGap: "20px"` → `row-gap: 20px;`
 
 ### Sizing
-- `sizing.horizontal: fill` → `flex: 1;` (inside a flex parent) or `width: 100%;`
-- `sizing.horizontal: hug` → omit width (auto)
-- `sizing.horizontal: fixed` + `dimensions.width: 200` → `width: 200px;`
-- Same logic for vertical/height
-- `dimensions.aspectRatio` → set only one dimension, the other is auto
+- `widthMode: fill` → `width: 100%;` (or `flex: 1;` inside a flex parent)
+- `widthMode: hug` → omit width (auto)
+- `width: "349px"` (with no widthMode) → `width: 349px;` (fixed)
+- Same logic for height/heightMode
 
 ### Position
-- `position: absolute` + `locationRelativeToParent: {x, y}` → `position: absolute; left: Xpx; top: Ypx;`
+- `position: absolute` + `left: "10px"` + `top: "20px"` → `position: absolute; left: 10px; top: 20px;`
 - Parent of absolute children needs `position: relative;`
 
-### Fills (Background)
-- Single color string like `"#3B82F6"` → `background-color: #3B82F6;`
-- `rgba(...)` string → `background-color: rgba(...);`
-- Gradient object with `gradient: "linear-gradient(...)"` → `background: linear-gradient(...);`
-- On TEXT nodes: fill color becomes `color` not `background-color`
+### Fills (Background) — COPY VERBATIM
+- `fills: ["rgb(59, 130, 246)"]` → `background-color: rgb(59, 130, 246);`
+- `fills: ["rgba(255, 255, 255, 0.7)"]` → `background-color: rgba(255, 255, 255, 0.7);`
+- `fills: ["linear-gradient(180deg, rgb(255,255,255) 0%, rgb(0,0,0) 100%)"]` → `background: linear-gradient(180deg, rgb(255,255,255) 0%, rgb(0,0,0) 100%);`
+- **CRITICAL: TEXT nodes MUST NEVER have `background-color` from fills.** TEXT nodes' fills represent text color, which is already in `textStyle.color`. Only apply `fills` as `background-color` on FRAME, GROUP, INSTANCE, COMPONENT, and other non-TEXT node types.
+- Multiple fills → use the last one (topmost in Figma)
 
-### Text Style
-- `fontFamily` → `font-family: Inter;`
-- `fontSize` → `font-size: 16px;` (add px)
-- `fontWeight` → `font-weight: 600;`
-- `lineHeight: "1.5em"` → `line-height: 1.5em;`
-- `letterSpacing: "-2%"` → `letter-spacing: -0.02em;`
-- `textAlignHorizontal: LEFT/CENTER/RIGHT` → `text-align: left/center/right;`
+### Text Style — COPY VERBATIM
+- `textStyle.fontFamily: '"Host Grotesk", sans-serif'` → `font-family: "Host Grotesk", sans-serif;`
+- `textStyle.fontSize: "14px"` → `font-size: 14px;`
+- `textStyle.fontWeight: 500` → `font-weight: 500;`
+- `textStyle.lineHeight: "20px"` → `line-height: 20px;`
+- `textStyle.letterSpacing: "-0.02px"` → `letter-spacing: -0.02px;`
+- `textStyle.color: "rgb(47, 53, 59)"` → `color: rgb(47, 53, 59);`
+- `textStyle.textAlign: "center"` → `text-align: center;`
 
-### Borders & Strokes
-- Stroke with `colors: ["#E5E7EB"]` and `strokeWeight: "1px"` → `border: 1px solid #E5E7EB;`
-- Individual stroke weights like `strokeWeight: "1px 0px 0px 0px"` → `border-top: 1px solid #E5E7EB;`
+### Borders — COPY VERBATIM
+- `border.color: "rgb(229, 231, 235)"` + `border.width: "1px"` → `border: 1px solid rgb(229, 231, 235);`
+- `border.style: "dashed"` → `border-style: dashed;`
+- `border.widths: "1px 0px 0px 0px"` → `border-top: 1px solid <color>; border-right: none; border-bottom: none; border-left: none;`
+- `border.position: "inside"` → use `box-sizing: border-box;` (default for inside borders)
 
-### Effects
-- `boxShadow: "0px 4px 12px rgba(0,0,0,0.15)"` → `box-shadow: 0px 4px 12px rgba(0,0,0,0.15);`
+### Effects — COPY VERBATIM
+- `shadows: ["0px 4px 24px 0px rgba(0, 0, 0, 0.06)"]` → `box-shadow: 0px 4px 24px 0px rgba(0, 0, 0, 0.06);`
+- Multiple shadows → comma-join: `box-shadow: shadow1, shadow2;`
 - `filter: "blur(10px)"` → `filter: blur(10px);`
 - `backdropFilter: "blur(10px)"` → `backdrop-filter: blur(10px);`
 
-### Other
+### Other — COPY VERBATIM
 - `borderRadius: "8px"` → `border-radius: 8px;`
-- `opacity: 0.5` → `opacity: 0.5;`
+- `opacity: 0.65` → `opacity: 0.65;`
+- `overflow: hidden` → `overflow: hidden;`
+- `blendMode: "soft-light"` → `mix-blend-mode: soft-light;`
+- `rotation: "45deg"` → `transform: rotate(45deg);`
+
+## Shape & Icon Nodes — No Text Hallucination
+
+**CRITICAL**: Node `name` is a Figma layer label (e.g. "Dashboard", "Projects", "Star"). It is NOT user-facing text content. NEVER render a node's `name` as visible text in the output.
+
+Rules:
+1. **`type: ICON` nodes with `assetFile`** → **MUST** render as `<img src="{assetFile}" alt="" />` with the exact `width` and `height` from the YAML. This is a pre-exported SVG icon. Do NOT render it as an empty `<div>`, `<span>`, or CSS shape. Always use `<img>`.
+2. **VECTOR, BOOLEAN_OPERATION, LINE, ELLIPSE, STAR** nodes with no `text` field and no `assetFile` → render as empty decorative `<div>` or `<span>` with CSS dimensions only. NEVER invent text content.
+3. **Small INSTANCE or FRAME nodes (≤80px)** without TEXT children → icon containers. Render as a sized `<div>` or `<img>` — do NOT generate a text label from the layer name.
+4. **Only TEXT nodes have user-facing content** — and only when they have a `text` or `characters` field. If a node has no `text` field, it has no visible text.
 
 ## Semantic HTML — The #1 Rule
 

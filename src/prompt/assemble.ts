@@ -170,8 +170,20 @@ export function assemblePageSectionUserPrompt(
         contextLines.push(`- Page padding: ${top}px ${right}px ${bottom}px ${left}px`);
       }
     }
-    if (ctx.sectionWidth) contextLines.push(`- **This section's width: ${ctx.sectionWidth}px** — your root element MUST NOT exceed this width`);
-    if (ctx.sectionHeight) contextLines.push(`- **This section's height: ${ctx.sectionHeight}px**`);
+    if (ctx.sectionWidth) {
+      if (ctx.sectionWidthMode === 'fill' || ctx.sectionWidthMode === 'hug') {
+        contextLines.push(`- This section's rendered width in the design: ${ctx.sectionWidth}px (for reference only — use the width mode below, NOT this pixel value)`);
+      } else {
+        contextLines.push(`- **This section's width: ${ctx.sectionWidth}px** — your root element MUST use this exact width`);
+      }
+    }
+    if (ctx.sectionHeight) {
+      if (ctx.sectionHeightMode === 'fill' || ctx.sectionHeightMode === 'hug') {
+        contextLines.push(`- This section's rendered height in the design: ${ctx.sectionHeight}px (for reference only — use the height mode below)`);
+      } else {
+        contextLines.push(`- **This section's height: ${ctx.sectionHeight}px**`);
+      }
+    }
     if (ctx.pageBackground) contextLines.push(`- Page background: ${ctx.pageBackground}`);
     if (ctx.prevSectionName) contextLines.push(`- Previous section: "${ctx.prevSectionName}"`);
     else contextLines.push(`- This is the FIRST section (no section above)`);

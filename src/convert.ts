@@ -142,7 +142,7 @@ export function isMultiSectionPage(enhanced: any): boolean {
   );
 
   // ── Signal 1: name-based ─────────────────────────────────────────────────
-  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template/i;
+  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template|main|dashboard|create|edit|settings|form/i;
   if (PAGE_NAME_PATTERNS.test(root.name ?? '') && hasSectionLikeChild) {
     return true;
   }
@@ -176,9 +176,11 @@ export function isMultiSectionPage(enhanced: any): boolean {
   }
   if (sizeableCount >= config.page.minSections && hasSectionLikeChild) return true;
 
-  // ── Signal 4: vertical auto-layout with ≥3 wide children (name-agnostic) ──
+  // ── Signal 4: ≥3 wide children (name-agnostic, layout-agnostic) ──
   // Catches pages with children named "Block 1", "Block 2", etc.
-  if (layoutMode === 'VERTICAL' || layoutMode === 'column') {
+  // No longer requires vertical auto-layout — pages without auto-layout
+  // but with wide stacked children are also pages.
+  {
     let wideChildCount = 0;
     for (const child of children) {
       if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
@@ -186,6 +188,25 @@ export function isMultiSectionPage(enhanced: any): boolean {
       if (parentWidth > 0 && w >= parentWidth * 0.8) wideChildCount++;
     }
     if (wideChildCount >= 3) return true;
+  }
+
+  // ── Signal 5: large child contains multiple wide "card" frames ──
+  // Common pattern: root → [header, breadcrumbs, content-wrapper]
+  // where content-wrapper holds the actual sections (define policy card,
+  // define rules card, etc.). Look one level deeper.
+  for (const child of children) {
+    if (child.type !== 'FRAME') continue;
+    const grandchildren: any[] = child.children || [];
+    if (grandchildren.length < config.page.minSections) continue;
+    const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? 0;
+    if (childWidth < parentWidth * 0.8) continue; // must be a major child
+    let wideGrandchildCount = 0;
+    for (const gc of grandchildren) {
+      if (gc.type !== 'FRAME' && gc.type !== 'COMPONENT' && gc.type !== 'INSTANCE') continue;
+      const gcw = gc.absoluteBoundingBox?.width ?? gc.dimensions?.width ?? gc.size?.x ?? 0;
+      if (childWidth > 0 && gcw >= childWidth * 0.8) wideGrandchildCount++;
+    }
+    if (wideGrandchildCount >= config.page.minSections) return true;
   }
 
   return false;
@@ -228,7 +249,7 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
  */
 const MAX_SERIALIZE_DEPTH = 15;
 
-function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>): any {
+function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column'): any {
   if (!node) return null;
   if (node.name?.startsWith('_')) return null;
 
@@ -319,11 +340,49 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
   else if (vSizing === 'HUG') result.heightMode = 'hug';
   if (node.layoutGrow) result.flexGrow = node.layoutGrow;
 
-  // Dimensions
+  // Dimensions — suppress pixel values when a sizing mode is set, because
+  // the LLM should use the mode (fill → 100%, hug → auto) not a fixed value.
+  // The bounding-box width is just the current rendered size in the Figma canvas,
+  // not the intended CSS dimension.
   const w = node.absoluteBoundingBox?.width ?? node.size?.x;
   const h = node.absoluteBoundingBox?.height ?? node.size?.y;
-  if (w) result.width = `${Math.round(w)}px`;
-  if (h) result.height = `${Math.round(h)}px`;
+  if (w && !result.widthMode) result.width = `${Math.round(w)}px`;
+  if (h && !result.heightMode) result.height = `${Math.round(h)}px`;
+
+  // ── Cross-axis self-alignment (layoutAlign) ──────────────────────────
+  // Overrides the parent's counterAxisAlignItems for this specific child.
+  // Critical for form fields that need to stretch to full container width.
+  if (node.layoutAlign && node.layoutAlign !== 'INHERIT') {
+    const alignSelfMap: Record<string, string> = {
+      STRETCH: 'stretch',
+      MIN: 'flex-start',
+      CENTER: 'center',
+      MAX: 'flex-end',
+    };
+    const mapped = alignSelfMap[node.layoutAlign];
+    if (mapped) result.alignSelf = mapped;
+
+    // When STRETCH, the cross-axis pixel dimension is just the rendered
+    // result of the stretch, not a constraint. Suppress it to prevent the
+    // LLM from emitting a fixed pixel value alongside align-self:stretch.
+    // Column parent → cross-axis is horizontal → suppress width.
+    // Row parent → cross-axis is vertical → suppress height.
+    if (node.layoutAlign === 'STRETCH' && parentLayoutDirection) {
+      if (parentLayoutDirection === 'column') {
+        delete result.width;
+        delete result.widthMode; // stretch handles it
+      } else {
+        delete result.height;
+        delete result.heightMode;
+      }
+    }
+  }
+
+  // ── Min / max dimension constraints ──────────────────────────────────
+  if (node.minWidth != null && node.minWidth > 0) result.minWidth = `${node.minWidth}px`;
+  if (node.maxWidth != null && node.maxWidth > 0) result.maxWidth = `${node.maxWidth}px`;
+  if (node.minHeight != null && node.minHeight > 0) result.minHeight = `${node.minHeight}px`;
+  if (node.maxHeight != null && node.maxHeight > 0) result.maxHeight = `${node.maxHeight}px`;
 
   // ── Fills → CSS colors / gradients ─────────────────────────────────
   // Skip fills on TEXT nodes — their fills represent text color (already in textStyle.color),
@@ -545,8 +604,15 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
   }
 
   // ── Children (recursive) ───────────────────────────────────────────
+  // Pass this node's layout direction so children can suppress cross-axis
+  // pixel values when they have layoutAlign: STRETCH.
+  const thisLayoutDir: 'row' | 'column' | undefined =
+    node.layoutMode === 'HORIZONTAL' ? 'row'
+    : node.layoutMode === 'VERTICAL' ? 'column'
+    : undefined;
+
   if (node.children && Array.isArray(node.children)) {
-    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap)).filter(Boolean);
+    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap, thisLayoutDir)).filter(Boolean);
     if (mapped.length > 0) {
       // Deduplicate sibling names: same-named children with different visual
       // properties get unique suffixes so the LLM generates distinct CSS classes.
@@ -1211,6 +1277,51 @@ function toPascalCase(name: string): string {
 }
 
 /**
+ * Flatten "wrapper frames" — plain container FRAMEs with no visual identity
+ * whose children are all wide layout sections. These are layout-only wrappers
+ * that should be unwrapped so each inner section gets its own LLM call.
+ *
+ * E.g.: root → [header, breadcrumbs, content-wrapper]
+ *   where content-wrapper has no fills/border and contains [card1, card2, card3]
+ *   → flattened: [header, breadcrumbs, card1, card2, card3]
+ */
+function flattenWrapperFrames(children: any[], parentWidth: number): any[] {
+  const result: any[] = [];
+  for (const child of children) {
+    if (child.type !== 'FRAME' || !child.children || child.children.length < 2) {
+      result.push(child);
+      continue;
+    }
+    // Check if this frame is a "plain wrapper" — no visual properties
+    const hasFills = Array.isArray(child.fills)
+      && child.fills.some((f: any) => f.visible !== false && f.type === 'SOLID' && f.color);
+    const hasStrokes = Array.isArray(child.strokes) && child.strokes.length > 0;
+    const hasBorderRadius = (child.cornerRadius ?? 0) > 0;
+    const hasShadows = Array.isArray(child.effects)
+      && child.effects.some((e: any) => e.visible !== false && (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW'));
+    if (hasFills || hasStrokes || hasBorderRadius || hasShadows) {
+      result.push(child);
+      continue;
+    }
+    // Check if children are wide (≥80% of this frame's width)
+    const frameWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? parentWidth;
+    let wideCount = 0;
+    for (const gc of child.children) {
+      if (gc.type !== 'FRAME' && gc.type !== 'COMPONENT' && gc.type !== 'INSTANCE') continue;
+      const gcw = gc.absoluteBoundingBox?.width ?? gc.dimensions?.width ?? gc.size?.x ?? 0;
+      if (frameWidth > 0 && gcw >= frameWidth * 0.8) wideCount++;
+    }
+    if (wideCount >= 2) {
+      // Unwrap: use this frame's children directly
+      result.push(...child.children);
+    } else {
+      result.push(child);
+    }
+  }
+  return result;
+}
+
+/**
  * PATH C: Multi-section page → per-section LLM calls → stitch → compile.
  *
  * 1. Extract deterministic page layout CSS from Figma auto-layout data
@@ -1228,7 +1339,16 @@ async function convertPage(
 ): Promise<ConversionResult> {
   const { onStep, onAttempt } = callbacks ?? {};
   const rootNode = enhanced.nodes[0];
-  const children: any[] = rootNode.children || [];
+  let children: any[] = rootNode.children || [];
+
+  // Flatten wrapper frames: when a direct child is a plain container frame
+  // (no fills, no border — purely layout) with ≥2 wide children, "unwrap" it
+  // and use its children as direct sections. This handles patterns like:
+  //   root → [header, breadcrumbs, content-wrapper]
+  //   where content-wrapper holds the actual form cards/sections.
+  const parentWidth =
+    rootNode.absoluteBoundingBox?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x ?? 0;
+  children = flattenWrapperFrames(children, parentWidth);
 
   // Step C1: Extract page layout CSS
   onStep?.('Detected multi-section page — extracting layout...');

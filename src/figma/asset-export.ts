@@ -116,6 +116,11 @@ function getNodeDimensions(node: any): { width: number; height: number } | undef
   if (node.absoluteBoundingBox?.width != null && node.absoluteBoundingBox?.height != null) {
     return { width: node.absoluteBoundingBox.width, height: node.absoluteBoundingBox.height };
   }
+  // absoluteRenderBounds — available on deeply nested INSTANCE children where
+  // absoluteBoundingBox may be missing.
+  if (node.absoluteRenderBounds?.width != null && node.absoluteRenderBounds?.height != null) {
+    return { width: node.absoluteRenderBounds.width, height: node.absoluteRenderBounds.height };
+  }
   if (node.dimensions?.width != null && node.dimensions?.height != null) {
     return { width: node.dimensions.width, height: node.dimensions.height };
   }
@@ -192,13 +197,20 @@ export function isAssetNode(node: any): boolean {
   // These are leaf SVG shapes. Only detect small ones to avoid decorative elements.
   // Exception: ELLIPSE nodes with solid fills are rendered as CSS circles
   // (background-color + border-radius: 50%), not as SVG assets.
-  if (LEAF_VECTOR_TYPES.has(node.type) && node.id && dims) {
+  if (LEAF_VECTOR_TYPES.has(node.type) && node.id) {
     // Skip ELLIPSE nodes that have solid fills — they are CSS circles, not icons
     if (node.type === 'ELLIPSE' && node.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false)) {
       return false;
     }
-    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
-    if (isSmall) return true;
+    if (dims) {
+      const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+      if (isSmall) return true;
+    } else {
+      // No dimensions available (common for deeply nested INSTANCE children).
+      // Leaf vector types are almost always small icons/shapes — default to true.
+      // The SVG export will produce correctly-sized output regardless.
+      return true;
+    }
   }
 
   // GROUP containing only vector content

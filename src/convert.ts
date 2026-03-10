@@ -221,6 +221,15 @@ export function isMultiSectionPage(enhanced: any): boolean {
     if (wideChildCount >= 3) return true;
   }
 
+  // ── Signal 5: any layout with ≥2 child frames that are individually chart sections ──
+  // Catches horizontal/grid rows of charts (e.g. 3 pie charts side by side).
+  let chartChildCount = 0;
+  for (const child of children) {
+    if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
+    if (isChartSection(child)) chartChildCount++;
+    if (chartChildCount >= 2) return true;
+  }
+
   return false;
 }
 
@@ -611,22 +620,131 @@ export async function convertFigmaToCode(
   // Convert to YAML for diagnostics / LLM
   const yamlContent = dump(enhanced, { lineWidth: 120, noRefs: true });
 
+  // Raw Figma document node — preserves arcData, paddingTop, etc. that
+  // extractCompleteDesign strips. Used by PATH C and PATH D for chart detection.
+  const rawDocumentNode = nodeId
+    ? (rawData as any)?.nodes?.[nodeId]?.document ?? enhanced?.nodes?.[0] ?? enhanced
+    : enhanced?.nodes?.[0] ?? enhanced;
+
   // --- PATH A: Component Set (variant-aware) ---
+  // If the default variant is a chart/graph, route to PATH D (Recharts codegen)
+  // instead of LLM-based generation so it uses Recharts, not raw SVG.
+  // For chart COMPONENT_SETs, generate a chart for EACH variant.
   if (isComponentSet(enhanced)) {
+    const rawChildren = rawDocumentNode?.children ?? [];
+    const rawFirstVariant = rawChildren[0];
+    if (rawFirstVariant && isChartSection(rawFirstVariant)) {
+      // Derive component name from the COMPONENT_SET name (e.g. "_Activitiy gauge" → "ActivityGaugeChart")
+      const setName = rawDocumentNode?.name ?? enhanced?.nodes?.[0]?.name ?? '';
+
+      // Generate a chart for each variant and inline them all into one file.
+      // Each variant becomes a named function (not export default) inside the file.
+      // A wrapper component renders all variants in a grid.
+      const allChartComponents: ChartComponent[] = [];
+      const rechartsImportSet = new Set<string>();
+      const chartDefinitions: string[] = [];
+      const variantNames: string[] = [];
+      let primaryComponentName = toPascalCase(setName) + 'Chart';
+      let allCss = '';
+
+      for (let vi = 0; vi < rawChildren.length; vi++) {
+        const variantNode = rawChildren[vi];
+        if (!isChartSection(variantNode)) continue;
+
+        // Build a variant-specific name: "ActivityGauge" + variant props (e.g. "MdTrue")
+        const variantLabel = variantNode.name ?? `Variant${vi}`;
+        const variantSuffix = variantLabel
+          .split(',')
+          .map((p: string) => p.trim().split('=').pop()?.trim() ?? '')
+          .map((v: string) => toPascalCase(v))
+          .join('');
+        const variantName = toPascalCase(setName) + variantSuffix;
+
+        const result = await convertChart(variantNode, options, callbacks, variantName);
+        const chartCode = result.frameworkOutputs?.react ?? result.mitosisSource ?? '';
+
+        // Extract recharts imports (same pattern as PATH C)
+        const rechartsMatch = chartCode.match(
+          /import\s*\{([^}]+)\}\s*from\s*['"]recharts['"]/s,
+        );
+        if (rechartsMatch) {
+          rechartsMatch[1].split(',').forEach((s: string) => {
+            const name = s.trim();
+            if (name) rechartsImportSet.add(name);
+          });
+        }
+
+        // Strip all import statements and change export default → plain function
+        const body = chartCode
+          .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]+['"]\s*;?/g, '')
+          .replace(/import\s+['"][^'"]+['"]\s*;?/g, '')
+          .replace(/export\s+default\s+function/, 'function')
+          .trim();
+        chartDefinitions.push(body);
+        variantNames.push(result.componentName);
+
+        // Merge CSS
+        if (result.css) allCss += (allCss ? '\n\n' : '') + result.css;
+        allChartComponents.push(...(result.chartComponents ?? []));
+      }
+
+      // Build the wrapper component that renders all variants
+      const rechartsImports = rechartsImportSet.size > 0
+        ? `import {\n  ${[...rechartsImportSet].join(',\n  ')}\n} from 'recharts';\n`
+        : '';
+
+      const variantTags = variantNames
+        .map((n) => `        <${n} />`)
+        .join('\n');
+
+      const bemBase = toKebabCase(primaryComponentName);
+      const wrapperCss =
+        `\n.${bemBase}__grid {\n` +
+        `  display: flex;\n` +
+        `  flex-wrap: wrap;\n` +
+        `  gap: 24px;\n` +
+        `  align-items: flex-start;\n` +
+        `}\n`;
+
+      const reactCode =
+        `import { useState, useMemo } from 'react';\n` +
+        rechartsImports +
+        `import './${primaryComponentName}.css';\n\n` +
+        chartDefinitions.join('\n\n') + '\n\n' +
+        `export default function ${primaryComponentName}() {\n` +
+        `  return (\n` +
+        `    <div className="${bemBase}__grid">\n` +
+        variantTags + '\n' +
+        `    </div>\n` +
+        `  );\n` +
+        `}\n`;
+
+      const fullCss = allCss + wrapperCss;
+
+      const placeholder = `// ${primaryComponentName} is a Recharts chart — use the React (.jsx) output.\n`;
+      const frameworkOutputs: Record<string, string> = {};
+      for (const fw of options.frameworks) {
+        frameworkOutputs[fw] = fw === 'react' ? reactCode : placeholder;
+      }
+
+      return {
+        componentName: primaryComponentName,
+        mitosisSource: `// Chart component set — generated via Recharts codegen (PATH D).\n${reactCode}`,
+        frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+        assets: [],
+        css: fullCss,
+        chartComponents: allChartComponents,
+      };
+    }
     return convertComponentSet(enhanced, yamlContent, fileKey, client, options, callbacks);
   }
 
   // --- PATH C: Multi-section page ---
   if (isMultiSectionPage(enhanced)) {
-    return convertPage(enhanced, fileKey, client, options, callbacks);
+    return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode);
   }
 
   // --- PATH D: Chart node → Recharts codegen (LLM decides chart type) ---
-  // Use the raw Figma document node for chart detection and metadata extraction,
-  // because the enhanced node strips properties like arcData, paddingTop, etc.
-  const rawDocumentNode = nodeId
-    ? (rawData as any)?.nodes?.[nodeId]?.document ?? enhanced?.nodes?.[0] ?? enhanced
-    : enhanced?.nodes?.[0] ?? enhanced;
   if (isChartSection(rawDocumentNode)) {
     return convertChart(rawDocumentNode, options, callbacks);
   }
@@ -1201,6 +1319,7 @@ async function convertChart(
   rawNode: any,
   options: ConvertOptions,
   callbacks?: ConvertCallbacks,
+  overrideName?: string,
 ): Promise<ConversionResult> {
   const { onStep } = callbacks ?? {};
 
@@ -1208,9 +1327,11 @@ async function convertChart(
   onStep?.('Detected chart node → extracting chart metadata...');
 
   const meta = await extractChartMetadata(rawNode, llm);
-  const componentName = options.name
-    ? toPascalCase(options.name) + (options.name.toLowerCase().endsWith('chart') ? '' : 'Chart')
-    : meta.componentName;
+  const componentName = overrideName
+    ? toPascalCase(overrideName) + (overrideName.toLowerCase().endsWith('chart') ? '' : 'Chart')
+    : options.name
+      ? toPascalCase(options.name) + (options.name.toLowerCase().endsWith('chart') ? '' : 'Chart')
+      : meta.componentName;
 
   const metaWithName = { ...meta, componentName, bemBase: toKebabCase(componentName) };
   const { reactCode, css } = generateChartCode(metaWithName);
@@ -1252,10 +1373,13 @@ async function convertPage(
   client: FigmaClient,
   options: ConvertOptions,
   callbacks?: ConvertCallbacks,
+  rawDocumentNode?: any,
 ): Promise<ConversionResult> {
   const { onStep, onAttempt } = callbacks ?? {};
   const rootNode = enhanced.nodes[0];
   const children: any[] = rootNode.children || [];
+  // Raw Figma children for chart detection (preserves arcData, padding, etc.)
+  const rawChildren: any[] = rawDocumentNode?.children ?? children;
 
   // Step C1: Extract page layout CSS
   onStep?.('Detected multi-section page — extracting layout...');
@@ -1296,16 +1420,17 @@ async function convertPage(
 
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
+    const rawChild = rawChildren[i] ?? child; // raw Figma child preserves arcData, padding, etc.
     const sectionInfo = sections[i];
     if (!sectionInfo) continue;
 
     onStep?.(`[${i + 1}/${children.length}] Generating section "${sectionInfo.name}"...`);
 
     try {
-      // Check if section is a chart/graph — LLM identifies chart type, codegen generates Recharts
-      if (isChartSection(child)) {
-        onStep?.(`  Detected chart section "${sectionInfo.name}" → asking LLM to identify chart type...`);
-        const meta = await extractChartMetadata(child, llm);
+      // Check if section is a chart/graph — use raw child for detection (has arcData, etc.)
+      if (isChartSection(rawChild)) {
+        onStep?.(`  Detected chart section "${sectionInfo.name}" → extracting chart metadata...`);
+        const meta = await extractChartMetadata(rawChild, llm);
 
         // Use the section name as fallback if series name is the generic default "Chart"
         if (meta.series[0]?.name === 'Chart' && sectionInfo.name) {

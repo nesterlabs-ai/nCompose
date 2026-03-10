@@ -178,12 +178,17 @@ function resolveImports(def: RechartsComponentDef): string[] {
 
 // ── Helper functions (CustomTooltip, etc.) ─────────────────────────────────
 
+function tooltipName(meta: ChartMetadata): string {
+  return `CustomTooltip_${meta.componentName}`;
+}
+
 function buildHelperFunctions(meta: ChartMetadata): string {
   const { bemBase } = meta;
+  const name = tooltipName(meta);
 
-  // Custom tooltip styled from Figma metadata
+  // Custom tooltip styled from Figma metadata — unique name per chart to avoid collisions
   const tooltip = `
-const CustomTooltip = ({ active, payload, label }) => {
+const ${name} = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="${bemBase}__tooltip">
@@ -301,7 +306,7 @@ function buildChartJSX(meta: ChartMetadata, def: RechartsComponentDef): string {
     `<${chartTag} data={data}${chartOpenProps}>\n` +
     gradientDefs +
     cartesianProps +
-    `          <Tooltip content={<CustomTooltip />} />\n` +
+    `          <Tooltip content={<${tooltipName(meta)} />} />\n` +
     dataElementProps +
     `        </${chartTag}>`
   );
@@ -363,7 +368,7 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
       `              <Cell key={index} fill={entry.color} />\n` +
       `            ))}${centerLabel}\n` +
       `          </${el}>\n` +
-      `          <Tooltip content={<CustomTooltip />} />\n`
+      `          <Tooltip content={<${tooltipName(meta)} />} />\n`
     );
   }
 
@@ -371,6 +376,17 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
   if (el === 'RadialBar') {
     const trackColor = meta.rings[0]?.trackColor ?? '#f0f0f0';
     const cornerRadius = Math.round(meta.chartAreaHeight * 0.05);
+
+    // Center label for radial charts (e.g. "1,000" + "Active users")
+    let centerLabel = '';
+    if (meta.donutCenterText) {
+      const hasSubtext = meta.centerSubtext;
+      const mainY = hasSubtext ? '46%' : '50%';
+      centerLabel = `\n          <text x="50%" y="${mainY}" textAnchor="middle" dominantBaseline="central" style={{ fontSize: '${meta.donutCenterFontSize}px', fontWeight: ${meta.donutCenterFontWeight}, fill: '${meta.donutCenterColor}' }}>${meta.donutCenterText}</text>`;
+      if (hasSubtext) {
+        centerLabel += `\n          <text x="50%" y="56%" textAnchor="middle" dominantBaseline="central" style={{ fontSize: '${meta.centerSubtextFontSize}px', fontWeight: ${meta.centerSubtextFontWeight}, fill: '${meta.centerSubtextColor}' }}>${meta.centerSubtext}</text>`;
+      }
+    }
 
     return (
       `          <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />\n` +
@@ -380,7 +396,7 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
       `            angleAxisId={0}\n` +
       `            cornerRadius={${cornerRadius}}\n` +
       `          />\n` +
-      `          <Tooltip content={<CustomTooltip />} />\n`
+      `          <Tooltip content={<${tooltipName(meta)} />} />${centerLabel}\n`
     );
   }
 

@@ -1,4 +1,4 @@
-export type { LLMProvider } from './provider.js';
+export type { LLMProvider, LLMMessage } from './provider.js';
 export { DeepSeekProvider } from './deepseek.js';
 export { ClaudeProvider } from './claude.js';
 export { OpenAIProvider } from './openai.js';

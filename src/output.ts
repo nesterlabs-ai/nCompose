@@ -88,8 +88,16 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     writtenPaths.push(fidelityPath);
   }
 
-  // Chart components are inlined directly into the main page JSX (Step C6 in convert.ts)
-  // — no separate files needed.
+  // Write standalone chart component CSS files
+  if (chartComponents && chartComponents.length > 0) {
+    for (const chart of chartComponents) {
+      if (chart.css) {
+        const cssPath = join(outputDir, `${chart.name}.css`);
+        writeFileSync(cssPath, chart.css, 'utf-8');
+        writtenPaths.push(cssPath);
+      }
+    }
+  }
 
   // Write SVG assets to assets/ subdirectory
   if (assets && assets.length > 0) {

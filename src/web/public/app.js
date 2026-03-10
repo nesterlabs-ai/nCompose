@@ -168,7 +168,7 @@ function loadExplorerIconConfig() {
       }
       if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) buildExplorer();
     })
-    .catch(() => {});
+    .catch(() => { });
 }
 
 /** Render icon HTML: value is sprite id (e.g. icon-folder-closed) or emoji:📁. size in px. */
@@ -779,7 +779,7 @@ async function bootWebContainer(tree) {
   setPreviewLoading(true, 'Starting Vite...');
   const devProc = await webContainerInstance.spawn('npm', ['run', 'dev']);
   webContainerDevProcess = devProc;
-  devProc.output.pipeTo(new WritableStream({ write() {} }));
+  devProc.output.pipeTo(new WritableStream({ write() { } }));
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('Dev server timeout')), 60000);
     const unsub = webContainerInstance.on('server-ready', (port, url) => {
@@ -813,7 +813,7 @@ function syncEditorToWebContainer() {
   writeWebContainerFiles({
     [wcPath]: finalCode,
     [cssPath]: css || `/* ${currentComponentName} */`,
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 // ── Complete ──
@@ -857,7 +857,7 @@ function handleComplete(data) {
       .then((res) => {
         wiredAppFiles = res.files || {};
       })
-      .catch(() => {});
+      .catch(() => { });
   } else if (codeViewModeEl) {
     codeViewModeEl.style.display = 'none';
   }
@@ -1667,7 +1667,8 @@ function setGitHubToken(token) {
 
 function normalizeRepoDirectory(input) {
   const normalized = input.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, '');
-  if (!normalized || normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\0')) return null;
+  if (normalized === '') return '';
+  if (normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\0')) return null;
   const segments = normalized.split('/').filter(Boolean);
   const SAFE = /^[A-Za-z0-9._-]+$/;
   if (segments.length === 0 || segments.some((s) => !SAFE.test(s))) return null;
@@ -1677,11 +1678,25 @@ function normalizeRepoDirectory(input) {
 function buildRepoPath(directory, filePath) {
   if (!filePath || filePath.includes('..') || filePath.includes('\\') || filePath.includes('\0')) return null;
   const safeDir = normalizeRepoDirectory(directory);
-  if (!safeDir) return null;
+  if (safeDir === null) return null;
   const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
   const SAFE = /^[A-Za-z0-9._-]+$/;
   if (parts.some((p) => !SAFE.test(p))) return null;
-  return `${safeDir}/${parts.join('/')}`;
+  return safeDir ? `${safeDir}/${parts.join('/')}` : parts.join('/');
+}
+
+function humanizeGitHubError(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  if (raw.includes('already exists')) {
+    return 'A repository with this name already exists on your GitHub account. Please choose a different name or switch to the "Existing Repo" tab to push to an existing repository.';
+  }
+  if (raw.includes('401') || raw.toLowerCase().includes('unauthorized') || raw.toLowerCase().includes('bad credentials')) {
+    return 'GitHub authentication failed. Please disconnect and reconnect your GitHub account.';
+  }
+  if (raw.includes('403') || raw.toLowerCase().includes('forbidden')) {
+    return 'You do not have permission to push to this repository.';
+  }
+  return raw;
 }
 
 async function getFunctionErrorMessage(err, fallback) {
@@ -1690,16 +1705,16 @@ async function getFunctionErrorMessage(err, fallback) {
   if (ctx instanceof Response) {
     try {
       const json = await ctx.clone().json();
-      if (typeof json?.error === 'string' && json.error.trim()) return json.error;
-      if (typeof json?.message === 'string' && json.message.trim()) return json.message;
+      if (typeof json?.error === 'string' && json.error.trim()) return humanizeGitHubError(json.error);
+      if (typeof json?.message === 'string' && json.message.trim()) return humanizeGitHubError(json.message);
     } catch {
       try {
         const text = await ctx.clone().text();
-        if (text.trim()) return text;
-      } catch {}
+        if (text.trim()) return humanizeGitHubError(text);
+      } catch { }
     }
   }
-  return err.message || fallback;
+  return humanizeGitHubError(err.message) || fallback;
 }
 
 function initGitHubDialog() {
@@ -1737,6 +1752,7 @@ function initGitHubDialog() {
   let repos = [];
   let selectedRepo = null;
   let githubTab = 'existing';
+  let filesLoading = false;
 
   function showError(msg) {
     errorEl.textContent = msg || '';
@@ -1764,7 +1780,7 @@ function initGitHubDialog() {
     selectedRepo = null;
     newRepoInput.value = currentComponentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     commitMsgInput.value = `feat: add ${currentComponentName} component`;
-    directoryInput.value = 'src/components';
+    directoryInput.value = templateWired ? '' : 'src/components';
     dirError.style.display = 'none';
     document.querySelectorAll('.github-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'existing'));
     tabExisting.style.display = 'block';
@@ -1773,17 +1789,35 @@ function initGitHubDialog() {
     overlay.setAttribute('aria-hidden', 'false');
     overlay.classList.add('visible');
 
-    fetch(`/api/session/${currentSessionId}/push-files`)
+    githubFiles = [];
+    filesLoading = true;
+    filesCountEl.textContent = '…';
+    filesListEl.innerHTML = '';
+    updatePushState();
+
+    const pushMode = templateWired ? 'wired' : codeViewMode;
+    fetch(`/api/session/${currentSessionId}/push-files?mode=${pushMode}`)
       .then((r) => r.json())
       .then((data) => {
         githubFiles = data.files || [];
         filesCountEl.textContent = githubFiles.length;
-        filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+        if (pushMode === 'wired') {
+          directoryInput.value = '';
+        } else {
+          directoryInput.value = 'src/components';
+        }
+        filesLoading = false;
+        updatePushState();
+        const dir = directoryInput.value;
+        const prefix = dir ? dir + '/' : '';
+        filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(prefix + f.name)}</div>`).join('');
       })
       .catch(() => {
         githubFiles = [];
+        filesLoading = false;
         filesCountEl.textContent = '0';
         filesListEl.innerHTML = '';
+        updatePushState();
       });
 
     fetch('/api/config')
@@ -1876,9 +1910,10 @@ function initGitHubDialog() {
 
   function updatePushState() {
     const dir = directoryInput.value;
-    const validDir = Boolean(normalizeRepoDirectory(dir));
+    const validDir = normalizeRepoDirectory(dir) !== null;
     dirError.style.display = validDir ? 'none' : 'block';
     const canPush =
+      !filesLoading &&
       validDir &&
       (githubTab === 'existing' ? selectedRepo : newRepoInput.value.trim());
     pushBtn.disabled = !canPush;
@@ -1886,7 +1921,9 @@ function initGitHubDialog() {
 
   directoryInput.addEventListener('input', () => {
     updatePushState();
-    filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+    const dir = directoryInput.value;
+    const prefix = dir ? dir + '/' : '';
+    filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(prefix + f.name)}</div>`).join('');
   });
   newRepoInput.addEventListener('input', updatePushState);
 

@@ -94,6 +94,25 @@ export function wireIntoStarter(options: WireIntoStarterOptions): string {
     const componentExt = reactPath.endsWith('.tsx') ? '.tsx' : '.jsx';
     const destComponentPath = join(componentsDir, `${componentName}${componentExt}`);
     writeFileSync(destComponentPath, code, 'utf-8');
+
+    // Copy companion CSS file if it exists (chart components import ./ComponentName.css)
+    const cssPath = join(componentOutputDir, `${componentName}.css`);
+    if (existsSync(cssPath)) {
+      copyFileSync(cssPath, join(componentsDir, `${componentName}.css`));
+    }
+
+    // Add recharts dependency if the component uses it
+    if (code.includes("from 'recharts'") || code.includes('from "recharts"')) {
+      const pkgPath = join(appDir, 'package.json');
+      if (existsSync(pkgPath)) {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        pkg.dependencies = pkg.dependencies || {};
+        if (!pkg.dependencies['recharts']) {
+          pkg.dependencies['recharts'] = '^2.12.0';
+        }
+        writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
+      }
+    }
   }
 
   // 3. Copy assets to public/assets

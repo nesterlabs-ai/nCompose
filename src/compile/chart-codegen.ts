@@ -128,7 +128,22 @@ function getRechartsImports(chartType: ChartType): string[] {
 }
 
 function buildChartData(meta: ChartMetadata, componentName: string): string {
-  const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher, series } = meta;
+  const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher, series, chartType } = meta;
+
+  // Pie/donut charts use a flat array of { name, value, color } per series
+  if (chartType === 'pie' || chartType === 'donut') {
+    const seriesCount = series.length;
+    const pieData = series.map((s, i) => {
+      // Distribute values across segments to make a reasonable pie
+      const value = Math.round(100 / seriesCount + (i % 2 === 0 ? 10 : -5));
+      return `    { name: ${JSON.stringify(s.name)}, value: ${value}, color: ${JSON.stringify(s.color)} }`;
+    });
+    return (
+      `const CHART_DATA_${componentName} = {\n` +
+      `  "default": [\n${pieData.join(',\n')}\n  ]\n` +
+      `};`
+    );
+  }
 
   const count = Math.max(dataPointCount, xAxisLabels.length || 1);
   const labels =
@@ -244,6 +259,36 @@ function buildChartJSX(meta: ChartMetadata): string {
   };
 
   switch (chartType) {
+    case 'pie':
+    case 'donut': {
+      // Pie/donut uses a completely different Recharts structure
+      const outerRadius = Math.round(meta.chartAreaHeight / 2);
+      // Use actual Figma arcData.innerRadius ratio; fall back to 60% of outerRadius
+      const innerRadius = chartType === 'donut'
+        ? Math.round(outerRadius * (meta.innerRadiusRatio > 0 ? meta.innerRadiusRatio : 0.6))
+        : 0;
+
+      return (
+        '<PieChart>\n' +
+        '          <Pie\n' +
+        '            data={data}\n' +
+        '            dataKey="value"\n' +
+        '            nameKey="name"\n' +
+        '            cx="50%"\n' +
+        '            cy="50%"\n' +
+        '            innerRadius={' + innerRadius + '}\n' +
+        '            outerRadius={' + outerRadius + '}\n' +
+        '            strokeWidth={0}\n' +
+        '          >\n' +
+        '            {data.map((entry, index) => (\n' +
+        '              <Cell key={index} fill={entry.color} />\n' +
+        '            ))}\n' +
+        '          </Pie>\n' +
+        '          <Tooltip />\n' +
+        '        </PieChart>'
+      );
+    }
+
     case 'area': {
       const gradientDefs = isMultiSeries
         ? series.map((s, i) =>
@@ -292,7 +337,7 @@ function buildChartJSX(meta: ChartMetadata): string {
 
 function buildCSS(meta: ChartMetadata): string {
   const {
-    bemBase, backgroundColor, series,
+    bemBase, backgroundColor,
     containerBorderRadius, containerPadding,
     legendGap, legendItemGap, legendDotSize, legendDotBorderRadius,
     legendDotOpacity, legendLabelFontSize, legendLabelColor, legendMarginBottom,

@@ -141,6 +141,10 @@ export interface ChildLayerInfo {
   imageScaleMode?: 'FILL' | 'FIT' | 'TILE' | 'STRETCH' | 'CROP';
   /** Text content (only for TEXT nodes) */
   characters?: string;
+  /** Detected component category for INSTANCE/COMPONENT nodes */
+  instanceCategory?: ComponentCategory;
+  /** Semantic HTML tag hint (e.g., 'label', 'button', 'nav') */
+  instanceHtmlTag?: string;
 }
 
 export interface IconSlotProperty {
@@ -426,7 +430,7 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
   [/\bicon[-\s]?button\b/, 'icon-button'],
   [/\bbutton\b|\bbtn\b|\bcta\b/, 'button'],
   [/\btextarea\b|\btext[-\s]?area\b/, 'textarea'],
-  [/\binput\b|\btext[-\s]?field\b|\btext[-\s]?box\b/, 'input'],
+  [/\binput\b|\btext[-\s]?field\b|\btext[-\s]?box\b|\bsearch\b/, 'input'],
   [/\bcombobox\b|\bautocomplete\b/, 'select'],
   [/\bselect\b|\bdropdown\b/, 'select'],
   [/\bcheckbox\b/, 'checkbox'],
@@ -1097,6 +1101,27 @@ function extractChildLayers(
       const isCSSCircle = child.type === 'ELLIPSE' &&
         child.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false);
 
+      // Detect semantic category for nested component nodes.
+      // Check all container types (INSTANCE, COMPONENT, FRAME, GROUP) — Framelink's
+      // simplification may convert INSTANCE → FRAME, so relying only on INSTANCE misses
+      // chips, checkboxes, radios, etc. that were flattened during simplification.
+      let instanceCategory: ComponentCategory | undefined;
+      let instanceHtmlTag: string | undefined;
+      if (['INSTANCE', 'COMPONENT', 'FRAME', 'GROUP'].includes(child.type)) {
+        let cat = detectComponentCategory(child.name);
+        if (cat === 'unknown' && child.mainComponent?.name) {
+          cat = detectComponentCategory(child.mainComponent.name);
+        }
+        if (cat === 'unknown') {
+          const childNames = (child.children ?? []).map((c: any) => c.name ?? '');
+          cat = detectComponentCategoryEnhanced(child.name, [], childNames);
+        }
+        if (cat !== 'unknown') {
+          instanceCategory = cat;
+          instanceHtmlTag = CATEGORY_HTML_TAGS[cat];
+        }
+      }
+
       layers.push({
         key,
         originalName: child.name,
@@ -1111,6 +1136,8 @@ function extractChildLayers(
         vectorInfo,
         imageScaleMode,
         characters: child.type === 'TEXT' ? (child.characters ?? undefined) : undefined,
+        instanceCategory,
+        instanceHtmlTag,
       });
       // ICON GUARD: Stop recursion at icon containers — their SVG internals
       // (VECTOR paths, nested INSTANCE/COMPONENT frames) are exported as assets,
@@ -2367,6 +2394,25 @@ export function buildVariantCSS(
     if (sourceComments) lines.push('', `/* child: ${effectiveKey} */`);
     lines.push('', `.${base}__${effectiveKey} {`);
     for (const [p, v] of Object.entries(merged)) lines.push(`  ${p}: ${v};`);
+    // Reset browser-default border/outline on child elements that render as <button>.
+    // Two detection strategies:
+    //  a) childLayers has instanceCategory matching a button-like semantic category
+    //  b) BEM key name contains button/btn/cta/close/dismiss/cross/action/x
+    const ek = effectiveKey.toLowerCase();
+    const childLayer = data.childLayers.find((l) =>
+      l.key === `${base}__${effectiveKey}` || l.key === effectiveKey,
+    );
+    const BUTTON_CATEGORIES = new Set(['button', 'icon-button', 'toggle', 'switch', 'chip', 'tab']);
+    const isCategoryButton = childLayer?.instanceCategory
+      ? BUTTON_CATEGORIES.has(childLayer.instanceCategory)
+      : false;
+    const isNameButton = /\b(button|btn|cta|close|dismiss|action|cross)\b/.test(ek)
+      || ek === 'x' || ek.endsWith('-x');
+    if ((isCategoryButton || isNameButton) && !merged['border']) {
+      lines.push(`  border: none;`);
+      lines.push(`  outline: none;`);
+      lines.push(`  cursor: pointer;`);
+    }
     lines.push('}');
 
     if (isIconKey(effectiveKey)) {

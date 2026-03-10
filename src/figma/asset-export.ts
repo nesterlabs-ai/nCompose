@@ -12,7 +12,7 @@
  */
 
 import type { FigmaClient } from './fetch.js';
-import { toKebabCase } from './component-set-parser.js';
+import { toKebabCase, detectComponentCategory } from './component-set-parser.js';
 import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -179,7 +179,11 @@ export function isAssetNode(node: any): boolean {
 
   // INSTANCE nodes — icon component references (e.g. "check-icon", "arrow-right")
   // Only small, reasonable-aspect-ratio instances qualify (avoids treating entire button instances as icons).
+  // Exclude instances that match known semantic component categories (checkbox, radio, chip, etc.)
+  // — those should be rendered as HTML elements, not exported as SVG assets.
   if (node.type === 'INSTANCE' && node.id && dims) {
+    const cat = detectComponentCategory(node.name);
+    if (cat !== 'unknown' && cat !== 'icon') return false;
     const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
     if (isSmall && isIconAspectRatio(dims)) return true;
   }

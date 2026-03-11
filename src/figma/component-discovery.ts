@@ -109,6 +109,7 @@ function extractProps(node: any): Record<string, string | boolean> {
 /**
  * Computes a structural fingerprint from a node's componentProperties.
  *
+ * 
  * Uses Figma's own property `type` metadata to classify:
  * - BOOLEAN / VARIANT → structural (affect DOM shape) → include
  * - TEXT → content-only (labels, values) → exclude
@@ -160,6 +161,115 @@ export function computeStructuralFingerprint(node: any): string {
   return parts.join('|');
 }
 
+// ── Visual heuristic helpers ─────────────────────────────────────────────────
+
+/**
+ * Reads node dimensions from absoluteBoundingBox or size.
+ */
+function getNodeDimensions(node: any): { w: number; h: number } | null {
+  const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+  const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+  if (w == null || h == null) return null;
+  return { w, h };
+}
+
+/**
+ * Checks if node has a horizontal auto-layout.
+ */
+function isHorizontalLayout(node: any): boolean {
+  return node.layoutMode === 'HORIZONTAL';
+}
+
+/**
+ * Checks if a node has visible strokes (border).
+ */
+function hasBorder(node: any): boolean {
+  return Array.isArray(node.strokes) && node.strokes.some((s: any) => s.visible !== false && s.color);
+}
+
+/**
+ * Checks if a node has a TEXT child.
+ */
+function hasTextChild(node: any): boolean {
+  return Array.isArray(node.children) && node.children.some((c: any) => c.type === 'TEXT' && c.visible !== false);
+}
+
+/**
+ * Checks if a node has an image fill.
+ */
+function hasImageFill(node: any): boolean {
+  return Array.isArray(node.fills) && node.fills.some((f: any) => f.type === 'IMAGE' && f.visible !== false);
+}
+
+/**
+ * Counts direct visible children.
+ */
+function visibleChildCount(node: any): number {
+  if (!Array.isArray(node.children)) return 0;
+  return node.children.filter((c: any) => c.visible !== false).length;
+}
+
+/**
+ * Visual heuristic fallback for component detection.
+ * Uses measurable node properties (dimensions, layout, children) — no names.
+ * Returns a formRole string or null if no heuristic matches.
+ */
+function matchVisualHeuristic(node: any): string | null {
+  const dims = getNodeDimensions(node);
+  if (!dims) return null;
+  const { w, h } = dims;
+  const childCount = visibleChildCount(node);
+
+  // Button: h≤64, horizontal layout, 1-3 children, has TEXT child
+  if (h <= 64 && isHorizontalLayout(node) && childCount >= 1 && childCount <= 3 && hasTextChild(node)) {
+    return 'button';
+  }
+
+  // Input: horizontal, has border/stroke, wider than tall, has TEXT, h≤64
+  if (isHorizontalLayout(node) && hasBorder(node) && w > h && hasTextChild(node) && h <= 64) {
+    return 'textInput';
+  }
+
+  // Checkbox: horizontal, has small square child (≤28px), has TEXT, h≤40
+  if (isHorizontalLayout(node) && h <= 40 && hasTextChild(node) && Array.isArray(node.children)) {
+    const hasSmallSquare = node.children.some((c: any) => {
+      const cd = getNodeDimensions(c);
+      return cd && cd.w <= 28 && cd.h <= 28 && Math.abs(cd.w - cd.h) <= 4;
+    });
+    if (hasSmallSquare) return 'checkbox';
+  }
+
+  // Toggle: aspect ratio 1.5-2.5:1, h≤40, w≤80, has circle child
+  if (h <= 40 && w <= 80 && h > 0) {
+    const ratio = w / h;
+    if (ratio >= 1.5 && ratio <= 2.5 && Array.isArray(node.children)) {
+      const hasCircle = node.children.some((c: any) => {
+        if (c.type === 'ELLIPSE') return true;
+        const cd = getNodeDimensions(c);
+        return cd && Math.abs(cd.w - cd.h) <= 2 && cd.w <= h;
+      });
+      if (hasCircle) return 'toggle';
+    }
+  }
+
+  // Chip/Badge: horizontal, h≤36, border-radius ≥ 40% of height, has TEXT
+  if (isHorizontalLayout(node) && h <= 36 && hasTextChild(node)) {
+    const cr = node.cornerRadius ?? (node.rectangleCornerRadii ? node.rectangleCornerRadii[0] : 0);
+    if (cr && cr >= h * 0.4) return 'chip';
+  }
+
+  // Avatar: square (±4px), ≤56px, has image fill OR single short TEXT child
+  if (w <= 56 && h <= 56 && Math.abs(w - h) <= 4) {
+    if (hasImageFill(node)) return 'avatar';
+    if (childCount === 1 && Array.isArray(node.children)) {
+      const firstChild = node.children.find((c: any) => c.visible !== false);
+      if (firstChild?.type === 'TEXT' && (firstChild.characters ?? '').length <= 3) return 'avatar';
+    }
+  }
+
+  return null;
+}
+
 // ── Discovery logic ─────────────────────────────────────────────────────────
 
 /**
@@ -171,6 +281,46 @@ function matchComponentPattern(name: string): string | null {
     if (pattern.test(name)) return formRole;
   }
   return null;
+}
+
+/**
+ * Refines a name-based formRole by inspecting the node's componentProperties.
+ *
+ * Figma component sets often use variant properties like `Dropdown=Yes`,
+ * `Country=Yes`, `Type=Dropdown` to toggle between input styles.
+ * The name might just be "Input Fields" for all variants, so we check
+ * the actual properties to detect dropdowns, country selectors, etc.
+ */
+function refineFormRole(formRole: string, node: any): string {
+  if (formRole !== 'textInput') return formRole; // only refine text inputs
+
+  const raw = node.componentProperties ?? node.componentPropertyValues ?? {};
+
+  for (const [key, val] of Object.entries(raw)) {
+    const cleanKey = cleanPropKey(key).toLowerCase();
+    const value = typeof val === 'object' && val !== null
+      ? (val as any).value
+      : val;
+    const strValue = typeof value === 'string' ? value.toLowerCase() : '';
+    const isTrue = value === true || strValue === 'yes' || strValue === 'true';
+
+    // Property named "dropdown", "select", "combo", "picker" set to true/yes
+    if (isTrue && /^(dropdown|select|combo|picker)$/.test(cleanKey)) {
+      return 'select';
+    }
+
+    // Property named "type" or "variant" with value containing "dropdown"/"select"
+    if (/^(type|variant|style)$/.test(cleanKey) && /dropdown|select/i.test(strValue)) {
+      return 'select';
+    }
+
+    // Property named "country" set to true/yes → country picker (select)
+    if (isTrue && /^country$/.test(cleanKey)) {
+      return 'select';
+    }
+  }
+
+  return formRole;
 }
 
 /**
@@ -218,8 +368,10 @@ function walkForComponents(
 
   // Check if this is a recognizable component INSTANCE
   if (node.type === 'INSTANCE' && node.name) {
-    const formRole = matchComponentPattern(node.name);
-    if (formRole) {
+    let rawFormRole = matchComponentPattern(node.name);
+    if (!rawFormRole) rawFormRole = matchVisualHeuristic(node); // visual fallback
+    if (rawFormRole) {
+      const formRole = refineFormRole(rawFormRole, node);
       const fingerprint = computeStructuralFingerprint(node);
       const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
       if (!results.has(key)) {

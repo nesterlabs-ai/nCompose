@@ -952,7 +952,7 @@ function resolveVariantStyles(
   if (firstText) Object.assign(text, resolveTextNodeCSS(firstText, globalStyles, variables));
 
   if (node.children) {
-    collectNamedChildStyles(node.children, globalStyles, variables, children, '', 0, 4);
+    collectNamedChildStyles(node.children, globalStyles, variables, children, '', 0, 10);
   }
   return { container, text, children };
 }
@@ -1064,7 +1064,10 @@ function extractChildLayers(
   if (!node?.children) return layers;
 
   function walk(children: any[], prefix: string, depth: number) {
-    if (depth > 6) return;
+    if (depth > 12) {
+      console.warn(`[component-set-parser] Tree depth limit (12) reached at "${children[0]?.name ?? 'unknown'}" — deeper layers will be omitted`);
+      return;
+    }
     for (const child of children) {
       if (!child?.name || child.name.startsWith('_')) continue;
       let childKebab = toKebabCase(child.name);

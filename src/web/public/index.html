@@ -299,49 +299,68 @@
               </button>
             </div>
             <ul class="progress-list" id="progress-list"></ul>
+            <div class="chat-messages" id="chat-messages"></div>
             <div class="error-banner" id="error-banner"></div>
           </div>
 
           <!-- Input bar (pinned bottom) -->
           <div class="panel__input-bar">
-            <div class="framework-row">
-              <label class="chip-label">
-                <input type="checkbox" name="framework" value="react" checked />
-                <span class="chip">React</span>
-              </label>
-              <label class="chip-label">
-                <input type="checkbox" name="framework" value="vue" />
-                <span class="chip">Vue</span>
-              </label>
-              <label class="chip-label">
-                <input type="checkbox" name="framework" value="svelte" />
-                <span class="chip">Svelte</span>
-              </label>
-              <label class="chip-label">
-                <input type="checkbox" name="framework" value="angular" />
-                <span class="chip">Angular</span>
-              </label>
-              <label class="chip-label">
-                <input type="checkbox" name="framework" value="solid" />
-                <span class="chip">Solid</span>
-              </label>
-            </div>
-            <div class="input-row">
-              <div class="url-input-wrap">
-                <svg class="url-input-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M6.5 11.5L4 14a2.12 2.12 0 01-3-3l2.5-2.5M9.5 4.5L12 2a2.12 2.12 0 013 3l-2.5 2.5M5.5 10.5l5-5"
-                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-                <input class="form-input url-input" type="url" id="figma-url" placeholder="Paste Figma URL here..." />
+            <!-- URL input group (shown pre-conversion) -->
+            <div id="url-input-group">
+              <div class="framework-row">
+                <label class="chip-label">
+                  <input type="checkbox" name="framework" value="react" checked />
+                  <span class="chip">React</span>
+                </label>
+                <label class="chip-label">
+                  <input type="checkbox" name="framework" value="vue" />
+                  <span class="chip">Vue</span>
+                </label>
+                <label class="chip-label">
+                  <input type="checkbox" name="framework" value="svelte" />
+                  <span class="chip">Svelte</span>
+                </label>
+                <label class="chip-label">
+                  <input type="checkbox" name="framework" value="angular" />
+                  <span class="chip">Angular</span>
+                </label>
+                <label class="chip-label">
+                  <input type="checkbox" name="framework" value="solid" />
+                  <span class="chip">Solid</span>
+                </label>
               </div>
-              <button class="send-btn" type="button" id="convert-btn">
-                <span class="spinner" id="btn-spinner" style="display: none;"></span>
-                <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                </svg>
-              </button>
+              <div class="input-row">
+                <div class="url-input-wrap">
+                  <svg class="url-input-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path
+                      d="M6.5 11.5L4 14a2.12 2.12 0 01-3-3l2.5-2.5M9.5 4.5L12 2a2.12 2.12 0 013 3l-2.5 2.5M5.5 10.5l5-5"
+                      stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                  <input class="form-input url-input" type="url" id="figma-url" placeholder="Paste Figma URL here..." />
+                </div>
+                <button class="send-btn" type="button" id="convert-btn">
+                  <span class="spinner" id="btn-spinner" style="display: none;"></span>
+                  <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <!-- Chat input group (shown post-conversion) -->
+            <div id="chat-input-group" class="chat-input-group" style="display: none;">
+              <div class="input-row">
+                <div class="chat-input-wrap">
+                  <textarea id="chat-input" class="form-input chat-input" placeholder="Describe a change..." rows="1"></textarea>
+                </div>
+                <button class="send-btn" type="button" id="chat-send-btn">
+                  <span class="spinner" id="chat-spinner" style="display: none;"></span>
+                  <svg id="chat-send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         </div>

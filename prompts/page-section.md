@@ -24,3 +24,48 @@ export default function HeroSection(props) {
 ---CSS---
 .hero { ... }
 ```
+
+### Pixel-Perfect CSS Fidelity
+
+**Your CSS MUST reproduce the Figma design exactly.** Every node in the YAML has pre-computed CSS values — use them directly:
+
+1. **Every visual node gets a CSS rule** — if a YAML node has `fills`, `border`, `shadows`, `textStyle`, `borderRadius`, or `opacity`, create a CSS class for it with ALL those properties.
+2. **Copy ALL values verbatim** — fills → `background-color` (non-TEXT nodes only), textStyle → font properties, border → `border`, shadows → `box-shadow`. Do NOT approximate or skip any value.
+   **CRITICAL: TEXT nodes MUST NOT get background-color from fills.** Text color is in `textStyle.color`.
+3. **Include ALL spacing** — layout.gap, layout.padding, width, height from the YAML.
+4. **Include ALL visual effects** — shadows, backdrop-filter, filter, opacity, border-radius, blend modes.
+5. **NEVER invent colors or sizes** — only use values from the YAML. If a value is missing, omit it rather than guessing.
+6. **Image fills** — if a fill has `type: image`, use CSS `background-image` with `background-size: cover` (for scaleMode: fill) or `background-size: contain` (for scaleMode: fit).
+
+### Content Fidelity — No Hallucinated Text
+
+1. **Only output text that appears in the YAML `text` field.** Node `name` is a Figma layer label — NEVER render it as visible text.
+2. **`type: ICON` nodes with `assetFile`** → **MUST** render as `<img src="{assetFile}" alt="" />` with the node's `width` and `height`. This is a pre-exported SVG. NEVER render as empty `<div>` or CSS shape.
+3. **VECTOR, BOOLEAN_OPERATION, LINE, ELLIPSE, STAR** (without `assetFile`) → `<span>` with CSS dimensions. No text content. **Exception**: if the node name contains "X", "Close", "Cross", "Remove" or has strokes with dimensions ≤12px, render as a **CSS × mark** using `::before`/`::after` pseudo-elements (two rotated lines forming an X shape).
+4. **INSTANCE or FRAME without TEXT children** → sized container element. Do NOT invent a text label from the node name.
+5. If a section contains only icons/shapes and no TEXT nodes, the output should have zero visible text.
+
+### Section Dimension Constraints
+
+When the page context specifies **this section's width** or **height**:
+1. Your root element's CSS MUST use that exact pixel value — e.g. `width: 64px;` not `width: 100%;` or `width: auto;`.
+2. Do NOT generate child elements wider than the section width. If content doesn't fit, the design is icon-only or uses overflow — respect the constraint.
+3. Fixed dimensions mean the section is a specific size in the Figma canvas. Match it exactly.
+
+### Sizing Modes
+
+When context specifies a **width mode** or **height mode**:
+- **fill** → `width: 100%` (or `flex: 1`). Do NOT use a fixed pixel value.
+- **hug** → `width: auto` (fit content). Do NOT set fixed width.
+- **fixed** → use the exact pixel value from section width/height.
+
+### alignSelf: stretch — NO pixel widths
+
+When a YAML node has `alignSelf: stretch`, it fills the parent's cross-axis:
+- In a **column** parent: the child stretches its **width** → use `align-self: stretch;` — do NOT add a `width` property (no pixel value, no `width: 100%`).
+- In a **row** parent: the child stretches its **height** → use `align-self: stretch;` — do NOT add a `height` property.
+
+The pixel dimensions have been REMOVED from the YAML for stretch-aligned nodes. If you see `alignSelf: stretch` without a `width`, that means the element MUST stretch — do NOT invent a pixel width.
+
+When **positioning: absolute** → the page wrapper handles position. Your root doesn't need `position: absolute`.
+When **positioning: flex** → do NOT add `position: absolute`. Use standard sizing.

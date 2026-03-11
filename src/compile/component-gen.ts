@@ -14,7 +14,7 @@ import type { LLMProvider } from '../llm/provider.js';
 import type { ParseResult } from '../types/index.js';
 import type { ChartComponent } from '../types/index.js';
 import { generateWithRetry } from './retry.js';
-import { extractJSXBody } from './stitch.js';
+import { extractJSXBody, scopeSectionCSS } from './stitch.js';
 import {
   assembleSystemPrompt,
   assembleUserPrompt,
@@ -44,6 +44,12 @@ export interface GeneratedComponent {
   css: string;
   /** Whether generation succeeded */
   success: boolean;
+  /** Props from the representative instance used to generate the HTML.
+   *  Used to do per-instance text substitution in substituteComponents(). */
+  representativeProps?: Record<string, string | boolean>;
+  /** Ordered text content from the representative instance's node tree.
+   *  Used for positional text substitution when componentProperties lacks TEXT props. */
+  representativeTexts?: string[];
 }
 
 export interface CompoundSectionResult {
@@ -95,7 +101,10 @@ const FORM_ROLE_HINTS: Record<string, string> = {
     'Use `<button type="button">` with `aria-label`. Place icon SVG inside.',
   chip:
     'This is a **chip/tag**. ' +
-    'Use a `<span>` with label text. Add a remove `<button>` if the design shows an X icon.',
+    'Use a `<span>` with label text. If the design shows an X/close icon, add a `<button type="button" aria-label="Remove">` ' +
+    'containing a `<span>` styled as a CSS × mark (two rotated lines via `::before`/`::after` pseudo-elements). ' +
+    'Use `position: relative` on the span, and `position: absolute; top: 50%; left: 0; width: 100%; height: 1.5px; background: currentColor;` ' +
+    'on both pseudo-elements, with `transform: rotate(45deg)` and `transform: rotate(-45deg)` respectively.',
   tab:
     'This is a **tab button**. ' +
     'Use `<button role="tab">` with `aria-selected` attribute.',
@@ -136,6 +145,7 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param onAttempt - Progress callback
  * @param bemSuffix - Optional variant suffix to produce unique class names (e.g., "-v2")
  * @param templateMode - When true, use Tailwind + CSS variables for the starter
+ * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateSingleComponent(
   node: any,
@@ -146,6 +156,7 @@ export async function generateSingleComponent(
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   bemSuffix?: string,
   templateMode?: boolean,
+  assetHints?: string,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -189,12 +200,23 @@ export async function generateSingleComponent(
     ? `Use BEM classes prefixed with "${bemPrefix}" (e.g., "${bemPrefix}__${kebabName}", "${bemPrefix}__${kebabName}-label").`
     : '';
 
+  // Static content restriction: this component is part of a static page section.
+  // The LLM must NOT use useStore, Show, For, or any dynamic expressions.
+  const staticContentRule =
+    '## Static Content Only\n' +
+    'This component is part of a **static page layout**. ' +
+    'Do NOT use `useStore`, `Show`, `For`, or any props/state. ' +
+    'All text content, values, and options MUST be hardcoded directly in the JSX. ' +
+    'Do NOT generate `{state.label}`, `{state.selectedValue}`, or similar dynamic expressions. ' +
+    'Copy text VERBATIM from the YAML `text` or `characters` field.\n';
+
   const systemPrompt = assembleSystemPrompt(templateMode);
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
-    semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
+    staticContentRule + semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
     templateMode,
+    assetHints,
   );
 
   // Collect expected text for fidelity validation
@@ -210,20 +232,29 @@ export async function generateSingleComponent(
       undefined,        // no expected root tag (let hint guide)
       undefined,        // no category (using formRole hint instead)
       expectedTexts,
+      undefined,        // no layout fidelity enforcement
+      yaml,             // source YAML for CSS fidelity validation
     );
 
     if (!result.success) {
       return { name: componentName, formRole, html: '', css: '', success: false };
     }
 
+    // Strip dynamic state from the generated code.
+    // PATH 1 components are part of static page sections — useStore, state.*,
+    // and event handlers must be removed and replaced with static content.
+    const cleanedCode = stripDynamicState(result.rawCode, expectedTexts);
+
     // Extract the JSX body (strip export default function wrapper)
-    const html = extractJSXBody(result.rawCode);
+    const html = extractJSXBody(cleanedCode);
     return {
       name: componentName,
       formRole,
       html,
       css: result.css ?? '',
       success: true,
+      representativeProps: extractVisibleProps(node),
+      representativeTexts: collectOrderedTexts(node),
     };
   } catch {
     return { name: componentName, formRole, html: '', css: '', success: false };
@@ -250,6 +281,7 @@ export async function generateSingleComponent(
  * @param onStep - Progress callback
  * @param onAttempt - Retry attempt callback
  * @param templateMode - When true, prompts use Tailwind + CSS variables for the starter
+ * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateCompoundSection(
   sectionNode: any,
@@ -264,6 +296,7 @@ export async function generateCompoundSection(
   templateMode?: boolean,
   rawSectionNode?: any,
   existingChartNames?: Set<string>,
+  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -275,7 +308,7 @@ export async function generateCompoundSection(
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode, assetHints,
     );
   }
 
@@ -376,6 +409,7 @@ export async function generateCompoundSection(
       onAttempt,
       suffix || undefined,
       templateMode,
+      assetHints,
     );
     componentCache.set(comp.variantKey, generated);
     onStep?.(
@@ -391,6 +425,13 @@ export async function generateCompoundSection(
     `  Pass 1 complete: ${successCount}/${discovery.components.length} components generated`,
   );
 
+  // ── Step 2.5: Fix class name collisions ────────────────────────────────
+  // If a component's root CSS class matches the section slug, the section
+  // layout CSS and component CSS will share the same selector after scoping,
+  // causing parent styles to leak into the component and vice-versa.
+  // Rename the colliding component's root class to use BEM child naming.
+  fixComponentClassCollisions(componentCache, slug, onStep);
+
   // ── Step 3: Build substituted section YAML ──────────────────────────────
   const substitutedNode = substituteComponents(
     sectionNode,
@@ -398,6 +439,13 @@ export async function generateCompoundSection(
     componentCache,
     serializeNode,
   );
+
+  // Fix stretch dimension conflicts: when a node has alignSelf: stretch,
+  // remove the cross-axis pixel dimension (width in column parent, height
+  // in row parent) since stretch handles the sizing. The serializer can't
+  // always do this because substituteComponents() does its own recursion
+  // without passing parent layout direction.
+  fixStretchDimensions(substitutedNode);
 
   // Deduplicate sibling names: same-named nodes with different visual
   // properties (dimensions, colors, etc.) get unique suffixes so the
@@ -425,8 +473,16 @@ export async function generateCompoundSection(
     templateMode,
   );
 
-  // Insert component references before the YAML block
-  const userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
+  // Insert component references and asset hints before the YAML block
+  let userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
+  if (assetHints) {
+    const yamlIdx = userPrompt.indexOf('```yaml');
+    if (yamlIdx !== -1) {
+      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
+    } else {
+      userPrompt += '\n\n' + assetHints;
+    }
+  }
 
   onStep?.(`  [PATH 2] Generating section layout with ${successCount} pre-built components...`);
 
@@ -436,6 +492,8 @@ export async function generateCompoundSection(
       sectionSystemPrompt,
       userPrompt,
       onAttempt,
+      undefined, undefined, undefined, undefined, undefined,
+      sectionYaml,  // source YAML for CSS fidelity validation
     );
 
     return {
@@ -510,6 +568,28 @@ function substituteComponents(
       // Replace entire subtree with a compact reference
       const props = extractVisibleProps(node);
 
+      // Per-instance text substitution: replace the representative instance's
+      // text with this specific instance's text. Two strategies:
+      // 1. componentProperties-based (when TEXT props have overrides)
+      // 2. Positional: compare ordered child TEXT nodes between representative and instance
+      let instanceHTML = applyInstanceTextSubstitution(
+        generated.html,
+        generated.representativeProps ?? {},
+        props,
+      );
+
+      // Fallback: positional text substitution from actual child TEXT nodes.
+      // Figma only includes TEXT props in componentProperties when overridden,
+      // so most instances have no TEXT entries. Positional matching handles this.
+      if (instanceHTML === generated.html && generated.representativeTexts?.length) {
+        const instanceTexts = collectOrderedTexts(node);
+        instanceHTML = applyPositionalTextSubstitution(
+          instanceHTML,
+          generated.representativeTexts,
+          instanceTexts,
+        );
+      }
+
       // Determine sizing mode: use flat API properties (layoutSizingHorizontal/Vertical)
       // or nested figma-complete object (layoutSizing.horizontal/vertical).
       // When sizing is FILL, emit widthMode/heightMode instead of pixel values
@@ -522,20 +602,24 @@ function substituteComponents(
         type: 'COMPONENT_REF',
         formRole: generated.formRole,
         props,
-        generatedHTML: generated.html,
+        generatedHTML: instanceHTML,
         ...(node.layoutGrow ? { flexGrow: node.layoutGrow } : {}),
       };
 
-      // Width: fill → widthMode, otherwise pixel value
+      // Width: fill → widthMode, hug → widthMode, fixed → pixel value
       if (hSizing === 'FILL') {
         ref.widthMode = 'fill';
+      } else if (hSizing === 'HUG') {
+        ref.widthMode = 'hug';
       } else if (node.absoluteBoundingBox?.width) {
         ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
       }
 
-      // Height: fill → heightMode, otherwise pixel value
+      // Height: fill → heightMode, hug → heightMode, fixed → pixel value
       if (vSizing === 'FILL') {
         ref.heightMode = 'fill';
+      } else if (vSizing === 'HUG') {
+        ref.heightMode = 'hug';
       } else if (node.absoluteBoundingBox?.height) {
         ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
       }
@@ -586,6 +670,107 @@ function extractVisibleProps(node: any): Record<string, string | boolean> {
   }
 
   return props;
+}
+
+// ── Per-Instance Text Substitution ───────────────────────────────────────────
+
+/**
+ * Replaces the representative instance's text with this specific instance's
+ * text in the generated HTML.
+ *
+ * For each string prop that differs between the representative and this instance,
+ * all occurrences of the representative's value are replaced with the instance's
+ * value. Replacements are sorted longest-first to avoid partial-match issues.
+ *
+ * @param html - The representative's generated HTML
+ * @param repProps - Props from the representative instance
+ * @param instanceProps - Props from this specific instance
+ * @returns HTML with this instance's text content
+ */
+function applyInstanceTextSubstitution(
+  html: string,
+  repProps: Record<string, string | boolean>,
+  instanceProps: Record<string, string | boolean>,
+): string {
+  // Collect all text replacements needed
+  const replacements: Array<[string, string]> = [];
+
+  for (const [key, instanceValue] of Object.entries(instanceProps)) {
+    if (typeof instanceValue !== 'string' || !instanceValue) continue;
+    const repValue = repProps[key];
+    if (typeof repValue !== 'string' || !repValue) continue;
+    if (repValue === instanceValue) continue;
+    replacements.push([repValue, instanceValue]);
+  }
+
+  if (replacements.length === 0) return html;
+
+  // Sort longest first to avoid replacing substrings of longer values
+  replacements.sort((a, b) => b[0].length - a[0].length);
+
+  let result = html;
+  for (const [from, to] of replacements) {
+    result = result.split(from).join(to);
+  }
+
+  return result;
+}
+
+// ── Positional Text Substitution ─────────────────────────────────────────────
+
+/**
+ * Collects text content from a node's subtree in depth-first order.
+ * Unlike collectTextsFromNode (which deduplicates via Set), this preserves
+ * order and duplicates so positional matching works correctly.
+ */
+function collectOrderedTexts(node: any): string[] {
+  const texts: string[] = [];
+  const walk = (n: any) => {
+    if (!n || n.visible === false) return;
+    const text =
+      typeof n.characters === 'string' ? n.characters.trim()
+      : typeof n.text === 'string' ? n.text.trim()
+      : '';
+    if (text) texts.push(text);
+    if (Array.isArray(n.children)) n.children.forEach(walk);
+  };
+  walk(node);
+  return texts;
+}
+
+/**
+ * Replaces text in HTML by matching positional text between the representative
+ * and this instance's node trees.
+ *
+ * If text at position i differs between representative and instance, we replace
+ * occurrences of the representative text with the instance text in the HTML.
+ * Replacements are sorted longest-first to avoid partial-match issues.
+ */
+function applyPositionalTextSubstitution(
+  html: string,
+  repTexts: string[],
+  instanceTexts: string[],
+): string {
+  const len = Math.min(repTexts.length, instanceTexts.length);
+  const replacements: Array<[string, string]> = [];
+
+  for (let i = 0; i < len; i++) {
+    if (repTexts[i] !== instanceTexts[i]) {
+      replacements.push([repTexts[i], instanceTexts[i]]);
+    }
+  }
+
+  if (replacements.length === 0) return html;
+
+  // Sort longest-first to avoid replacing substrings of longer values
+  replacements.sort((a, b) => b[0].length - a[0].length);
+
+  let result = html;
+  for (const [from, to] of replacements) {
+    result = result.split(from).join(to);
+  }
+
+  return result;
 }
 
 // ── Component Reference Block ───────────────────────────────────────────────
@@ -649,9 +834,9 @@ function buildComponentReferenceBlock(
     '## Pre-Generated Components\n\n' +
     'The following components have already been generated. ' +
     'When you see a `type: COMPONENT_REF` node in the YAML, ' +
-    'use the provided `generatedHTML` directly. ' +
-    'Adapt the text content from the `props` (e.g., swap labels and values) ' +
-    'but keep the HTML structure and class names. ' +
+    'use its `generatedHTML` exactly as-is — the text content has already been ' +
+    'customized for each specific instance (labels, values, placeholders are correct). ' +
+    'Do NOT change the text, class names, or HTML structure. ' +
     'Do NOT regenerate these as `<div>` — use the semantic HTML provided.\n\n' +
     '**Sizing COMPONENT_REF wrappers:** When a COMPONENT_REF has `widthMode: fill`, ' +
     'its wrapper must use `width: 100%` (NOT a fixed pixel width). ' +
@@ -680,11 +865,98 @@ function injectComponentReferences(userPrompt: string, refBlock: string): string
   );
 }
 
+// ── Class Name Collision Fix ─────────────────────────────────────────────────
+
+/**
+ * Escapes special regex characters in a string.
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Detects and fixes class name collisions between component root classes
+ * and the section slug.
+ *
+ * When a component's root CSS class exactly matches the section name
+ * (e.g., both using "frame-2147225790"), the section layout CSS and
+ * component CSS end up with identical selectors after scoping, causing
+ * cross-contamination: section styles apply to the component and vice-versa.
+ *
+ * Fix: rename the component's root class to use BEM child naming
+ * (e.g., "frame-2147225790" → "frame-2147225790__button").
+ *
+ * Mutates the component entries in the cache.
+ */
+function fixComponentClassCollisions(
+  cache: Map<string, GeneratedComponent>,
+  sectionSlug: string,
+  onStep?: (msg: string) => void,
+): void {
+  for (const [key, comp] of cache) {
+    if (!comp.success || !comp.html || !comp.css) continue;
+
+    const rootClass = extractComponentRootClass(comp.html);
+    if (!rootClass || rootClass !== sectionSlug) continue;
+
+    // Collision detected — rename using BEM child naming
+    const roleSuffix = comp.formRole
+      ? comp.formRole.replace(/([A-Z])/g, '-$1').toLowerCase()
+      : 'component';
+    const newRootClass = `${sectionSlug}__${roleSuffix}`;
+
+    onStep?.(
+      `  ⚠ Class collision: component "${comp.name}" root class "${rootClass}" ` +
+      `matches section slug — renaming to "${newRootClass}"`,
+    );
+
+    // Rename in HTML: class="old" → class="new"
+    // Only rename standalone root class, not BEM children (old__child stays)
+    const rootClassPattern = new RegExp(
+      `class="(${escapeRegex(rootClass)})"`,
+      'g',
+    );
+    comp.html = comp.html.replace(rootClassPattern, `class="${newRootClass}"`);
+
+    // Also fix multi-class attributes: class="old other-class"
+    comp.html = comp.html.replace(
+      new RegExp(`class="${escapeRegex(rootClass)}(\\s)`, 'g'),
+      `class="${newRootClass}$1`,
+    );
+
+    // Rename in CSS: .old (standalone) → .new
+    // Match .rootClass when NOT followed by __ or - (which would be BEM children)
+    // Must be followed by whitespace, {, :, [, ., , or end
+    comp.css = comp.css.replace(
+      new RegExp(`\\.${escapeRegex(rootClass)}(?![_a-zA-Z0-9-])`, 'g'),
+      `.${newRootClass}`,
+    );
+
+    cache.set(key, comp);
+  }
+}
+
 // ── CSS Merging ─────────────────────────────────────────────────────────────
+
+/**
+ * Extracts the root CSS class from a component's generated HTML.
+ * Returns the first class name from the first `class="..."` attribute.
+ */
+function extractComponentRootClass(html: string): string | null {
+  if (!html) return null;
+  const match = html.match(/class="([^"]+)"/);
+  if (!match) return null;
+  return match[1].split(/\s+/)[0] || null;
+}
 
 /**
  * Merges the section's CSS with CSS from all generated components.
  * Component CSS is included first so section CSS can override if needed.
+ *
+ * Each component's CSS is scoped under its root class to prevent
+ * intra-section collisions (e.g. two components both defining `.label`
+ * with different styles). Selectors that already reference the root class
+ * are left unchanged via `skipSelfScoping`.
  */
 function mergeSectionCSS(
   sectionCSS: string,
@@ -694,7 +966,13 @@ function mergeSectionCSS(
 
   for (const comp of components) {
     if (comp.success && comp.css) {
-      parts.push(`/* — Component: ${comp.name} — */\n${comp.css}`);
+      // Scope component CSS under its root class to prevent intra-section
+      // collisions between different components that share class names.
+      const rootClass = extractComponentRootClass(comp.html);
+      const scopedCSS = rootClass
+        ? scopeSectionCSS(comp.css, rootClass, { skipSelfScoping: true })
+        : comp.css;
+      parts.push(`/* — Component: ${comp.name} — */\n${scopedCSS}`);
     }
   }
 
@@ -723,17 +1001,33 @@ async function fallbackMonolithicGeneration(
   discovery: ComponentDiscoveryResult,
   templateMode?: boolean,
   rawSectionNode?: any,
+  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
+  fixStretchDimensions(serialized);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
   const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
-  const userPrompt = assemblePageSectionUserPrompt(
+  let userPrompt = assemblePageSectionUserPrompt(
     yaml, sectionName, sectionIndex, totalSections, ctx, templateMode,
   );
 
+  // Inject asset hints so the LLM knows about available SVG files
+  if (assetHints) {
+    const yamlIdx = userPrompt.indexOf('```yaml');
+    if (yamlIdx !== -1) {
+      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
+    } else {
+      userPrompt += '\n\n' + assetHints;
+    }
+  }
+
   try {
-    const result = await generateWithRetry(llm, systemPrompt, userPrompt, onAttempt);
+    const result = await generateWithRetry(
+      llm, systemPrompt, userPrompt, onAttempt,
+      undefined, undefined, undefined, undefined, undefined,
+      yaml,  // source YAML for CSS fidelity validation
+    );
     return {
       rawCode: result.rawCode,
       css: result.css ?? '',
@@ -752,6 +1046,119 @@ async function fallbackMonolithicGeneration(
       chartComponents: [],
     };
   }
+}
+
+// ── Stretch Dimension Fix ────────────────────────────────────────────────────
+
+/**
+ * Walks a serialized YAML tree and removes conflicting pixel dimensions
+ * when a node has `alignSelf: stretch`.
+ *
+ * In Figma, `layoutAlign: STRETCH` means the element fills the parent's
+ * cross-axis. The pixel dimension (from absoluteBoundingBox) is just the
+ * rendered result, not a constraint. Emitting both causes the LLM to
+ * output `width: 1080px; align-self: stretch;` — the pixel value defeats
+ * the stretch and prevents responsive layout.
+ *
+ * - Column parent → cross-axis is horizontal → remove `width`
+ * - Row parent → cross-axis is vertical → remove `height`
+ *
+ * Mutates the tree in place.
+ */
+function fixStretchDimensions(node: any, parentDirection?: 'row' | 'column'): void {
+  if (!node) return;
+
+  // Fix this node if it stretches and we know the parent direction
+  if (node.alignSelf === 'stretch' && parentDirection) {
+    if (parentDirection === 'column') {
+      delete node.width;
+      delete node.widthMode;
+    } else {
+      delete node.height;
+      delete node.heightMode;
+    }
+  }
+
+  // Determine this node's layout direction for its children
+  const thisDirection: 'row' | 'column' | undefined =
+    node.layout?.direction === 'row' ? 'row'
+    : node.layout?.direction === 'column' ? 'column'
+    : undefined;
+
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      fixStretchDimensions(child, thisDirection ?? parentDirection);
+    }
+  }
+}
+
+// ── Static Content Post-Processing ──────────────────────────────────────────
+
+/**
+ * Strips dynamic state usage from generated component code.
+ *
+ * PATH 1 components are part of static page sections — they should never
+ * use `useStore`, `state.*`, or event handlers. Despite prompt instructions,
+ * LLMs often generate dynamic state for form elements (selects, inputs,
+ * checkboxes). This function cleans up the output:
+ *
+ * 1. Removes `useStore` import and `const state = useStore({...})` block
+ * 2. Replaces `value={state.xxx}` with empty `value=""`
+ * 3. Replaces `checked={state.xxx}` with nothing (removes the attr)
+ * 4. Removes `onChange={(event) => ...}` handlers
+ * 5. Replaces `{state.xxx}` text expressions with the nearest matching
+ *    expected text from the node tree
+ *
+ * Mutates the rawCode string and returns the cleaned version.
+ */
+function stripDynamicState(rawCode: string, expectedTexts: string[]): string {
+  let code = rawCode;
+
+  // 1. Remove useStore import
+  code = code.replace(/import\s*\{[^}]*useStore[^}]*\}\s*from\s*['"]@builder\.io\/mitosis['"];?\s*\n?/g, '');
+
+  // 2. Remove const state = useStore({...}); block
+  // Handle multi-line useStore declarations with nested braces
+  code = code.replace(/const\s+state\s*=\s*useStore\(\{[\s\S]*?\}\);?\s*\n?/g, '');
+
+  // 3. Replace value={state.xxx} with value="" (keeps select/input working)
+  code = code.replace(/\bvalue=\{state\.\w+\}/g, 'value=""');
+
+  // 4. Remove checked={state.xxx}
+  code = code.replace(/\s*checked=\{state\.\w+\}/g, '');
+
+  // 5. Remove onChange handlers
+  code = code.replace(/\s*onChange=\{[^}]*\}/g, '');
+  // Also handle multi-line onChange with arrow functions
+  code = code.replace(/\s*onChange=\{\(event\)\s*=>\s*\([^)]*\)\}/g, '');
+  code = code.replace(/\s*onChange=\{\(event\)\s*=>\s*\{[^}]*\}\}/g, '');
+
+  // 6. Replace {state.xxx} text content with best matching expected text
+  // Find all {state.xxx} patterns and try to match them to expected texts
+  code = code.replace(/\{state\.(\w+)\}/g, (_match, propName: string) => {
+    // Try to find a matching text from expected texts
+    // Use heuristics: prop name might hint at the text
+    // (e.g., "label" → button label, "value" → input value)
+    // If no match, use empty string
+    if (expectedTexts.length === 1) {
+      return expectedTexts[0]; // Only one text — use it
+    }
+
+    // Try to match by position: {state.label} is usually the last text
+    const lowerProp = propName.toLowerCase();
+    if (lowerProp === 'label' || lowerProp === 'text' || lowerProp === 'title') {
+      // Use the first expected text that hasn't been used as a structural text
+      // (i.e., skip texts that appear as labels like "Label", "Field Name")
+      const buttonText = expectedTexts.find(t =>
+        !t.match(/^(Label|Field|Type|Select|Choose|Enter)/) && t.length > 0
+      );
+      if (buttonText) return buttonText;
+    }
+
+    return '';
+  });
+
+  return code;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

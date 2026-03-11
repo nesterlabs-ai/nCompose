@@ -6,6 +6,8 @@
  * renders a grid of all variant combinations.
  */
 
+import { collectFontFamilies, buildGoogleFontsLink } from '../compile/font-resolver.js';
+
 /**
  * Transform Mitosis-compiled React JSX into browser-runnable code.
  *
@@ -265,12 +267,17 @@ export function generatePreviewHTML(
       ComposedChart, ReferenceLine, Brush } = Recharts;`
     : '';
 
+  // Load Google Fonts used in the component CSS
+  const fontFamilies = collectFontFamilies(css);
+  const fontLink = buildGoogleFontsLink(fontFamilies);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Preview: ${componentName}</title>
+  ${fontLink}
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {

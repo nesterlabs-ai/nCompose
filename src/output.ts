@@ -104,16 +104,18 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     }
   }
 
-  // Write SVG assets to assets/ subdirectory
+  // Write SVG assets to assets/ subdirectory (deduplicated by filename)
   if (assets && assets.length > 0) {
     const assetsDir = join(outputDir, 'assets');
     mkdirSync(assetsDir, { recursive: true });
 
+    const writtenFilenames = new Set<string>();
     for (const asset of assets) {
       if (!asset.content) {
-        console.warn(`[output] Skipping asset "${asset.filename}" — download failed or content is empty`);
-        continue;
+        continue; // download failed or content is empty
       }
+      if (writtenFilenames.has(asset.filename)) continue; // already written
+      writtenFilenames.add(asset.filename);
       const assetPath = join(assetsDir, asset.filename);
       writeFileSync(assetPath, asset.content, 'utf-8');
       writtenPaths.push(assetPath);

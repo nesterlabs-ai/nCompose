@@ -26,6 +26,7 @@ import {
 } from './figma/asset-export.js';
 import { extractPageLayoutCSS } from './figma/page-layout.js';
 import { injectCSS } from './compile/inject-css.js';
+import { prependFontImport } from './compile/font-resolver.js';
 import { stitchPageComponent } from './compile/stitch.js';
 import type { SectionOutput } from './compile/stitch.js';
 import { createLLMProvider } from './llm/index.js';
@@ -175,7 +176,7 @@ export function isMultiSectionPage(enhanced: any): boolean {
   );
 
   // ── Signal 1: name-based ─────────────────────────────────────────────────
-  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template/i;
+  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template|main|dashboard|create|edit|settings|form/i;
   if (PAGE_NAME_PATTERNS.test(root.name ?? '') && hasSectionLikeChild) {
     return true;
   }
@@ -209,9 +210,11 @@ export function isMultiSectionPage(enhanced: any): boolean {
   }
   if (sizeableCount >= config.page.minSections && hasSectionLikeChild) return true;
 
-  // ── Signal 4: vertical auto-layout with ≥3 wide children (name-agnostic) ──
+  // ── Signal 4: ≥3 wide children (name-agnostic, layout-agnostic) ──
   // Catches pages with children named "Block 1", "Block 2", etc.
-  if (layoutMode === 'VERTICAL' || layoutMode === 'column') {
+  // No longer requires vertical auto-layout — pages without auto-layout
+  // but with wide stacked children are also pages.
+  {
     let wideChildCount = 0;
     for (const child of children) {
       if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
@@ -229,6 +232,25 @@ export function isMultiSectionPage(enhanced: any): boolean {
     if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
     if (isChartSection(child)) chartChildCount++;
     if (chartChildCount >= 2) return true;
+  }
+
+  // ── Signal 6: large child contains multiple wide "card" frames ──
+  // Common pattern: root → [header, breadcrumbs, content-wrapper]
+  // where content-wrapper holds the actual sections (define policy card,
+  // define rules card, etc.). Look one level deeper.
+  for (const child of children) {
+    if (child.type !== 'FRAME') continue;
+    const grandchildren: any[] = child.children || [];
+    if (grandchildren.length < config.page.minSections) continue;
+    const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? 0;
+    if (childWidth < parentWidth * 0.8) continue; // must be a major child
+    let wideGrandchildCount = 0;
+    for (const gc of grandchildren) {
+      if (gc.type !== 'FRAME' && gc.type !== 'COMPONENT' && gc.type !== 'INSTANCE') continue;
+      const gcw = gc.absoluteBoundingBox?.width ?? gc.dimensions?.width ?? gc.size?.x ?? 0;
+      if (childWidth > 0 && gcw >= childWidth * 0.8) wideGrandchildCount++;
+    }
+    if (wideGrandchildCount >= config.page.minSections) return true;
   }
 
   return false;
@@ -269,12 +291,37 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
  * - Border radius, opacity, overflow, absolute positioning, rotation
  * - Text content and styling
  */
-function serializeNodeForPrompt(node: any): any {
+const MAX_SERIALIZE_DEPTH = 15;
+
+function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column'): any {
   if (!node) return null;
   if (node.name?.startsWith('_')) return null;
+
+  // If this node is an exported SVG asset, emit a compact ICON marker
+  // instead of serializing the full subtree. This tells the LLM to
+  // render it as <img src="./assets/filename.svg"> at this position.
+  // Check BEFORE visibility — some icon slots may be invisible in Figma
+  // but we still have exported SVGs for them.
+  if (assetMap && node.id && assetMap.has(node.id)) {
+    const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+    const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+    return {
+      name: node.name,
+      type: 'ICON',
+      assetFile: assetMap.get(node.id),
+      ...(w ? { width: `${Math.round(w)}px` } : {}),
+      ...(h ? { height: `${Math.round(h)}px` } : {}),
+    };
+  }
+
   // Prune invisible subtrees entirely — they bloat the YAML with hidden
   // error states, chip lists, descriptions etc. that are useless for static output.
   if (node.visible === false) return null;
+
+  if (depth > MAX_SERIALIZE_DEPTH) {
+    console.warn(`[serializeNodeForPrompt] Depth limit (${MAX_SERIALIZE_DEPTH}) reached at "${node.name ?? 'unknown'}" — subtree truncated`);
+    return { name: node.name, type: node.type, truncated: true };
+  }
 
   const result: any = { name: node.name, type: node.type };
 
@@ -337,14 +384,54 @@ function serializeNodeForPrompt(node: any): any {
   else if (vSizing === 'HUG') result.heightMode = 'hug';
   if (node.layoutGrow) result.flexGrow = node.layoutGrow;
 
-  // Dimensions
+  // Dimensions — suppress pixel values when a sizing mode is set, because
+  // the LLM should use the mode (fill → 100%, hug → auto) not a fixed value.
+  // The bounding-box width is just the current rendered size in the Figma canvas,
+  // not the intended CSS dimension.
   const w = node.absoluteBoundingBox?.width ?? node.size?.x;
   const h = node.absoluteBoundingBox?.height ?? node.size?.y;
-  if (w) result.width = `${Math.round(w)}px`;
-  if (h) result.height = `${Math.round(h)}px`;
+  if (w && !result.widthMode) result.width = `${Math.round(w)}px`;
+  if (h && !result.heightMode) result.height = `${Math.round(h)}px`;
+
+  // ── Cross-axis self-alignment (layoutAlign) ──────────────────────────
+  // Overrides the parent's counterAxisAlignItems for this specific child.
+  // Critical for form fields that need to stretch to full container width.
+  if (node.layoutAlign && node.layoutAlign !== 'INHERIT') {
+    const alignSelfMap: Record<string, string> = {
+      STRETCH: 'stretch',
+      MIN: 'flex-start',
+      CENTER: 'center',
+      MAX: 'flex-end',
+    };
+    const mapped = alignSelfMap[node.layoutAlign];
+    if (mapped) result.alignSelf = mapped;
+
+    // When STRETCH, the cross-axis pixel dimension is just the rendered
+    // result of the stretch, not a constraint. Suppress it to prevent the
+    // LLM from emitting a fixed pixel value alongside align-self:stretch.
+    // Column parent → cross-axis is horizontal → suppress width.
+    // Row parent → cross-axis is vertical → suppress height.
+    if (node.layoutAlign === 'STRETCH' && parentLayoutDirection) {
+      if (parentLayoutDirection === 'column') {
+        delete result.width;
+        delete result.widthMode; // stretch handles it
+      } else {
+        delete result.height;
+        delete result.heightMode;
+      }
+    }
+  }
+
+  // ── Min / max dimension constraints ──────────────────────────────────
+  if (node.minWidth != null && node.minWidth > 0) result.minWidth = `${node.minWidth}px`;
+  if (node.maxWidth != null && node.maxWidth > 0) result.maxWidth = `${node.maxWidth}px`;
+  if (node.minHeight != null && node.minHeight > 0) result.minHeight = `${node.minHeight}px`;
+  if (node.maxHeight != null && node.maxHeight > 0) result.maxHeight = `${node.maxHeight}px`;
 
   // ── Fills → CSS colors / gradients ─────────────────────────────────
-  if (node.fills && Array.isArray(node.fills)) {
+  // Skip fills on TEXT nodes — their fills represent text color (already in textStyle.color),
+  // NOT background-color. Emitting fills on TEXT causes black bars.
+  if (node.type !== 'TEXT' && node.fills && Array.isArray(node.fills)) {
     const visible = node.fills.filter((f: any) => f.visible !== false);
     if (visible.length > 0) {
       result.fills = visible.map((f: any) => {
@@ -390,15 +477,16 @@ function serializeNodeForPrompt(node: any): any {
   if (node.strokes && Array.isArray(node.strokes) && node.strokes.length > 0) {
     const s = node.strokes.find((st: any) => st.visible !== false);
     if (s?.color) {
+      const sw = node.strokeWeight ?? 1;
       const border: any = {
         color: figmaColorToCSS(s.color, s.opacity),
-        width: `${node.strokeWeight ?? 1}px`,
+        width: `${Math.round(sw * 100) / 100}px`,
       };
       if (node.strokeAlign) border.position = node.strokeAlign.toLowerCase();
       if (node.strokeDashes?.length > 0) border.style = 'dashed';
       if (node.individualStrokeWeights) {
         const isw = node.individualStrokeWeights;
-        border.widths = `${isw.top}px ${isw.right}px ${isw.bottom}px ${isw.left}px`;
+        border.widths = `${Math.round(isw.top * 100) / 100}px ${Math.round(isw.right * 100) / 100}px ${Math.round(isw.bottom * 100) / 100}px ${Math.round(isw.left * 100) / 100}px`;
       }
       result.border = border;
     }
@@ -416,7 +504,7 @@ function serializeNodeForPrompt(node: any): any {
           : 'rgba(0,0,0,0.25)';
         const inset = effect.type === 'INNER_SHADOW' ? 'inset ' : '';
         result.shadows.push(
-          `${inset}${effect.offset?.x ?? 0}px ${effect.offset?.y ?? 0}px ${effect.radius ?? 0}px ${effect.spread ?? 0}px ${color}`,
+          `${inset}${Math.round(effect.offset?.x ?? 0)}px ${Math.round(effect.offset?.y ?? 0)}px ${Math.round(effect.radius ?? 0)}px ${Math.round(effect.spread ?? 0)}px ${color}`,
         );
       } else if (effect.type === 'LAYER_BLUR') {
         result.filter = `blur(${effect.radius}px)`;
@@ -514,7 +602,7 @@ function serializeNodeForPrompt(node: any): any {
 
   // ── Opacity ────────────────────────────────────────────────────────
   if (node.opacity !== undefined && node.opacity < 1) {
-    result.opacity = node.opacity;
+    result.opacity = Math.round(node.opacity * 100) / 100;
   }
 
   // ── Overflow ───────────────────────────────────────────────────────
@@ -560,8 +648,15 @@ function serializeNodeForPrompt(node: any): any {
   }
 
   // ── Children (recursive) ───────────────────────────────────────────
+  // Pass this node's layout direction so children can suppress cross-axis
+  // pixel values when they have layoutAlign: STRETCH.
+  const thisLayoutDir: 'row' | 'column' | undefined =
+    node.layoutMode === 'HORIZONTAL' ? 'row'
+    : node.layoutMode === 'VERTICAL' ? 'column'
+    : undefined;
+
   if (node.children && Array.isArray(node.children)) {
-    const mapped = node.children.map(serializeNodeForPrompt).filter(Boolean);
+    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap, thisLayoutDir)).filter(Boolean);
     if (mapped.length > 0) {
       // Deduplicate sibling names: same-named children with different visual
       // properties get unique suffixes so the LLM generates distinct CSS classes.
@@ -571,6 +666,37 @@ function serializeNodeForPrompt(node: any): any {
   }
 
   return result;
+}
+
+/**
+ * Build human-readable asset placement hints for PATH B.
+ * Walks the raw Figma node tree and for each node whose id is in the asset map,
+ * emits a line describing where the icon is and what file to use.
+ */
+function buildPathBAssetHints(assets: AssetEntry[], rootNode: any): string {
+  if (!assets.length || !rootNode) return '';
+  const assetMap = buildAssetMap(assets);
+  const lines: string[] = [];
+
+  function walk(node: any, ancestors: string[]): void {
+    if (!node) return;
+    const path = node.name ? [...ancestors, node.name] : ancestors;
+    if (node.id && assetMap.has(node.id)) {
+      const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+      const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+      const dims = w && h ? ` (${Math.round(w)}×${Math.round(h)})` : '';
+      const location = path.length > 1 ? path.slice(0, -1).join(' > ') : 'root';
+      lines.push(`- Node "${node.name}"${dims} inside "${location}" → \`${assetMap.get(node.id)}\``);
+    }
+    if (node.children && Array.isArray(node.children)) {
+      for (const child of node.children) walk(child, path);
+    }
+  }
+
+  walk(rootNode, []);
+  if (lines.length === 0) return '';
+
+  return `\n**Icon/Asset slots in this design:**\n${lines.join('\n')}\nRender these as \`<img src="./assets/..." alt="" />\` at the matching position.\n`;
 }
 
 /**
@@ -889,7 +1015,7 @@ async function convertComponentSet(
   for (const fw of options.frameworks) {
     const rawCode = rawFrameworkOutputs[fw as Framework];
     if (rawCode && !rawCode.startsWith('// Error')) {
-      frameworkOutputs[fw] = injectCSS(rawCode, variantCSS, fw as Framework);
+      frameworkOutputs[fw] = injectCSS(rawCode, prependFontImport(variantCSS), fw as Framework);
     } else {
       frameworkOutputs[fw] = rawCode;
     }
@@ -1206,13 +1332,18 @@ async function convertSingleComponent(
   // Assemble prompts
   onStep?.('Assembling prompts...');
   const systemPrompt = assembleSystemPrompt(options.templateMode);
+  // Build asset map so serialization can annotate icon nodes with their SVG filenames.
+  // This embeds `type: ICON, assetFile: "./assets/foo.svg"` directly in the YAML,
+  // giving the LLM clear context to generate <img> tags at the right positions.
+  const pathBAssetMap = buildAssetMap(assets);
   // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
   // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
-  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode) : null;
+  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
-    : dump(rootNode ? serializeNodeForPrompt(rootNode) : enhanced, { lineWidth: 120, noRefs: true });
-  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
+    : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : enhanced, { lineWidth: 120, noRefs: true });
+  const assetHints = buildPathBAssetHints(assets, rootNode);
+  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode, assetHints);
 
   // Generate Mitosis code via LLM with retry
   const llm = createLLMProvider(options.llm);
@@ -1233,6 +1364,7 @@ async function convertSingleComponent(
   const parseResult = await generateWithRetry(
     llm, systemPrompt, userPrompt, onAttempt, undefined,
     pathBExpectedTag, pathBCategory !== 'unknown' ? pathBCategory : undefined, expectedTextLiterals,
+    undefined, llmYaml,
   );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
@@ -1255,7 +1387,7 @@ async function convertSingleComponent(
   if (parseResult.css) {
     for (const fw of options.frameworks) {
       if (frameworkOutputs[fw]) {
-        frameworkOutputs[fw] = injectCSS(frameworkOutputs[fw], parseResult.css, fw);
+        frameworkOutputs[fw] = injectCSS(frameworkOutputs[fw], prependFontImport(parseResult.css), fw);
       }
     }
   }
@@ -1362,6 +1494,51 @@ async function convertChart(
 }
 
 /**
+ * Flatten "wrapper frames" — plain container FRAMEs with no visual identity
+ * whose children are all wide layout sections. These are layout-only wrappers
+ * that should be unwrapped so each inner section gets its own LLM call.
+ *
+ * E.g.: root → [header, breadcrumbs, content-wrapper]
+ *   where content-wrapper has no fills/border and contains [card1, card2, card3]
+ *   → flattened: [header, breadcrumbs, card1, card2, card3]
+ */
+function flattenWrapperFrames(children: any[], parentWidth: number): any[] {
+  const result: any[] = [];
+  for (const child of children) {
+    if (child.type !== 'FRAME' || !child.children || child.children.length < 2) {
+      result.push(child);
+      continue;
+    }
+    // Check if this frame is a "plain wrapper" — no visual properties
+    const hasFills = Array.isArray(child.fills)
+      && child.fills.some((f: any) => f.visible !== false && f.type === 'SOLID' && f.color);
+    const hasStrokes = Array.isArray(child.strokes) && child.strokes.length > 0;
+    const hasBorderRadius = (child.cornerRadius ?? 0) > 0;
+    const hasShadows = Array.isArray(child.effects)
+      && child.effects.some((e: any) => e.visible !== false && (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW'));
+    if (hasFills || hasStrokes || hasBorderRadius || hasShadows) {
+      result.push(child);
+      continue;
+    }
+    // Check if children are wide (≥80% of this frame's width)
+    const frameWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? parentWidth;
+    let wideCount = 0;
+    for (const gc of child.children) {
+      if (gc.type !== 'FRAME' && gc.type !== 'COMPONENT' && gc.type !== 'INSTANCE') continue;
+      const gcw = gc.absoluteBoundingBox?.width ?? gc.dimensions?.width ?? gc.size?.x ?? 0;
+      if (frameWidth > 0 && gcw >= frameWidth * 0.8) wideCount++;
+    }
+    if (wideCount >= 2) {
+      // Unwrap: use this frame's children directly
+      result.push(...child.children);
+    } else {
+      result.push(child);
+    }
+  }
+  return result;
+}
+
+/**
  * PATH C: Multi-section page → per-section LLM calls → stitch → compile.
  *
  * 1. Extract deterministic page layout CSS from Figma auto-layout data
@@ -1380,9 +1557,18 @@ async function convertPage(
 ): Promise<ConversionResult> {
   const { onStep, onAttempt } = callbacks ?? {};
   const rootNode = enhanced.nodes[0];
-  const children: any[] = rootNode.children || [];
+  let children: any[] = rootNode.children || [];
   // Raw Figma children for chart detection (preserves arcData, padding, etc.)
   const rawChildren: any[] = rawDocumentNode?.children ?? children;
+
+  // Flatten wrapper frames: when a direct child is a plain container frame
+  // (no fills, no border — purely layout) with ≥2 wide children, "unwrap" it
+  // and use its children as direct sections. This handles patterns like:
+  //   root → [header, breadcrumbs, content-wrapper]
+  //   where content-wrapper holds the actual form cards/sections.
+  const parentWidth =
+    rootNode.absoluteBoundingBox?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x ?? 0;
+  children = flattenWrapperFrames(children, parentWidth);
 
   // Step C1: Extract page layout CSS
   onStep?.('Detected multi-section page — extracting layout...');
@@ -1392,10 +1578,9 @@ async function convertPage(
 
   onStep?.(`Page "${pageName}" with ${sections.length} sections: ${sections.map((s) => s.displayName ?? s.name).join(', ')}`);
 
-  // Step C2: Generate each section via LLM
+  // Step C2: Generate all sections via LLM (in parallel for speed)
   const llm = createLLMProvider(options.llm);
   const sectionSystemPrompt = assemblePageSectionSystemPrompt(options.templateMode);
-  const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
   const allChartComponents: ChartComponent[] = [];
   const usedChartNames = new Set<string>();
@@ -1430,10 +1615,10 @@ async function convertPage(
     visibleChildren.push({ child, rawChild: rawChildren[i] ?? child });
   }
 
-  for (let i = 0; i < visibleChildren.length; i++) {
-    const { child, rawChild } = visibleChildren[i];
+  // Generate all sections in parallel — each section is independent
+  const sectionPromises = visibleChildren.map(async ({ child, rawChild }, i) => {
     const sectionInfo = sections[i];
-    if (!sectionInfo) continue;
+    if (!sectionInfo) return null;
     const sectionDisplayName = sectionInfo.displayName ?? sectionInfo.name;
 
     onStep?.(`[${i + 1}/${visibleChildren.length}] Generating section "${sectionDisplayName}"...`);
@@ -1470,13 +1655,15 @@ async function convertPage(
           collectExpectedTextsFromComponentSet(componentSetData),
           true,
         );
-        allAssets.push(...assets);
-        sectionOutputs.push({
-          info: sectionInfo,
-          rawCode: parseResult.rawCode,
-          css: variantCSS,
-          failed: !parseResult.success,
-        });
+        return {
+          output: {
+            info: sectionInfo,
+            rawCode: parseResult.rawCode,
+            css: variantCSS,
+            failed: !parseResult.success,
+          } as SectionOutput,
+          assets,
+        };
       } else {
         // Regular section: use hierarchical component-first generation.
         // PATH 2 discovers UI components (dropdowns, inputs, buttons),
@@ -1484,23 +1671,43 @@ async function convertPage(
 
         // Export any SVG assets from this section
         const iconNodes = collectAssetNodes(child);
-        if (iconNodes.length > 0) {
-          const assets = await exportAssets(iconNodes, fileKey, client).catch(() => []);
-          allAssets.push(...assets);
-        }
+        const sectionAssets = iconNodes.length > 0
+          ? await exportAssets(iconNodes, fileKey, client).catch((err) => {
+              console.warn(`[exportAssets] Failed for section "${sectionInfo.name}": ${err instanceof Error ? err.message : err}`);
+              return [] as AssetEntry[];
+            })
+          : [];
 
+        const hSizing = child.layoutSizing?.horizontal ?? child.layoutSizingHorizontal;
+        const vSizing = child.layoutSizing?.vertical ?? child.layoutSizingVertical;
         const sectionCtx: PageSectionContext = {
           ...basePageCtx,
           prevSectionName: i > 0 ? (sections[i - 1]?.name ?? null) : null,
           nextSectionName: i < sections.length - 1 ? (sections[i + 1]?.name ?? null) : null,
+          sectionWidth: child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? undefined,
+          sectionHeight: child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y ?? undefined,
+          sectionPositioning: child.layoutPositioning === 'ABSOLUTE' ? 'absolute' : 'flex',
+          sectionWidthMode: hSizing === 'FILL' ? 'fill' : hSizing === 'HUG' ? 'hug' : 'fixed',
+          sectionHeightMode: vSizing === 'FILL' ? 'fill' : vSizing === 'HUG' ? 'hug' : 'fixed',
+          pageLayoutDirection: rootNode.layoutMode === 'HORIZONTAL' ? 'row'
+            : rootNode.layoutMode === 'VERTICAL' ? 'column' : 'none',
         };
+
+        // Build asset map so serialization annotates icon nodes with SVG filenames.
+        // Creates an asset-aware serializer that embeds `type: ICON, assetFile` directly
+        // in the YAML, giving the LLM structural context to place <img> tags.
+        const sectionAssetMap = buildAssetMap(sectionAssets);
+        const assetAwareSerializer = (node: any) => serializeNodeForPrompt(node, 0, sectionAssetMap);
+
+        // Also keep text-based hints as supplementary guidance
+        const sectionAssetHints = buildPathBAssetHints(sectionAssets, child);
 
         const compoundResult = await generateCompoundSection(
           child,
           sectionInfo.name,
           i + 1,
           children.length,
-          serializeNodeForPrompt,
+          assetAwareSerializer,
           llm,
           sectionCtx,
           onStep,
@@ -1508,6 +1715,7 @@ async function convertPage(
           options.templateMode,
           rawChild,
           usedChartNames,
+          sectionAssetHints,
         );
 
         // Collect any chart components discovered within this section
@@ -1526,33 +1734,52 @@ async function convertPage(
           && compoundResult.discovery.components[0].formRole === 'chart';
 
         if (isChartOnlySection) {
-          sectionOutputs.push({
-            info: sectionInfo,
-            rawCode: '',
-            css: '',
-            failed: false,
-            isChart: true,
-            chartComponentName: compoundResult.chartComponents[0].name,
-          });
+          return {
+            output: {
+              info: sectionInfo,
+              rawCode: '',
+              css: '',
+              failed: false,
+              isChart: true,
+              chartComponentName: compoundResult.chartComponents[0].name,
+            } as SectionOutput,
+            assets: sectionAssets,
+          };
         } else {
-          sectionOutputs.push({
-            info: sectionInfo,
-            rawCode: compoundResult.rawCode,
-            css: compoundResult.css,
-            failed: !compoundResult.success,
-          });
+          return {
+            output: {
+              info: sectionInfo,
+              rawCode: compoundResult.rawCode,
+              css: compoundResult.css,
+              failed: !compoundResult.success,
+            } as SectionOutput,
+            assets: sectionAssets,
+          };
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       onStep?.(`  Section "${sectionDisplayName}" failed: ${msg}`);
-      sectionOutputs.push({
-        info: sectionInfo,
-        rawCode: '',
-        css: '',
-        failed: true,
-      });
+      return {
+        output: {
+          info: sectionInfo,
+          rawCode: '',
+          css: '',
+          failed: true,
+        } as SectionOutput,
+        assets: [] as AssetEntry[],
+      };
     }
+  });
+
+  const sectionResults = await Promise.all(sectionPromises);
+
+  // Collect outputs in order (matching original section indices)
+  const sectionOutputs: SectionOutput[] = [];
+  for (const result of sectionResults) {
+    if (!result) continue;
+    sectionOutputs.push(result.output);
+    allAssets.push(...result.assets);
   }
 
   const successCount = sectionOutputs.filter((s) => !s.failed).length;
@@ -1654,7 +1881,7 @@ async function convertPage(
           rawCode;
       }
 
-      frameworkOutputs[fw] = injectCSS(rawCode, mergedCSS, fw as Framework);
+      frameworkOutputs[fw] = injectCSS(rawCode, prependFontImport(mergedCSS), fw as Framework);
     } else {
       frameworkOutputs[fw] = rawCode;
     }

@@ -168,7 +168,7 @@ function loadExplorerIconConfig() {
       }
       if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) buildExplorer();
     })
-    .catch(() => {});
+    .catch(() => { });
 }
 
 /** Render icon HTML: value is sprite id (e.g. icon-folder-closed) or emoji:📁. size in px. */
@@ -479,6 +479,12 @@ function startConversion() {
   if (codeViewModeEl) codeViewModeEl.style.display = 'none';
   updateCodeActionsState();
 
+  // Reset chat state
+  if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+  if (chatInputGroup) chatInputGroup.style.display = 'none';
+  if (urlInputGroup) urlInputGroup.style.display = 'block';
+  chatRefining = false;
+
   // Start SSE request (always enable template wiring for now)
   const body = JSON.stringify({ figmaUrl, figmaToken, frameworks, template: true });
 
@@ -779,7 +785,7 @@ async function bootWebContainer(tree) {
   setPreviewLoading(true, 'Starting Vite...');
   const devProc = await webContainerInstance.spawn('npm', ['run', 'dev']);
   webContainerDevProcess = devProc;
-  devProc.output.pipeTo(new WritableStream({ write() {} }));
+  devProc.output.pipeTo(new WritableStream({ write() { } }));
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('Dev server timeout')), 60000);
     const unsub = webContainerInstance.on('server-ready', (port, url) => {
@@ -813,7 +819,7 @@ function syncEditorToWebContainer() {
   writeWebContainerFiles({
     [wcPath]: finalCode,
     [cssPath]: css || `/* ${currentComponentName} */`,
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 // ── Complete ──
@@ -857,7 +863,7 @@ function handleComplete(data) {
       .then((res) => {
         wiredAppFiles = res.files || {};
       })
-      .catch(() => {});
+      .catch(() => { });
   } else if (codeViewModeEl) {
     codeViewModeEl.style.display = 'none';
   }
@@ -906,6 +912,252 @@ function handleComplete(data) {
     const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : '';
     setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
   }
+
+  // Initialize chat for iterative refinement
+  initChat();
+}
+
+// ── Chat Refinement ──
+const chatMessages = document.getElementById('chat-messages');
+const chatInputGroup = document.getElementById('chat-input-group');
+const urlInputGroup = document.getElementById('url-input-group');
+const chatInput = document.getElementById('chat-input');
+const chatSendBtn = document.getElementById('chat-send-btn');
+const chatSpinner = document.getElementById('chat-spinner');
+const chatSendIcon = document.getElementById('chat-send-icon');
+let chatRefining = false;
+
+function initChat() {
+  if (!currentSessionId) return;
+  // Switch input bar from URL to chat mode
+  if (urlInputGroup) urlInputGroup.style.display = 'none';
+  if (chatInputGroup) chatInputGroup.style.display = 'block';
+  // Show chat messages container
+  if (chatMessages) chatMessages.classList.add('visible');
+  // Add a system message
+  addChatMessage('system', 'Conversion complete. Describe changes to refine the component.');
+}
+
+function addChatMessage(role, content) {
+  if (!chatMessages) return;
+  const div = document.createElement('div');
+  div.className = `chat-message chat-message--${role}`;
+  if (role === 'system' && content.includes('...')) {
+    div.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(content)}`;
+  } else {
+    div.textContent = content;
+  }
+  chatMessages.appendChild(div);
+  // Scroll to bottom
+  const panelBodyEl = document.getElementById('panel-body');
+  if (panelBodyEl) panelBodyEl.scrollTop = panelBodyEl.scrollHeight;
+  return div;
+}
+
+function removeChatMessage(el) {
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function setChatLoading(loading) {
+  chatRefining = loading;
+  if (chatSpinner) chatSpinner.style.display = loading ? 'inline-block' : 'none';
+  if (chatSendIcon) chatSendIcon.style.display = loading ? 'none' : 'inline';
+  if (chatInput) chatInput.disabled = loading;
+  if (chatSendBtn) chatSendBtn.disabled = loading;
+}
+
+function sendChatMessage() {
+  if (chatRefining || !currentSessionId) return;
+  const prompt = chatInput?.value?.trim();
+  if (!prompt) return;
+
+  // Add user message to chat
+  addChatMessage('user', prompt);
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+
+  // Show loading indicator
+  setChatLoading(true);
+  const loadingMsg = addChatMessage('system', 'Generating...');
+
+  const body = JSON.stringify({ sessionId: currentSessionId, prompt });
+
+  fetch('/api/refine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  }).then((response) => {
+    if (!response.ok) {
+      return response.json().then((data) => {
+        throw new Error(data.error || `Server error: ${response.status}`);
+      });
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    function readStream() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          setChatLoading(false);
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const eventStr of events) {
+          if (!eventStr.trim()) continue;
+          parseRefineSSEEvent(eventStr, loadingMsg);
+        }
+        readStream();
+      }).catch((err) => {
+        setChatLoading(false);
+        removeChatMessage(loadingMsg);
+        addChatMessage('system', `Connection lost: ${err.message}`);
+      });
+    }
+    readStream();
+  }).catch((err) => {
+    setChatLoading(false);
+    removeChatMessage(loadingMsg);
+    addChatMessage('system', `Error: ${err.message}`);
+  });
+}
+
+function parseRefineSSEEvent(eventStr, loadingMsg) {
+  const lines = eventStr.split('\n');
+  let eventType = '';
+  let eventData = '';
+  for (const line of lines) {
+    if (line.startsWith('event: ')) eventType = line.slice(7);
+    else if (line.startsWith('data: ')) eventData = line.slice(6);
+  }
+  if (!eventType || !eventData) return;
+  let data;
+  try { data = JSON.parse(eventData); } catch { return; }
+
+  switch (eventType) {
+    case 'step':
+      // Update the loading message text
+      if (loadingMsg) {
+        loadingMsg.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(data.message)}`;
+      }
+      break;
+    case 'complete':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      handleRefineComplete(data);
+      addChatMessage('assistant', 'Component updated successfully.');
+      break;
+    case 'error':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      addChatMessage('system', `Error: ${data.message}`);
+      break;
+  }
+}
+
+function handleRefineComplete(data) {
+  console.log('[refine] handleRefineComplete called', {
+    hasFrameworkOutputs: !!data.frameworkOutputs,
+    hasMitosisSource: !!data.mitosisSource,
+    frameworks: data.frameworkOutputs ? Object.keys(data.frameworkOutputs) : [],
+    reactCodeLen: data.frameworkOutputs?.react?.length || 0,
+  });
+
+  // Update stored outputs
+  if (data.frameworkOutputs) {
+    currentFrameworkOutputs = data.frameworkOutputs;
+  }
+  if (data.mitosisSource) {
+    // Update the mitosis tab data
+    const mitosisTab = tabsData.find(t => t.key === 'mitosis');
+    if (mitosisTab) mitosisTab.code = data.mitosisSource;
+  }
+  // Update framework tab data
+  for (const [fw, code] of Object.entries(currentFrameworkOutputs)) {
+    const tab = tabsData.find(t => t.key === fw);
+    if (tab) tab.code = code;
+  }
+
+  // Keep generatedTabsData in sync (for Generated/Wired toggle)
+  generatedTabsData = tabsData.map(t => ({ ...t }));
+
+  // Refresh Monaco if a tab is open
+  if (activeFile && monacoEditor) {
+    const currentTab = tabsData.find(t => t.key === activeFile);
+    if (currentTab) {
+      monacoEditor.setValue(currentTab.code || '');
+    }
+  }
+
+  // Update preview
+  const reactCode = currentFrameworkOutputs.react || '';
+  console.log('[refine] preview update:', {
+    webContainerSyncEnabled,
+    hasWebContainer: !!webContainerInstance,
+    componentName: currentComponentName,
+    reactCodeLen: reactCode.length,
+    sessionId: currentSessionId,
+    previewFrameDisplay: previewFrame?.style?.display,
+    previewFrameSrc: previewFrame?.src?.substring(0, 80),
+  });
+
+  if (currentSessionId && previewFrame) {
+    if (webContainerSyncEnabled && webContainerInstance && currentComponentName && reactCode) {
+      // WebContainer path: write React code + CSS directly for Vite HMR
+      const { code, css } = extractReactCodeAndCss(reactCode);
+      const componentCode = code.replace(/\.\/assets\//g, '/assets/');
+      const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
+      const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
+      const wcPath = `src/components/${currentComponentName}.jsx`;
+      const cssPath = `src/components/${currentComponentName}.css`;
+      console.log('[refine] writing to WebContainer:', { wcPath, cssPath, codeLen: finalCode.length, cssLen: css.length });
+      // Clear the cache so writeWebContainerFiles doesn't skip
+      delete webContainerLastWritten[wcPath];
+      delete webContainerLastWritten[cssPath];
+      writeWebContainerFiles({
+        [wcPath]: finalCode,
+        [cssPath]: css || `/* ${currentComponentName} */`,
+      }).then(() => {
+        console.log('[refine] WebContainer files written, waiting for HMR...');
+        // Force reload the Vite preview after a short delay if HMR doesn't trigger
+        setTimeout(() => {
+          if (previewFrame && webContainerPreviewUrl) {
+            console.log('[refine] Force-reloading Vite preview');
+            previewFrame.src = webContainerPreviewUrl;
+          }
+        }, 1500);
+      }).catch((err) => {
+        console.warn('[refine] WebContainer write failed, using static preview:', err);
+        previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+      });
+    } else {
+      // Static preview path: reload iframe with cache bust
+      console.log('[refine] using static preview reload');
+      previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+    }
+  }
+}
+
+// Chat input events
+if (chatSendBtn) {
+  chatSendBtn.addEventListener('click', sendChatMessage);
+}
+if (chatInput) {
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  // Auto-resize textarea
+  chatInput.addEventListener('input', () => {
+    chatInput.style.height = 'auto';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+  });
 }
 
 // ── Monaco Editor ──
@@ -1422,7 +1674,8 @@ function setGitHubToken(token) {
 
 function normalizeRepoDirectory(input) {
   const normalized = input.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, '');
-  if (!normalized || normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\0')) return null;
+  if (normalized === '') return '';
+  if (normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\0')) return null;
   const segments = normalized.split('/').filter(Boolean);
   const SAFE = /^[A-Za-z0-9._-]+$/;
   if (segments.length === 0 || segments.some((s) => !SAFE.test(s))) return null;
@@ -1432,11 +1685,25 @@ function normalizeRepoDirectory(input) {
 function buildRepoPath(directory, filePath) {
   if (!filePath || filePath.includes('..') || filePath.includes('\\') || filePath.includes('\0')) return null;
   const safeDir = normalizeRepoDirectory(directory);
-  if (!safeDir) return null;
+  if (safeDir === null) return null;
   const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
   const SAFE = /^[A-Za-z0-9._-]+$/;
   if (parts.some((p) => !SAFE.test(p))) return null;
-  return `${safeDir}/${parts.join('/')}`;
+  return safeDir ? `${safeDir}/${parts.join('/')}` : parts.join('/');
+}
+
+function humanizeGitHubError(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  if (raw.includes('already exists')) {
+    return 'A repository with this name already exists on your GitHub account. Please choose a different name or switch to the "Existing Repo" tab to push to an existing repository.';
+  }
+  if (raw.includes('401') || raw.toLowerCase().includes('unauthorized') || raw.toLowerCase().includes('bad credentials')) {
+    return 'GitHub authentication failed. Please disconnect and reconnect your GitHub account.';
+  }
+  if (raw.includes('403') || raw.toLowerCase().includes('forbidden')) {
+    return 'You do not have permission to push to this repository.';
+  }
+  return raw;
 }
 
 async function getFunctionErrorMessage(err, fallback) {
@@ -1445,16 +1712,16 @@ async function getFunctionErrorMessage(err, fallback) {
   if (ctx instanceof Response) {
     try {
       const json = await ctx.clone().json();
-      if (typeof json?.error === 'string' && json.error.trim()) return json.error;
-      if (typeof json?.message === 'string' && json.message.trim()) return json.message;
+      if (typeof json?.error === 'string' && json.error.trim()) return humanizeGitHubError(json.error);
+      if (typeof json?.message === 'string' && json.message.trim()) return humanizeGitHubError(json.message);
     } catch {
       try {
         const text = await ctx.clone().text();
-        if (text.trim()) return text;
-      } catch {}
+        if (text.trim()) return humanizeGitHubError(text);
+      } catch { }
     }
   }
-  return err.message || fallback;
+  return humanizeGitHubError(err.message) || fallback;
 }
 
 function initGitHubDialog() {
@@ -1492,6 +1759,7 @@ function initGitHubDialog() {
   let repos = [];
   let selectedRepo = null;
   let githubTab = 'existing';
+  let filesLoading = false;
 
   function showError(msg) {
     errorEl.textContent = msg || '';
@@ -1519,7 +1787,7 @@ function initGitHubDialog() {
     selectedRepo = null;
     newRepoInput.value = currentComponentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     commitMsgInput.value = `feat: add ${currentComponentName} component`;
-    directoryInput.value = 'src/components';
+    directoryInput.value = templateWired ? '' : 'src/components';
     dirError.style.display = 'none';
     document.querySelectorAll('.github-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'existing'));
     tabExisting.style.display = 'block';
@@ -1528,17 +1796,35 @@ function initGitHubDialog() {
     overlay.setAttribute('aria-hidden', 'false');
     overlay.classList.add('visible');
 
-    fetch(`/api/session/${currentSessionId}/push-files`)
+    githubFiles = [];
+    filesLoading = true;
+    filesCountEl.textContent = '…';
+    filesListEl.innerHTML = '';
+    updatePushState();
+
+    const pushMode = templateWired ? 'wired' : codeViewMode;
+    fetch(`/api/session/${currentSessionId}/push-files?mode=${pushMode}`)
       .then((r) => r.json())
       .then((data) => {
         githubFiles = data.files || [];
         filesCountEl.textContent = githubFiles.length;
-        filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+        if (pushMode === 'wired') {
+          directoryInput.value = '';
+        } else {
+          directoryInput.value = 'src/components';
+        }
+        filesLoading = false;
+        updatePushState();
+        const dir = directoryInput.value;
+        const prefix = dir ? dir + '/' : '';
+        filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(prefix + f.name)}</div>`).join('');
       })
       .catch(() => {
         githubFiles = [];
+        filesLoading = false;
         filesCountEl.textContent = '0';
         filesListEl.innerHTML = '';
+        updatePushState();
       });
 
     fetch('/api/config')
@@ -1631,9 +1917,10 @@ function initGitHubDialog() {
 
   function updatePushState() {
     const dir = directoryInput.value;
-    const validDir = Boolean(normalizeRepoDirectory(dir));
+    const validDir = normalizeRepoDirectory(dir) !== null;
     dirError.style.display = validDir ? 'none' : 'block';
     const canPush =
+      !filesLoading &&
       validDir &&
       (githubTab === 'existing' ? selectedRepo : newRepoInput.value.trim());
     pushBtn.disabled = !canPush;
@@ -1641,7 +1928,9 @@ function initGitHubDialog() {
 
   directoryInput.addEventListener('input', () => {
     updatePushState();
-    filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(directoryInput.value + '/' + f.name)}</div>`).join('');
+    const dir = directoryInput.value;
+    const prefix = dir ? dir + '/' : '';
+    filesListEl.innerHTML = githubFiles.map((f) => `<div>${escapeHtml(prefix + f.name)}</div>`).join('');
   });
   newRepoInput.addEventListener('input', updatePushState);
 

@@ -55,6 +55,7 @@ export function assembleUserPrompt(
   componentName?: string,
   semanticHint?: string,
   templateMode?: boolean,
+  assetHints?: string,
 ): string {
   const nameHint = componentName
     ? `\nComponent name: ${componentName}\n`
@@ -67,12 +68,19 @@ export function assembleUserPrompt(
   // Do not inject Tailwind instructions; use same class/CSS strategy as non-template mode
   const templateReminder = '';
 
+  const assetBlock = assetHints || '';
+
   return `Convert the following Figma design to a Mitosis component (.lite.tsx):
-${nameHint}${semanticBlock}${templateReminder}
+${nameHint}${semanticBlock}${templateReminder}${assetBlock}
 Fidelity requirements:
+- **PIXEL PERFECT** — every CSS value must match the YAML data exactly. Copy fills, text colors, font sizes, border colors, shadows, and border-radius values VERBATIM.
 - Preserve exact text content from Figma; do NOT replace with placeholders.
 - Preserve exact numeric dimensions, spacing, and typography values from the design data.
+- Every node with visual properties (fills, border, shadows, textStyle, borderRadius, opacity) MUST have a CSS class with those exact values.
+- **TEXT nodes**: Do NOT apply fills as background-color. Text color is already in textStyle.color.
+- **ICON nodes** (type: ICON with assetFile): MUST render as \`<img src="{assetFile}" alt="" />\` with the node's width and height. Never render as empty div or CSS shape.
 - Do not invent responsive substitutions unless they are explicitly present in the input.
+- Do NOT skip any visual property from the YAML — if it exists, it must appear in the CSS.
 
 \`\`\`yaml
 ${yamlContent.trim()}
@@ -117,6 +125,18 @@ export interface PageSectionContext {
   nextSectionName?: string | null;
   /** Dominant background color of the page root */
   pageBackground?: string;
+  /** This section's width in pixels (from absoluteBoundingBox) */
+  sectionWidth?: number;
+  /** This section's height in pixels (from absoluteBoundingBox) */
+  sectionHeight?: number;
+  /** How this section is positioned in the page layout */
+  sectionPositioning?: 'flex' | 'absolute';
+  /** Horizontal sizing mode from Figma auto-layout */
+  sectionWidthMode?: 'fill' | 'hug' | 'fixed';
+  /** Vertical sizing mode from Figma auto-layout */
+  sectionHeightMode?: 'fill' | 'hug' | 'fixed';
+  /** Page-level layout direction */
+  pageLayoutDirection?: 'row' | 'column' | 'none';
 }
 
 /**
@@ -150,11 +170,39 @@ export function assemblePageSectionUserPrompt(
         contextLines.push(`- Page padding: ${top}px ${right}px ${bottom}px ${left}px`);
       }
     }
+    if (ctx.sectionWidth) {
+      if (ctx.sectionWidthMode === 'fill' || ctx.sectionWidthMode === 'hug') {
+        contextLines.push(`- This section's rendered width in the design: ${ctx.sectionWidth}px (for reference only — use the width mode below, NOT this pixel value)`);
+      } else {
+        contextLines.push(`- **This section's width: ${ctx.sectionWidth}px** — your root element MUST use this exact width`);
+      }
+    }
+    if (ctx.sectionHeight) {
+      if (ctx.sectionHeightMode === 'fill' || ctx.sectionHeightMode === 'hug') {
+        contextLines.push(`- This section's rendered height in the design: ${ctx.sectionHeight}px (for reference only — use the height mode below)`);
+      } else {
+        contextLines.push(`- **This section's height: ${ctx.sectionHeight}px**`);
+      }
+    }
     if (ctx.pageBackground) contextLines.push(`- Page background: ${ctx.pageBackground}`);
     if (ctx.prevSectionName) contextLines.push(`- Previous section: "${ctx.prevSectionName}"`);
     else contextLines.push(`- This is the FIRST section (no section above)`);
     if (ctx.nextSectionName) contextLines.push(`- Next section: "${ctx.nextSectionName}"`);
     else contextLines.push(`- This is the LAST section (no section below)`);
+    if (ctx.sectionPositioning) {
+      const dir = ctx.pageLayoutDirection ?? 'column';
+      contextLines.push(`- **Section positioning: ${ctx.sectionPositioning}** — this section is a ${ctx.sectionPositioning} item in a ${dir} layout`);
+    }
+    if (ctx.sectionWidthMode) {
+      if (ctx.sectionWidthMode === 'fill') contextLines.push(`- **Width mode: fill** — use width: 100%, NOT a fixed pixel value`);
+      else if (ctx.sectionWidthMode === 'hug') contextLines.push(`- **Width mode: hug** — use width: auto (fit content), NOT a fixed pixel value`);
+      else contextLines.push(`- **Width mode: fixed** — use the exact pixel value from section width`);
+    }
+    if (ctx.sectionHeightMode) {
+      if (ctx.sectionHeightMode === 'fill') contextLines.push(`- **Height mode: fill** — use height: 100% or flex: 1, NOT a fixed pixel value`);
+      else if (ctx.sectionHeightMode === 'hug') contextLines.push(`- **Height mode: hug** — use height: auto, NOT a fixed pixel value`);
+      else contextLines.push(`- **Height mode: fixed** — use the exact pixel value from section height`);
+    }
   }
 
   const contextBlock = contextLines.length > 0
@@ -167,9 +215,13 @@ This is **Section ${sectionIndex} of ${totalSections}: "${sectionName}"**.
 ${contextBlock}${templateReminder}
 Use BEM class names prefixed with "${slug}" (e.g. "${slug}__title", "${slug}__cta-button").
 - Do NOT invent class names — derive them from the element's role in the design.
+- **PIXEL PERFECT CSS** — copy ALL fills, colors, fonts, borders, shadows, border-radius, opacity values VERBATIM from the YAML into CSS. Do NOT skip or approximate any visual property.
 - Preserve exact text content and numeric dimensions from the input data.
 - Do not replace labels/content with placeholders.
 - If a fill has type "image", render it as a CSS background-image (cover/contain based on scaleMode).
+- Every YAML node with visual properties MUST get a CSS rule with ALL those properties.
+- **TEXT nodes**: Do NOT apply fills as background-color. Text color is already in textStyle.color.
+- **ICON nodes** (type: ICON with assetFile): MUST render as \`<img src="{assetFile}" alt="" />\` with the node's width and height. Never render as empty div or CSS shape.
 
 \`\`\`yaml
 ${yamlContent.trim()}

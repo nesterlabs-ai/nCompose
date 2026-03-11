@@ -183,6 +183,10 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
   // by looking for heading text inside each section.
   const resolvedNames = resolveSectionNames(children);
 
+  // Track used section names to deduplicate — prevents two "Content" sections
+  // from generating the same BEM prefix and baseClass.
+  const usedNames = new Map<string, number>();
+
   let rootCSS: string;
 
   if (hasAutoLayout) {
@@ -225,7 +229,13 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       if (child.visible === false) continue;
 
       const rawName = child.name || `section-${sections.length + 1}`;
-      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+
+      // Deduplicate: "content" + "content" → "content", "content-2"
+      const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
+      usedNames.set(kebabName, nameCount);
+      if (nameCount > 1) kebabName = `${kebabName}-${nameCount}`;
+
       const baseClass = `${pageName}__${kebabName}`;
       const resolved = resolvedNames[ci];
       const displayName = resolved !== rawName ? resolved : undefined;
@@ -242,22 +252,37 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
           sectionCSS += `  top: ${Math.round(bounds.y - parentBounds.y)}px;\n`;
           sectionCSS += `  width: ${Math.round(bounds.width)}px;\n`;
           sectionCSS += `  height: ${Math.round(bounds.height)}px;\n`;
+          sectionCSS += `  z-index: ${ci};\n`;
+          if (child.clipsContent) sectionCSS += `  overflow: hidden;\n`;
           sectionCSS += '}\n';
           continue;
         }
       }
 
       let css = `.${baseClass} {\n`;
-      const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
-      if (childWidth) css += `  width: ${childWidth}px;\n`;
-      else css += `  width: 100%;\n`;
 
+      // Respect Figma sizing modes: FILL → 100%, HUG → auto, FIXED → pixel value
+      const horizontalSizing = child.layoutSizingHorizontal ?? child.layoutSizing?.horizontal;
+      if (horizontalSizing === 'FILL') {
+        css += `  width: 100%;\n`;
+      } else if (horizontalSizing === 'HUG') {
+        css += `  width: fit-content;\n`;
+      } else {
+        const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
+        if (childWidth) css += `  width: ${childWidth}px;\n`;
+        else css += `  width: 100%;\n`;
+      }
+
+      const verticalSizing = child.layoutSizingVertical ?? child.layoutSizing?.vertical;
       const childHeight = child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y;
-      const verticalSizing = child.layoutSizingVertical ?? child.sizing?.vertical;
-      if (verticalSizing === 'FIXED' && childHeight) css += `  height: ${childHeight}px;\n`;
+      if (verticalSizing === 'FILL') {
+        css += `  flex: 1;\n`;
+      } else if (verticalSizing === 'FIXED' && childHeight) {
+        css += `  height: ${childHeight}px;\n`;
+      }
+      // HUG → height: auto (default, no CSS needed)
 
-      const layoutGrow = child.layoutGrow ?? child.layoutAlign;
-      if (layoutGrow === 1 || layoutGrow === 'STRETCH') css += `  flex: 1;\n`;
+      if (child.layoutGrow === 1) css += `  flex-grow: 1;\n`;
       css += '}\n';
       sectionCSS += css;
     }
@@ -281,7 +306,13 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       if (child.visible === false) continue;
 
       const rawName = child.name || `section-${sections.length + 1}`;
-      const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+
+      // Deduplicate: "content" + "content" → "content", "content-2"
+      const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
+      usedNames.set(kebabName, nameCount);
+      if (nameCount > 1) kebabName = `${kebabName}-${nameCount}`;
+
       const baseClass = `${pageName}__${kebabName}`;
       const resolved = resolvedNames[ci];
       const displayName = resolved !== rawName ? resolved : undefined;
@@ -295,6 +326,8 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
         css += `  top: ${Math.round(bounds.y - rootBounds.y)}px;\n`;
         css += `  width: ${Math.round(bounds.width)}px;\n`;
         css += `  height: ${Math.round(bounds.height)}px;\n`;
+        css += `  z-index: ${ci};\n`;
+        if (child.clipsContent) css += `  overflow: hidden;\n`;
       } else {
         // No bounding box — fallback to full-width flow
         const childWidth = child.dimensions?.width ?? child.size?.x;

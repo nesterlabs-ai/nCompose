@@ -2,12 +2,16 @@
  * Component Discovery System
  *
  * Walks a Figma section tree, identifies INSTANCE nodes that are recognizable
- * UI components (Dropdown, Input, Button, Chip, Toggle, etc.), groups them
- * by component name, and extracts props from componentProperties.
+ * UI components (Dropdown, Input, Button, Chip, Toggle, etc.) AND chart/graph
+ * sections. Groups them by component name, and extracts props from
+ * componentProperties.
  *
- * Used by PATH C to generate leaf components individually before assembling
- * the full section — producing better semantic HTML via focused LLM calls.
+ * Used by PATH C to generate leaf components (and charts) individually before
+ * assembling the full section — producing better semantic HTML via focused
+ * LLM calls and deterministic Recharts codegen.
  */
+
+import { isChartSection } from './chart-detection.js';
 
 // ── Name patterns for recognizable UI components ────────────────────────────
 
@@ -37,6 +41,8 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
 export interface ComponentInstance {
   /** Reference to the original Figma node */
   node: any;
+  /** Raw Figma node for chart detection (has arcData, strokes, etc.) */
+  rawNode?: any;
   /** Cleaned props extracted from componentProperties */
   props: Record<string, string | boolean>;
   /** Path from section root to this instance (for substitution) */
@@ -48,12 +54,14 @@ export interface DiscoveredComponent {
   name: string;
   /** Grouping key: "name::fingerprint" — unique per structural variant */
   variantKey: string;
-  /** Inferred form role (e.g., "select", "textInput", "button") */
+  /** Inferred form role (e.g., "select", "textInput", "button", "chart") */
   formRole: string;
   /** All instances of this component found in the section */
   instances: ComponentInstance[];
   /** Representative node for generation (first instance, richest props) */
   representativeNode: any;
+  /** Raw Figma node for chart metadata extraction */
+  representativeRawNode?: any;
   /** Merged props across all instances (superset of all prop keys) */
   allPropKeys: string[];
 }
@@ -167,15 +175,46 @@ function matchComponentPattern(name: string): string | null {
 
 /**
  * Recursively walks the Figma tree to find INSTANCE nodes that match
- * known UI component patterns. Collects them with their tree path
- * so we can substitute them later.
+ * known UI component patterns AND chart/graph sections.
+ * Collects them with their tree path so we can substitute them later.
+ *
+ * @param node      Simplified Figma node (used for component matching)
+ * @param rawNode   Raw Figma node (used for chart detection — has arcData, strokes)
+ * @param path      Current tree path from section root
+ * @param results   Map to collect discovered components
  */
 function walkForComponents(
   node: any,
+  rawNode: any,
   path: number[],
   results: Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>,
 ): void {
   if (!node || node.visible === false) return;
+
+  // Check if this FRAME/GROUP is a chart/graph section (uses raw node for detection).
+  // Only check at depth 0 (the section root itself) to match the old behavior
+  // where only top-level page sections were tested. Checking inner frames causes
+  // false positives (navigation groups, text containers, etc.).
+  const depth = path.length;
+  const nodeType = rawNode?.type ?? node.type;
+  if (depth === 0 && (nodeType === 'FRAME' || nodeType === 'GROUP' || nodeType === 'INSTANCE')) {
+    if (rawNode && isChartSection(rawNode)) {
+      const chartName = node.name ?? rawNode.name ?? 'Chart';
+      // Unique key per chart instance (by position in tree)
+      const key = `chart::${chartName}::${path.join('-')}`;
+      if (!results.has(key)) {
+        results.set(key, { formRole: 'chart', componentName: chartName, instances: [] });
+      }
+      results.get(key)!.instances.push({
+        node,
+        rawNode,
+        props: {},
+        treePath: [...path],
+      });
+      // Don't recurse into charts — they're leaf units
+      return;
+    }
+  }
 
   // Check if this is a recognizable component INSTANCE
   if (node.type === 'INSTANCE' && node.name) {
@@ -196,27 +235,34 @@ function walkForComponents(
     }
   }
 
-  // Recurse into children
+  // Recurse into children (threading raw children alongside simplified ones)
   if (node.children && Array.isArray(node.children)) {
+    const rawChildren: any[] = rawNode?.children ?? [];
     for (let i = 0; i < node.children.length; i++) {
       const child = node.children[i];
+      const rawChild = rawChildren[i] ?? child;
       if (child && child.visible !== false) {
-        walkForComponents(child, [...path, i], results);
+        walkForComponents(child, rawChild, [...path, i], results);
       }
     }
   }
 }
 
 /**
- * Discovers all recognizable UI component instances in a section tree.
+ * Discovers all recognizable UI component instances and chart sections
+ * in a section tree.
  *
- * @param sectionNode - The root FRAME of a page section
+ * @param sectionNode    - The root FRAME of a page section (simplified)
+ * @param rawSectionNode - The raw Figma node (for chart detection)
  * @returns Discovery result with unique component types and their instances
  */
-export function discoverComponents(sectionNode: any): ComponentDiscoveryResult {
+export function discoverComponents(
+  sectionNode: any,
+  rawSectionNode?: any,
+): ComponentDiscoveryResult {
   const componentMap = new Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>();
 
-  walkForComponents(sectionNode, [], componentMap);
+  walkForComponents(sectionNode, rawSectionNode ?? sectionNode, [], componentMap);
 
   const components: DiscoveredComponent[] = [];
   let totalInstances = 0;
@@ -240,6 +286,7 @@ export function discoverComponents(sectionNode: any): ComponentDiscoveryResult {
       formRole,
       instances,
       representativeNode: representative.node,
+      representativeRawNode: representative.rawNode,
       allPropKeys,
     });
   }

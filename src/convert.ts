@@ -622,13 +622,13 @@ export async function convertFigmaToCode(
   const yamlContent = dump(enhanced, { lineWidth: 120, noRefs: true });
 
   // Raw Figma document node — preserves arcData, paddingTop, etc. that
-  // extractCompleteDesign strips. Used by PATH C and PATH D for chart detection.
+  // extractCompleteDesign strips. Used by PATH C and Recharts codegen for chart detection.
   const rawDocumentNode = nodeId
     ? (rawData as any)?.nodes?.[nodeId]?.document ?? enhanced?.nodes?.[0] ?? enhanced
     : enhanced?.nodes?.[0] ?? enhanced;
 
   // --- PATH A: Component Set (variant-aware) ---
-  // If the default variant is a chart/graph, route to PATH D (Recharts codegen)
+  // If the default variant is a chart/graph, use Recharts codegen
   // instead of LLM-based generation so it uses Recharts, not raw SVG.
   // For chart COMPONENT_SETs, generate a chart for EACH variant.
   if (isComponentSet(enhanced)) {
@@ -730,7 +730,7 @@ export async function convertFigmaToCode(
 
       return {
         componentName: primaryComponentName,
-        mitosisSource: `// Chart component set — generated via Recharts codegen (PATH D).\n${reactCode}`,
+        mitosisSource: `// Chart component set — generated via Recharts codegen (Recharts codegen).\n${reactCode}`,
         frameworkOutputs: frameworkOutputs as Record<Framework, string>,
         assets: [],
         css: fullCss,
@@ -745,12 +745,14 @@ export async function convertFigmaToCode(
     return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode);
   }
 
-  // --- PATH D: Chart node → Recharts codegen (LLM decides chart type) ---
+  // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
+  // Charts are now discovered within PATH C's component discovery flow.
+  // Standalone chart nodes that aren't part of a multi-section page
+  // are handled by PATH B (single component) as a fallback.
   if (isChartSection(rawDocumentNode)) {
     return convertChart(rawDocumentNode, options, callbacks);
   }
 
-  // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
   return convertSingleComponent(enhanced, yamlContent, fileKey, client, options, callbacks);
 }
 
@@ -1308,7 +1310,7 @@ function toPascalCase(name: string): string {
 }
 
 /**
- * PATH D: Chart node → Recharts codegen (no LLM).
+ * Recharts codegen: Chart node → Recharts codegen (no LLM).
  *
  * When the user points directly at a chart/graph Figma node, skip the LLM
  * entirely and generate a Recharts component deterministically from the tree.
@@ -1351,7 +1353,7 @@ async function convertChart(
 
   return {
     componentName,
-    mitosisSource: `// Chart component — generated via Recharts codegen (PATH D), bypasses Mitosis.\n${reactCode}`,
+    mitosisSource: `// Chart component — generated via Recharts codegen (Recharts codegen), bypasses Mitosis.\n${reactCode}`,
     frameworkOutputs: frameworkOutputs as Record<Framework, string>,
     assets: [],
     css,
@@ -1388,7 +1390,7 @@ async function convertPage(
   const { sections, pageBaseClass } = layoutResult;
   const pageName = toPascalCase(rootNode.name || 'Page');
 
-  onStep?.(`Page "${pageName}" with ${sections.length} sections: ${sections.map((s) => s.name).join(', ')}`);
+  onStep?.(`Page "${pageName}" with ${sections.length} sections: ${sections.map((s) => s.displayName ?? s.name).join(', ')}`);
 
   // Step C2: Generate each section via LLM
   const llm = createLLMProvider(options.llm);
@@ -1396,6 +1398,7 @@ async function convertPage(
   const sectionOutputs: SectionOutput[] = [];
   const allAssets: AssetEntry[] = [];
   const allChartComponents: ChartComponent[] = [];
+  const usedChartNames = new Set<string>();
 
   // Compute page-level context once — passed to every section prompt so the
   // LLM knows the canvas width, section gap, page padding, and neighbor names.
@@ -1431,56 +1434,11 @@ async function convertPage(
     const { child, rawChild } = visibleChildren[i];
     const sectionInfo = sections[i];
     if (!sectionInfo) continue;
+    const sectionDisplayName = sectionInfo.displayName ?? sectionInfo.name;
 
-    onStep?.(`[${i + 1}/${visibleChildren.length}] Generating section "${sectionInfo.name}"...`);
+    onStep?.(`[${i + 1}/${visibleChildren.length}] Generating section "${sectionDisplayName}"...`);
 
     try {
-      // Check if section is a chart/graph — use raw child for detection (has arcData, etc.)
-      if (isChartSection(rawChild)) {
-        onStep?.(`  Detected chart section "${sectionInfo.name}" → extracting chart metadata...`);
-        const meta = await extractChartMetadata(rawChild, llm);
-
-        // Use the section name as fallback if series name is the generic default "Chart"
-        if (meta.series[0]?.name === 'Chart' && sectionInfo.name) {
-          meta.series[0].name = sectionInfo.name;
-          const pascal = sectionInfo.name
-            .replace(/[^a-zA-Z0-9\s]/g, ' ')
-            .split(/\s+/).filter(Boolean)
-            .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-            .join('');
-          meta.componentName = pascal + (pascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
-          meta.bemBase = meta.componentName
-            .replace(/([a-z])([A-Z])/g, '$1-$2')
-            .toLowerCase()
-            .replace(/[^a-z0-9-]/g, '');
-        }
-
-        // Deduplicate: if another chart already has this name, append a suffix
-        const existingNames = new Set(allChartComponents.map((c) => c.name));
-        if (existingNames.has(meta.componentName)) {
-          let suffix = 2;
-          while (existingNames.has(`${meta.componentName}${suffix}`)) suffix++;
-          meta.componentName = `${meta.componentName}${suffix}`;
-          meta.bemBase = meta.componentName
-            .replace(/([a-z])([A-Z])/g, '$1-$2')
-            .toLowerCase()
-            .replace(/[^a-z0-9-]/g, '');
-        }
-
-        const { reactCode, css } = generateChartCode(meta);
-        allChartComponents.push({ name: meta.componentName, reactCode, css });
-        sectionOutputs.push({
-          info: sectionInfo,
-          rawCode: '',
-          css: '',
-          failed: false,
-          isChart: true,
-          chartComponentName: meta.componentName,
-        });
-        onStep?.(`  Chart component "${meta.componentName}" generated (${meta.chartType}, ${meta.dataPointCount} data points).`);
-        continue;
-      }
-
       // Check if section is a COMPONENT_SET (use PATH A prompt chain)
       if (child.type === 'COMPONENT_SET') {
         const sectionDesign = buildSectionDesign(enhanced, child);
@@ -1548,18 +1506,46 @@ async function convertPage(
           onStep,
           onAttempt,
           options.templateMode,
+          rawChild,
+          usedChartNames,
         );
 
-        sectionOutputs.push({
-          info: sectionInfo,
-          rawCode: compoundResult.rawCode,
-          css: compoundResult.css,
-          failed: !compoundResult.success,
-        });
+        // Collect any chart components discovered within this section
+        if (compoundResult.chartComponents.length > 0) {
+          for (const chart of compoundResult.chartComponents) {
+            usedChartNames.add(chart.name);
+          }
+          allChartComponents.push(...compoundResult.chartComponents);
+        }
+
+        // If section root itself is a chart (discovered at depth 0 with no UI components),
+        // treat it as chart-only — bypass the LLM's PATH 2 output (which may hallucinate
+        // duplicate placeholders) and let stitch emit a single clean placeholder.
+        const isChartOnlySection = compoundResult.chartComponents.length === 1
+          && compoundResult.discovery.components.length === 1
+          && compoundResult.discovery.components[0].formRole === 'chart';
+
+        if (isChartOnlySection) {
+          sectionOutputs.push({
+            info: sectionInfo,
+            rawCode: '',
+            css: '',
+            failed: false,
+            isChart: true,
+            chartComponentName: compoundResult.chartComponents[0].name,
+          });
+        } else {
+          sectionOutputs.push({
+            info: sectionInfo,
+            rawCode: compoundResult.rawCode,
+            css: compoundResult.css,
+            failed: !compoundResult.success,
+          });
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      onStep?.(`  Section "${sectionInfo.name}" failed: ${msg}`);
+      onStep?.(`  Section "${sectionDisplayName}" failed: ${msg}`);
       sectionOutputs.push({
         info: sectionInfo,
         rawCode: '',

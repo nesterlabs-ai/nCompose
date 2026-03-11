@@ -160,6 +160,10 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
 
     for (let ci = 0; ci < children.length; ci++) {
       const child = children[ci];
+
+      // Skip hidden children — they should not become layout sections
+      if (child.visible === false) continue;
+
       const rawName = child.name || `section-${sections.length + 1}`;
       const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
       const baseClass = `${pageName}__${kebabName}`;
@@ -210,6 +214,10 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
 
     for (let ci = 0; ci < children.length; ci++) {
       const child = children[ci];
+
+      // Skip hidden children — they should not become layout sections
+      if (child.visible === false) continue;
+
       const rawName = child.name || `section-${sections.length + 1}`;
       const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
       const baseClass = `${pageName}__${kebabName}`;

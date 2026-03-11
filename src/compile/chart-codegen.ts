@@ -49,7 +49,38 @@ const RECHARTS_MAP: Record<string, RechartsComponentDef> = {
     extras: ['PolarAngleAxis', 'Legend', 'Tooltip'],
     cartesian: false,
   },
+  radar: {
+    chart: 'RadarChart',
+    dataElement: 'Radar',
+    extras: ['PolarGrid', 'PolarAngleAxis', 'PolarRadiusAxis', 'Tooltip', 'Legend'],
+    cartesian: false,
+  },
+  scatter: {
+    chart: 'ScatterChart',
+    dataElement: 'Scatter',
+    extras: ['CartesianGrid', 'XAxis', 'YAxis', 'Tooltip', 'Legend', 'Cell'],
+    cartesian: true,
+  },
+  funnel: {
+    chart: 'FunnelChart',
+    dataElement: 'Funnel',
+    extras: ['Tooltip', 'Legend', 'Cell', 'LabelList'],
+    cartesian: false,
+  },
+  treemap: {
+    chart: 'Treemap',
+    dataElement: 'Treemap',
+    extras: ['Tooltip'],
+    cartesian: false,
+  },
   bar: {
+    chart: 'BarChart',
+    dataElement: 'Bar',
+    extras: ['CartesianGrid', 'XAxis', 'YAxis', 'Tooltip', 'Legend', 'LabelList'],
+    cartesian: true,
+  },
+  // "composed" from LLM means bar+line overlay — render as BarChart (primary visual)
+  composed: {
     chart: 'BarChart',
     dataElement: 'Bar',
     extras: ['CartesianGrid', 'XAxis', 'YAxis', 'Tooltip', 'Legend', 'LabelList'],
@@ -171,8 +202,9 @@ function resolveImports(def: RechartsComponentDef): string[] {
   imports.add(def.chart);
   imports.add(def.dataElement);
   for (const extra of def.extras) imports.add(extra);
-  // Cell is needed for pie/donut data coloring
+  // Cell is needed for pie/donut data coloring, and bar charts with per-bar colors
   if (def.dataElement === 'Pie') imports.add('Cell');
+  if (def.dataElement === 'Bar') imports.add('Cell'); // included conditionally in JSX
   return [...imports];
 }
 
@@ -211,6 +243,58 @@ const ${name} = ({ active, payload, label }) => {
 function buildChartData(meta: ChartMetadata, componentName: string): string {
   const { xAxisLabels, yAxisMin, yAxisMax, dataPointCount, periodOptions, hasSwitcher, series, chartType } = meta;
 
+  // Radar: axis-based data with series values per axis
+  if (chartType === 'radar') {
+    // Use extracted axis labels or fallback to x-axis labels or generic labels
+    const axes = meta.radarAxes.length > 0
+      ? meta.radarAxes
+      : xAxisLabels.length > 0
+        ? xAxisLabels
+        : Array.from({ length: 6 }, (_, i) => `Axis ${i + 1}`);
+    const seriesCount = series.length;
+    const points = axes.map((axis, i) => {
+      const seriesValues = seriesCount > 1
+        ? series.map((s, si) => {
+            // Generate plausible values that vary per axis and series
+            const value = Math.round(50 + 40 * Math.sin((i + si * 2) * 1.1));
+            return `${JSON.stringify(s.name)}: ${value}`;
+          }).join(', ')
+        : `value: ${Math.round(50 + 40 * Math.sin(i * 1.1))}`;
+      return `    { subject: ${JSON.stringify(axis)}, ${seriesValues}, fullMark: 100 }`;
+    });
+    return (
+      `const CHART_DATA_${componentName} = {\n` +
+      `  "default": [\n${points.join(',\n')}\n  ]\n` +
+      `};`
+    );
+  }
+
+  // Funnel: descending value data
+  if (chartType === 'funnel' && series.length > 0) {
+    const funnelPoints = series.map((s, i) => {
+      const value = s.value ?? Math.round(100 - (i * 100 / series.length));
+      return `    { name: ${JSON.stringify(s.name)}, value: ${value}, fill: ${JSON.stringify(s.color)} }`;
+    });
+    return (
+      `const CHART_DATA_${componentName} = {\n` +
+      `  "default": [\n${funnelPoints.join(',\n')}\n  ]\n` +
+      `};`
+    );
+  }
+
+  // Treemap: nested rectangle data
+  if (chartType === 'treemap' && series.length > 0) {
+    const treemapPoints = series.map((s, i) => {
+      const value = s.value ?? Math.round(100 - i * 10);
+      return `    { name: ${JSON.stringify(s.name)}, size: ${value}, fill: ${JSON.stringify(s.color)} }`;
+    });
+    return (
+      `const CHART_DATA_${componentName} = {\n` +
+      `  "default": [\n${treemapPoints.join(',\n')}\n  ]\n` +
+      `};`
+    );
+  }
+
   // Radial: ring data with progress values from Figma arc sweeps
   if (chartType === 'radial' && meta.rings.length > 0) {
     const ringData = meta.rings.map((r) =>
@@ -232,6 +316,20 @@ function buildChartData(meta: ChartMetadata, componentName: string): string {
     return (
       `const CHART_DATA_${componentName} = {\n` +
       `  "default": [\n${pieData.join(',\n')}\n  ]\n` +
+      `};`
+    );
+  }
+
+  // Bar chart with extracted data from Figma bar heights — use actual values
+  if (chartType === 'bar' && meta.barData && meta.barData.length > 0) {
+    const hasPerBarColors = meta.barData.some((d) => d.color);
+    const barPoints = meta.barData.map((d) => {
+      const colorPart = hasPerBarColors && d.color ? `, color: ${JSON.stringify(d.color)}` : '';
+      return `    { name: ${JSON.stringify(d.name)}, value: ${d.value}${colorPart} }`;
+    });
+    return (
+      `const CHART_DATA_${componentName} = {\n` +
+      `  "default": [\n${barPoints.join(',\n')}\n  ]\n` +
       `};`
     );
   }
@@ -290,8 +388,29 @@ function buildChartJSX(meta: ChartMetadata, def: RechartsComponentDef): string {
   const chartTag = def.chart;
   const chartOpenProps = buildChartContainerProps(meta, def);
 
+  // Treemap: it IS both container and data element
+  if (chartType === 'treemap') {
+    return (
+      `<Treemap\n` +
+      `          data={data}\n` +
+      `          dataKey="size"\n` +
+      `          nameKey="name"\n` +
+      `          aspectRatio={4 / 3}\n` +
+      `          stroke="#fff"\n` +
+      `          content={({ x, y, width, height, name, fill }) => (\n` +
+      `            <g>\n` +
+      `              <rect x={x} y={y} width={width} height={height} fill={fill} stroke="#fff" />\n` +
+      `              {width > 50 && height > 20 && (\n` +
+      `                <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="central" fontSize={12} fill="#fff">{name}</text>\n` +
+      `              )}\n` +
+      `            </g>\n` +
+      `          )}\n` +
+      `        />`
+    );
+  }
+
   if (!def.cartesian) {
-    // Non-cartesian (pie, donut, radial) — no axes/grid
+    // Non-cartesian (pie, donut, radial, radar, funnel) — no cartesian axes/grid
     return (
       `<${chartTag}${chartOpenProps}>\n` +
       dataElementProps +
@@ -326,6 +445,19 @@ function buildChartContainerProps(meta: ChartMetadata, _def: RechartsComponentDe
     const innerR = rings.length > 0 ? rings[rings.length - 1].innerRadius : 20;
     const outerR = rings.length > 0 ? rings[0].outerRadius : Math.round(meta.chartAreaHeight / 2);
     return ` innerRadius="${innerR}" outerRadius="${outerR}" data={data} startAngle={90} endAngle={-270}`;
+  }
+
+  if (chartType === 'radar') {
+    const outerR = Math.round(meta.chartAreaHeight * 0.35);
+    return ` cx="50%" cy="50%" outerRadius={${outerR}} data={data}`;
+  }
+
+  if (chartType === 'funnel') {
+    return ''; // FunnelChart takes no special container props
+  }
+
+  if (chartType === 'treemap') {
+    return ''; // Treemap is both container and data element
   }
 
   // Cartesian charts
@@ -400,10 +532,77 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
     );
   }
 
+  // ── Radar ──
+  if (el === 'Radar') {
+    const radarAxes = meta.radarAxes ?? [];
+    const angleAxisDataKey = radarAxes.length > 0 ? 'subject' : 'name';
+
+    let radarElements = '';
+    if (isMultiSeries) {
+      radarElements = series.map((s) =>
+        `          <${el} name="${s.name}" dataKey=${JSON.stringify(s.name)} stroke="${s.color}" fill="${s.color}" fillOpacity={0.15} />\n`,
+      ).join('');
+    } else {
+      radarElements =
+        `          <${el} name="Value" dataKey="value" stroke="${primaryColor}" fill="${primaryColor}" fillOpacity={0.25} />\n`;
+    }
+
+    return (
+      `          <PolarGrid />\n` +
+      `          <PolarAngleAxis dataKey="${angleAxisDataKey}" tick={{ fill: '${meta.axisLabelColor}', fontSize: ${meta.axisFontSize} }} />\n` +
+      `          <PolarRadiusAxis angle={90} domain={[0, 100]} tick={false} axisLine={false} />\n` +
+      radarElements +
+      `          <Tooltip content={<${tooltipName(meta)} />} />\n`
+    );
+  }
+
+  // ── Funnel ──
+  if (el === 'Funnel') {
+    return (
+      `          <Tooltip content={<${tooltipName(meta)} />} />\n` +
+      `          <${el} dataKey="value" data={data} isAnimationActive>\n` +
+      `            <LabelList position="right" fill="#000" stroke="none" dataKey="name" />\n` +
+      `            {data.map((entry, index) => (\n` +
+      `              <Cell key={index} fill={entry.fill} />\n` +
+      `            ))}\n` +
+      `          </${el}>\n`
+    );
+  }
+
+  // ── Treemap ──
+  if (el === 'Treemap') {
+    // Treemap is special — it's both the container and data element
+    // The container props are built here instead
+    return (
+      `          <Tooltip content={<${tooltipName(meta)} />} />\n`
+    );
+  }
+
+  // ── Scatter ──
+  if (el === 'Scatter') {
+    if (isMultiSeries) {
+      return series.map((s) =>
+        `          <${el} name="${s.name}" data={data} fill="${s.color}" />\n`,
+      ).join('');
+    }
+    return `          <${el} name="Data" data={data} fill="${primaryColor}" />\n`;
+  }
+
   // ── Cartesian elements (Bar, Line, Area) ──
   if (!isMultiSeries) {
     const color = primaryColor;
     const dataKey = 'value';
+    // Bar chart with per-bar colors (each bar has a different fill from Figma)
+    const hasPerBarColors = el === 'Bar' && meta.barData?.some((d) => d.color);
+    if (hasPerBarColors) {
+      return (
+        `          <${el} dataKey="${dataKey}" radius={[${meta.barRadius.join(', ')}]}>\n` +
+        `            {data.map((entry, index) => (\n` +
+        `              <Cell key={index} fill={entry.color} />\n` +
+        `            ))}\n` +
+        `          </${el}>\n`
+      );
+    }
     return `          <${el} ${buildElementProps(el, dataKey, color, meta, 0)} />\n`;
   }
 
@@ -434,7 +633,7 @@ function buildElementProps(
     case 'Bar':
       return `dataKey="${dataKey}" fill="${color}" radius={[${barRadius.join(', ')}]}`;
     case 'Area': {
-      const gradientId = index > 0 ? `${bemBase}-gradient-${index}` : `${bemBase}-gradient`;
+      const gradientId = meta.series.length > 1 ? `${bemBase}-gradient-${index}` : `${bemBase}-gradient`;
       return `type="monotone" dataKey="${dataKey}" stroke="${color}" strokeWidth={${seriesStrokeWidth}} fill="url(#${gradientId})" ${dotProps}`;
     }
     case 'Line':
@@ -454,9 +653,14 @@ function buildCartesianProps(meta: ChartMetadata): string {
 
   const xAxisProps = `dataKey="name" tick={{ fill: '${axisLabelColor}', fontSize: ${axisFontSize} }} axisLine={false} tickLine={false}`;
 
-  const yRange = yAxisMax - yAxisMin;
-  const yStep = yRange > 0 ? Math.round(yRange / 4) : 10;
-  const yTicks = [yAxisMin, yAxisMin + yStep, yAxisMin + yStep * 2, yAxisMin + yStep * 3, yAxisMax];
+  // Use actual ticks from Figma if available, otherwise generate evenly spaced ticks
+  const yTicks = meta.yAxisTicks?.length >= 2
+    ? meta.yAxisTicks
+    : (() => {
+        const yRange = yAxisMax - yAxisMin;
+        const yStep = yRange > 0 ? Math.round(yRange / 4) : 10;
+        return [yAxisMin, yAxisMin + yStep, yAxisMin + yStep * 2, yAxisMin + yStep * 3, yAxisMax];
+      })();
   const yAxisProps =
     `domain={[${yAxisMin}, ${yAxisMax}]} ticks={[${yTicks.join(', ')}]} ` +
     `tick={{ fill: '${axisLabelColor}', fontSize: ${axisFontSize} }} axisLine={false} tickLine={false} width={${yAxisWidth}}`;

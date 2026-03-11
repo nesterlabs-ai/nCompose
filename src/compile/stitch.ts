@@ -24,6 +24,8 @@ export interface SectionOutput {
   isChart?: boolean;
   /** PascalCase name of the generated chart component, e.g. "InterestEarnedChart" */
   chartComponentName?: string;
+  /** Chart components discovered within this section (stored here for reliable section-to-chart mapping) */
+  sectionChartComponents?: import('../types/index.js').ChartComponent[];
 }
 
 export interface StitchedPage {

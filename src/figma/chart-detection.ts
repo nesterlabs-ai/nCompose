@@ -278,14 +278,16 @@ export function isChartSection(node: any): boolean {
   if (children.length >= 2) {
     let chartChildCount = 0;
     for (const child of children) {
-      if (child.visible === false) continue; // skip hidden children
+      if (child.visible === false) continue;
       if (child.type === 'FRAME' || child.type === 'GROUP' || child.type === 'INSTANCE') {
+        // Skip small children (legends, labels, headings) — they can't be independent chart sections.
+        const childBB = child.absoluteBoundingBox;
+        const childH = childBB?.height ?? 0;
+        if (childH < 50) continue;
         const childSignalA = hasDataShapeCluster(child);
-        // Only count high-confidence chart signals to avoid false positives
-        // from legend frames (small dots, single decorative vectors, etc.)
         if (childSignalA.detected && childSignalA.highConfidence) chartChildCount++;
       }
-      if (chartChildCount >= 2) return false; // multi-chart container, not a single chart
+      if (chartChildCount >= 2) return false;
     }
   }
 
@@ -295,10 +297,42 @@ export function isChartSection(node: any): boolean {
 
   const signalCount = [signalA.detected, signalB, signalC].filter(Boolean).length;
 
-  // High-confidence single signal: strong pie/donut or bar cluster
-  if (signalA.detected && signalA.highConfidence) return true;
+  // Count all TEXT nodes to distinguish UI-heavy sections (nav, forms) from charts
+  const allTextNodes = findAllNodes(node, (n: any) => n.type === 'TEXT');
+  const totalTextCount = allTextNodes.length;
+  const longTextCount = allTextNodes.filter((t: any) => {
+    const chars = (t.characters ?? '').length;
+    return chars > 20;
+  }).length;
 
-  return signalCount >= 2;
+  // High-confidence single signal: strong pie/donut or bar cluster
+  if (signalA.detected && signalA.highConfidence) {
+    // But reject if text-heavy (nav/form sections have many TEXT nodes)
+    const shapeCount = signalA.count ?? 5;
+    // Bar charts naturally have many text nodes (axis labels + bar labels).
+    // When multiple signals confirm a chart (axes, grid lines), allow a higher text count.
+    // With 2+ signals: allow up to shapeCount * 5 texts (bars have 2–3 labels each + title).
+    // With 1 signal: use stricter shapeCount * 3 threshold.
+    const textMultiplier = signalCount >= 2 ? 5 : 3;
+    if (totalTextCount > shapeCount * textMultiplier) return false;
+    return true;
+  }
+
+  // Two or more signals
+  if (signalCount >= 2) {
+    // Reject if section has many long text strings (paragraphs, descriptions)
+    if (longTextCount >= 4) return false;
+    return true;
+  }
+
+  // Single signal — be conservative
+  if (signalCount === 1) {
+    if (longTextCount >= 2) return false;
+    if (totalTextCount > 10) return false;
+    return true;
+  }
+
+  return false;
 }
 
 // ── Signal A: Data shape cluster ────────────────────────────────────────────
@@ -324,7 +358,7 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
   // Small ellipses (< MIN_PIE_ELLIPSE_DIAMETER) are data-point dots,
   // legend swatches, or decorative elements — never pie arcs.
   const pieEllipses = findAllNodes(node, (n: any) => {
-    if (n.type !== 'ELLIPSE') return false;
+    if (n.type !== 'ELLIPSE' && n.type !== 'ARC') return false;
     const bb = n.absoluteBoundingBox;
     if (!bb) return false;
     const diameter = Math.max(bb.width, bb.height);
@@ -377,6 +411,15 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
     return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
   });
   if (barShapes.length >= MIN_BAR_RECTS) {
+    // Helper: if >= 50% of bar candidates contain TEXT children, it's a UI container
+    // (nav items, cards, list rows) not chart bars.
+    const isUIContainerGroup = (group: any[]): boolean => {
+      const withText = group.filter((r: any) =>
+        findAllNodes(r, (n: any) => n.type === 'TEXT').length > 0,
+      ).length;
+      return withText >= group.length * 0.5;
+    };
+
     // Group by shared bottom-edge y (vertical bars)
     const bottomGroups = groupByProperty(barShapes, (r: any) => {
       const bb = r.absoluteBoundingBox;
@@ -386,8 +429,8 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
       if (group.length >= MIN_BAR_RECTS) {
         const heights = group.map((r: any) => r.absoluteBoundingBox?.height ?? 0);
         const heightRange = Math.max(...heights) - Math.min(...heights);
-        if (heightRange > 10) {
-          return { detected: true, highConfidence: group.length >= 5 };
+        if (heightRange > 10 && !isUIContainerGroup(group)) {
+          return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }
     }
@@ -399,8 +442,8 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
       if (group.length >= MIN_BAR_RECTS) {
         const widths = group.map((r: any) => r.absoluteBoundingBox?.width ?? 0);
         const widthRange = Math.max(...widths) - Math.min(...widths);
-        if (widthRange > 10) {
-          return { detected: true, highConfidence: group.length >= 5 };
+        if (widthRange > 10 && !isUIContainerGroup(group)) {
+          return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }
     }
@@ -802,13 +845,12 @@ export async function extractChartMetadata(
   // ── Multi-series extraction ──
   let series: SeriesInfo[] = extractSeriesFromLegends(node, legendsFrame, chartAreaFrame);
 
-  // Fallback for pie/donut with no legends: extract series directly from visible arc ellipses.
-  // Triggers when series is just the generic 1-item fallback (no real legend found).
-  const isGenericFallback = series.length === 1 && series[0].name === 'Chart';
-  if ((series.length === 0 || isGenericFallback) && (chartType === 'pie' || chartType === 'donut')) {
+  // For pie/donut: prefer arc-based extraction over legends when arcs provide more data.
+  // Arc data is the source of truth for slice count and proportions.
+  if (chartType === 'pie' || chartType === 'donut') {
     const TWO_PI = 2 * Math.PI;
     const visibleEllipses = findVisibleNodes(node, (n: any) =>
-      n.type === 'ELLIPSE' && (n.absoluteBoundingBox?.width ?? 0) >= 50,
+      (n.type === 'ELLIPSE' || n.type === 'ARC') && (n.absoluteBoundingBox?.width ?? 0) >= 50,
     );
     // Filter to partial arcs only (skip full-circle backgrounds)
     const sliceEllipses = visibleEllipses.filter((e: any) => {
@@ -816,19 +858,30 @@ export async function extractChartMetadata(
       const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
       return Math.abs(sweep - TWO_PI) > 0.05; // not a full circle
     });
-    if (sliceEllipses.length > 0) {
-      // Sort by startingAngle for consistent order
-      sliceEllipses.sort((a: any, b: any) =>
-        (a.arcData?.startingAngle ?? 0) - (b.arcData?.startingAngle ?? 0),
-      );
-      series = sliceEllipses.map((e: any, i: number) => {
-        const solidFill = (e.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
-        const color = solidFill ? figmaColorToHex(solidFill.color) : '#9747ff';
-        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
-        const value = Math.round((sweep / TWO_PI) * 100);
-        const name = e.name && e.name !== 'Ellipse' ? e.name : `Series ${i + 1}`;
-        return { name, color, legendColor: color, value };
-      });
+    const isGenericFallback = series.length === 1 && series[0].name === 'Chart';
+    // Use arc data when: more slices than legend items, or no real legends found
+    if (sliceEllipses.length > series.length || series.length === 0 || isGenericFallback) {
+      if (sliceEllipses.length > 0) {
+        // Sort by startingAngle for consistent order
+        sliceEllipses.sort((a: any, b: any) =>
+          (a.arcData?.startingAngle ?? 0) - (b.arcData?.startingAngle ?? 0),
+        );
+        // Try to match legend names by color for labelling
+        const legendByColor = new Map<string, string>();
+        for (const s of series) {
+          if (s.color) legendByColor.set(s.color.toLowerCase(), s.name);
+        }
+        series = sliceEllipses.map((e: any, i: number) => {
+          const solidFill = (e.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+          const color = solidFill ? figmaColorToHex(solidFill.color) : '#9747ff';
+          const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
+          const value = Math.round((sweep / TWO_PI) * 100);
+          const legendName = legendByColor.get(color.toLowerCase());
+          const ellipseName = e.name && e.name !== 'Ellipse' ? e.name : '';
+          const name = legendName ?? (ellipseName || `Series ${i + 1}`);
+          return { name, color, legendColor: color, value };
+        });
+      }
     }
   }
 
@@ -3186,8 +3239,16 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
     }
   })(root);
 
-  if (candidates.length > 0) {
-    const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
+  // Filter out UI container groups (nav items, cards) where >= 50% of candidates contain TEXT
+  const validCandidates = candidates.filter((group) => {
+    const withText = group.filter((r: any) =>
+      findAllNodes(r, (n: any) => n.type === 'TEXT').length > 0,
+    ).length;
+    return withText < group.length * 0.5;
+  });
+
+  if (validCandidates.length > 0) {
+    const best = validCandidates.reduce((a, b) => (a.length >= b.length ? a : b));
     return { detected: true, highConfidence: best.length >= 5, count: best.length };
   }
 
@@ -3269,7 +3330,10 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
       if (group.length >= MIN_BAR_RECTS) {
         const heights = group.map((n: any) => n.absoluteBoundingBox?.height ?? 0);
         const heightRange = Math.max(...heights) - Math.min(...heights);
-        if (heightRange > 10 && groupIsAligned(group, 'vertical')) {
+        // Filter: if >= 50% of bars contain text, it's UI not chart bars
+        const textBarCount = group.filter((n: any) =>
+          findAllNodes(n, (c: any) => c.type === 'TEXT').length > 0).length;
+        if (heightRange > 10 && groupIsAligned(group, 'vertical') && textBarCount < group.length * 0.5) {
           return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }
@@ -3281,7 +3345,9 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
       if (group.length >= MIN_BAR_RECTS) {
         const widths = group.map((n: any) => n.absoluteBoundingBox?.width ?? 0);
         const widthRange = Math.max(...widths) - Math.min(...widths);
-        if (widthRange > 10 && groupIsAligned(group, 'horizontal')) {
+        const textBarCount2 = group.filter((n: any) =>
+          findAllNodes(n, (c: any) => c.type === 'TEXT').length > 0).length;
+        if (widthRange > 10 && groupIsAligned(group, 'horizontal') && textBarCount2 < group.length * 0.5) {
           return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }

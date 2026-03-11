@@ -12,6 +12,8 @@ export interface SectionInfo {
   baseClass: string;
   /** Inferred HTML tag */
   semanticTag: 'header' | 'footer' | 'nav' | 'main' | 'section';
+  /** Descriptive display name resolved from heading text (when frame name is generic) */
+  displayName?: string;
 }
 
 export interface PageLayoutResult {
@@ -100,6 +102,60 @@ function extractPadding(node: any): string {
 }
 
 /**
+ * Finds the first prominent heading TEXT node in a section frame.
+ * Looks at the first 2 levels of children for a TEXT node with short,
+ * descriptive content (likely a title/heading).
+ * Returns null if no suitable heading text is found.
+ */
+function findHeadingText(node: any): string | null {
+  if (!node?.children) return null;
+  for (const child of node.children) {
+    if (child.visible === false) continue;
+    // Direct TEXT child — likely a title
+    if (child.type === 'TEXT' && child.characters) {
+      const text = child.characters.trim();
+      if (text.length > 0 && text.length <= 60) return text;
+    }
+    // Check one level deeper (e.g., "Heading" frame containing TEXT)
+    if (child.children) {
+      for (const gc of child.children) {
+        if (gc.visible === false) continue;
+        if (gc.type === 'TEXT' && gc.characters) {
+          const text = gc.characters.trim();
+          if (text.length > 0 && text.length <= 60) return text;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolves section names for a list of children.
+ * When multiple children share the same Figma frame name, attempts to
+ * disambiguate by looking for heading text inside each section.
+ */
+function resolveSectionNames(children: any[]): string[] {
+  // Count name occurrences
+  const nameCounts = new Map<string, number>();
+  const rawNames = children.map((child) => child.name || '');
+  for (const name of rawNames) {
+    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+
+  return children.map((child, i) => {
+    const rawName = rawNames[i];
+    // If this name is unique, use it as-is
+    if ((nameCounts.get(rawName) ?? 0) <= 1) return rawName;
+    // Name is repeated — try to find a heading text to use instead
+    const heading = findHeadingText(child);
+    if (heading) return heading;
+    // Fallback: append index to disambiguate
+    return `${rawName} ${i + 1}`;
+  });
+}
+
+/**
  * Extract deterministic page layout CSS from a Figma root frame and its children.
  *
  * @param rootNode - The top-level Figma FRAME node
@@ -122,6 +178,10 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
 
   const sections: SectionInfo[] = [];
   let sectionCSS = '';
+
+  // Resolve section names: disambiguate repeated Figma frame names
+  // by looking for heading text inside each section.
+  const resolvedNames = resolveSectionNames(children);
 
   let rootCSS: string;
 
@@ -167,7 +227,9 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       const rawName = child.name || `section-${sections.length + 1}`;
       const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
       const baseClass = `${pageName}__${kebabName}`;
-      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
+      const resolved = resolvedNames[ci];
+      const displayName = resolved !== rawName ? resolved : undefined;
+      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length), displayName });
 
       // Explicit absolute child inside an auto-layout frame
       if (child.layoutPositioning === 'ABSOLUTE' || child.constraints?.layoutPositioning === 'ABSOLUTE') {
@@ -221,7 +283,9 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       const rawName = child.name || `section-${sections.length + 1}`;
       const kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
       const baseClass = `${pageName}__${kebabName}`;
-      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length) });
+      const resolved = resolvedNames[ci];
+      const displayName = resolved !== rawName ? resolved : undefined;
+      sections.push({ name: kebabName, baseClass, semanticTag: inferSemanticTag(rawName, ci, children.length), displayName });
 
       const bounds = child.absoluteBoundingBox;
       let css = `.${baseClass} {\n`;

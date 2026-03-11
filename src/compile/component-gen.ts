@@ -12,6 +12,7 @@
 import { dump } from 'js-yaml';
 import type { LLMProvider } from '../llm/provider.js';
 import type { ParseResult } from '../types/index.js';
+import type { ChartComponent } from '../types/index.js';
 import { generateWithRetry } from './retry.js';
 import { extractJSXBody } from './stitch.js';
 import {
@@ -27,6 +28,8 @@ import {
   type DiscoveredComponent,
   type ComponentDiscoveryResult,
 } from '../figma/component-discovery.js';
+import { extractChartMetadata } from '../figma/chart-detection.js';
+import { generateChartCode } from './chart-codegen.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +57,8 @@ export interface CompoundSectionResult {
   generatedComponents: GeneratedComponent[];
   /** Discovery result for diagnostics */
   discovery: ComponentDiscoveryResult;
+  /** Chart components discovered and generated (Recharts code) */
+  chartComponents: ChartComponent[];
 }
 
 // ── Form role → semantic hint mapping ───────────────────────────────────────
@@ -257,18 +262,20 @@ export async function generateCompoundSection(
   onStep?: (msg: string) => void,
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   templateMode?: boolean,
+  rawSectionNode?: any,
+  existingChartNames?: Set<string>,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
-  // ── Step 1: Discover components ─────────────────────────────────────────
-  const discovery = discoverComponents(sectionNode);
+  // ── Step 1: Discover components (including charts) ─────────────────────
+  const discovery = discoverComponents(sectionNode, rawSectionNode);
 
   if (discovery.components.length === 0) {
     // No recognizable components — fall back to monolithic section generation
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery, templateMode,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode,
     );
   }
 
@@ -304,7 +311,57 @@ export async function generateCompoundSection(
     }
   }
 
-  const generationPromises = discovery.components.map(async (comp) => {
+  // Separate chart components from UI components
+  const chartComps = discovery.components.filter((c) => c.formRole === 'chart');
+  const uiComps = discovery.components.filter((c) => c.formRole !== 'chart');
+  const chartComponents: ChartComponent[] = [];
+
+  // Generate chart components via deterministic Recharts codegen (no LLM)
+  const usedChartNames = new Set<string>(existingChartNames);
+  for (const comp of chartComps) {
+    const rawNode = comp.representativeRawNode ?? comp.representativeNode;
+    onStep?.(`  [PATH 1] Generating chart "${comp.name}" via Recharts codegen...`);
+    try {
+      const meta = await extractChartMetadata(rawNode, llm);
+      // Build a unique component name from the chart's Figma name
+      const pascal = comp.name
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/).filter(Boolean)
+        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join('');
+      let chartComponentName = pascal + (pascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
+      // Deduplicate: if another chart already has this name, append a suffix
+      if (usedChartNames.has(chartComponentName)) {
+        let suffix = 2;
+        while (usedChartNames.has(`${chartComponentName}${suffix}`)) suffix++;
+        chartComponentName = `${chartComponentName}${suffix}`;
+      }
+      usedChartNames.add(chartComponentName);
+      const bemBase = chartComponentName
+        .replace(/([a-z])([A-Z])/g, '$1-$2')
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '');
+      const metaWithName = { ...meta, componentName: chartComponentName, bemBase };
+      const { reactCode, css } = generateChartCode(metaWithName);
+      chartComponents.push({ name: chartComponentName, reactCode, css });
+
+      // Put a placeholder in the component cache so substitution works
+      const placeholderHTML = `<div class="chart-section-${chartComponentName}" />`;
+      componentCache.set(comp.variantKey, {
+        name: comp.name,
+        formRole: 'chart',
+        html: placeholderHTML,
+        css: '',
+        success: true,
+      });
+      onStep?.(`  [PATH 1] Chart "${chartComponentName}" → OK (${meta.chartType}, ${meta.dataPointCount} data points)`);
+    } catch (err) {
+      onStep?.(`  [PATH 1] Chart "${comp.name}" → FAILED: ${err}`);
+    }
+  }
+
+  // Generate UI components via LLM (PATH 1 — parallel)
+  const generationPromises = uiComps.map(async (comp) => {
     const suffix = bemSuffixes.get(comp.variantKey) ?? '';
     const displayName = comp.variantKey !== comp.name
       ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
@@ -387,6 +444,7 @@ export async function generateCompoundSection(
       success: result.success,
       generatedComponents,
       discovery,
+      chartComponents,
     };
   } catch {
     return {
@@ -395,6 +453,7 @@ export async function generateCompoundSection(
       success: false,
       generatedComponents,
       discovery,
+      chartComponents,
     };
   }
 }
@@ -404,15 +463,43 @@ export async function generateCompoundSection(
 /**
  * Walks the section tree and replaces recognized INSTANCE subtrees with
  * compact references containing the pre-generated HTML.
+ * Also replaces chart sections with chart placeholder references.
  */
 function substituteComponents(
   node: any,
   discovery: ComponentDiscoveryResult,
   cache: Map<string, GeneratedComponent>,
   serializeNode: (node: any) => any,
+  path: number[] = [],
 ): any {
   if (!node || node.visible === false) return null;
   if (node.name?.startsWith('_')) return null;
+
+  // Check if this node matches a chart component (identified by tree path)
+  const chartPathKey = path.join('-');
+  for (const [variantKey, generated] of cache) {
+    if (variantKey.startsWith('chart::') && generated.success) {
+      // Chart variant keys are "chart::ChartName::treePath"
+      const pathPart = variantKey.split('::')[2];
+      if (pathPart === chartPathKey) {
+        // Replace chart subtree with a COMPONENT_REF containing the placeholder
+        const ref: any = {
+          name: node.name ?? 'Chart',
+          type: 'COMPONENT_REF',
+          formRole: 'chart',
+          props: {},
+          generatedHTML: generated.html,
+        };
+        if (node.absoluteBoundingBox?.width) {
+          ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
+        }
+        if (node.absoluteBoundingBox?.height) {
+          ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
+        }
+        return ref;
+      }
+    }
+  }
 
   // Check if this is a recognized component instance
   if (node.type === 'INSTANCE' && node.name) {
@@ -464,7 +551,7 @@ function substituteComponents(
   // Replace children recursively
   if (node.children && Array.isArray(node.children)) {
     const substitutedChildren = node.children
-      .map((child: any) => substituteComponents(child, discovery, cache, serializeNode))
+      .map((child: any, i: number) => substituteComponents(child, discovery, cache, serializeNode, [...path, i]))
       .filter(Boolean);
     if (substitutedChildren.length > 0) {
       serialized.children = substitutedChildren;
@@ -635,6 +722,7 @@ async function fallbackMonolithicGeneration(
   onAttempt: ((attempt: number, maxRetries: number, error?: string) => void) | undefined,
   discovery: ComponentDiscoveryResult,
   templateMode?: boolean,
+  rawSectionNode?: any,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
@@ -652,6 +740,7 @@ async function fallbackMonolithicGeneration(
       success: result.success,
       generatedComponents: [],
       discovery,
+      chartComponents: [],
     };
   } catch {
     return {
@@ -660,6 +749,7 @@ async function fallbackMonolithicGeneration(
       success: false,
       generatedComponents: [],
       discovery,
+      chartComponents: [],
     };
   }
 }

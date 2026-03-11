@@ -274,6 +274,40 @@ function fixInvalidCSSValues(css: string): string {
 }
 
 /**
+ * Repairs truncated CSS that occurs when LLM output hits the token limit.
+ *
+ * Common truncation patterns:
+ * - Property name without value:  `height` (no colon)
+ * - Property with colon but no value: `height:` or `height: `
+ * - Unclosed rule blocks (missing closing `}`)
+ *
+ * PostCSS/Vite will fail to parse these, so we remove them.
+ */
+function repairTruncatedCSS(css: string): string {
+  if (!css) return css;
+
+  let result = css.trimEnd();
+
+  // Remove trailing incomplete declaration: a line that is just a property name
+  // (word chars / hyphens) with optional colon and optional partial value, no semicolon
+  // e.g. "    height" or "    height:" or "    height: 20"
+  result = result.replace(/\n[ \t]*[a-zA-Z-]+[ \t]*:?[^;{}]*$/, '');
+
+  // Ensure all opened braces are closed
+  let openBraces = 0;
+  for (const ch of result) {
+    if (ch === '{') openBraces++;
+    else if (ch === '}') openBraces--;
+  }
+  while (openBraces > 0) {
+    result += '\n}';
+    openBraces--;
+  }
+
+  return result;
+}
+
+/**
  * Auto-fixes the root element when the LLM outputs `<div>` but the expected
  * tag is something else (e.g. `<button>`, `<nav>`, `<label>`).
  *
@@ -611,6 +645,6 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: s
   const fixedMap = fixMapToFor(fixedRoot);
   const hoisted = hoistLocalConsts(fixedMap);
   const fixedJsx = fixMissingImports(hoisted);
-  const fixedCSS = fixInvalidCSSValues(css);
+  const fixedCSS = repairTruncatedCSS(fixInvalidCSSValues(css));
   return { jsx: fixedJsx, css: fixedCSS };
 }

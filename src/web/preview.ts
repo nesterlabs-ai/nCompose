@@ -67,7 +67,29 @@ function transformReactCode(
     `url("/api/preview/${sessionId}/assets/$1")`,
   );
 
+  // Repair truncated CSS (LLM output cut off mid-property)
+  css = repairTruncatedCSS(css);
+
   return { code, css };
+}
+
+/**
+ * Fix CSS truncated by LLM token limits — removes incomplete declarations
+ * and closes any unclosed braces so PostCSS/Vite won't choke.
+ */
+function repairTruncatedCSS(css: string): string {
+  if (!css) return css;
+  let result = css.trimEnd();
+  // Remove trailing incomplete declaration (property name without semicolon)
+  result = result.replace(/\n[ \t]*[a-zA-Z-]+[ \t]*:?[^;{}]*$/, '');
+  // Close any unclosed braces
+  let open = 0;
+  for (const ch of result) {
+    if (ch === '{') open++;
+    else if (ch === '}') open--;
+  }
+  while (open > 0) { result += '\n}'; open--; }
+  return result;
 }
 
 /**

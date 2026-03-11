@@ -174,7 +174,6 @@ export function isMultiSectionPage(enhanced: any): boolean {
   const hasSectionLikeChild = children.some(
     (c: any) => c.name && SECTION_PATTERNS.test(c.name),
   );
-
   // ── Signal 1: name-based ─────────────────────────────────────────────────
   const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template|main|dashboard|create|edit|settings|form/i;
   if (PAGE_NAME_PATTERNS.test(root.name ?? '') && hasSectionLikeChild) {
@@ -1718,13 +1717,10 @@ async function convertPage(
           sectionAssetHints,
         );
 
-        // Collect any chart components discovered within this section
-        if (compoundResult.chartComponents.length > 0) {
-          for (const chart of compoundResult.chartComponents) {
-            usedChartNames.add(chart.name);
-          }
-          allChartComponents.push(...compoundResult.chartComponents);
-        }
+        // Store chart components directly on the section output for reliable mapping.
+        // (allChartComponents will be rebuilt from sections after dedup.)
+        const sectionCharts = compoundResult.chartComponents.length > 0
+          ? compoundResult.chartComponents : undefined;
 
         // If section root itself is a chart (discovered at depth 0 with no UI components),
         // treat it as chart-only — bypass the LLM's PATH 2 output (which may hallucinate
@@ -1742,6 +1738,7 @@ async function convertPage(
               failed: false,
               isChart: true,
               chartComponentName: compoundResult.chartComponents[0].name,
+              sectionChartComponents: sectionCharts,
             } as SectionOutput,
             assets: sectionAssets,
           };
@@ -1752,6 +1749,7 @@ async function convertPage(
               rawCode: compoundResult.rawCode,
               css: compoundResult.css,
               failed: !compoundResult.success,
+              sectionChartComponents: sectionCharts,
             } as SectionOutput,
             assets: sectionAssets,
           };
@@ -1780,6 +1778,58 @@ async function convertPage(
     if (!result) continue;
     sectionOutputs.push(result.output);
     allAssets.push(...result.assets);
+  }
+
+  // Post-parallel chart name deduplication.
+  // Sections ran in parallel so multiple sections may have generated charts with
+  // the same name (e.g. all named "WidgetChart"). The shared allChartComponents
+  // array has unpredictable ordering relative to sectionOutputs.
+  //
+  // Strategy: iterate sectionOutputs (which IS in order), dedup chart names,
+  // rename charts and section references, then rebuild allChartComponents.
+  allChartComponents.length = 0; // clear — will rebuild from sections
+  const finalChartNames = new Set<string>();
+
+  for (const section of sectionOutputs) {
+    const charts = section.sectionChartComponents;
+    if (!charts || charts.length === 0) continue;
+
+    for (const chart of charts) {
+      const oldName = chart.name;
+
+      if (!finalChartNames.has(oldName)) {
+        // Name is unique — keep as-is
+        finalChartNames.add(oldName);
+      } else {
+        // Duplicate — pick unique name
+        let suffix = 2;
+        while (finalChartNames.has(`${oldName}${suffix}`)) suffix++;
+        const newName = `${oldName}${suffix}`;
+
+        // Rename in chart's generated code and CSS
+        chart.reactCode = chart.reactCode.replace(new RegExp(oldName, 'g'), newName);
+        const oldBem = oldName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        const newBem = newName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        chart.css = chart.css.replace(new RegExp(oldBem, 'g'), newBem);
+
+        // Update section's chartComponentName (for chart-only sections used by stitch.ts)
+        if (section.chartComponentName === oldName) {
+          section.chartComponentName = newName;
+        }
+        // Update rawCode placeholder (for mixed sections)
+        if (section.rawCode && section.rawCode.includes(`chart-section-${oldName}`)) {
+          section.rawCode = section.rawCode.replace(
+            new RegExp(`chart-section-${oldName}`, 'g'),
+            `chart-section-${newName}`,
+          );
+        }
+
+        chart.name = newName;
+        finalChartNames.add(newName);
+      }
+
+      allChartComponents.push(chart);
+    }
   }
 
   const successCount = sectionOutputs.filter((s) => !s.failed).length;

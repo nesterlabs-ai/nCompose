@@ -686,6 +686,21 @@ function toFileSystemTree(files) {
   return tree;
 }
 
+function repairTruncatedCSS(css) {
+  if (!css) return css;
+  let result = css.trimEnd();
+  // Remove trailing incomplete declaration (property name without semicolon)
+  result = result.replace(/\n[ \t]*[a-zA-Z-]+[ \t]*:?[^;{}]*$/, '');
+  // Close any unclosed braces
+  let open = 0;
+  for (const ch of result) {
+    if (ch === '{') open++;
+    else if (ch === '}') open--;
+  }
+  while (open > 0) { result += '\n}'; open--; }
+  return result;
+}
+
 function extractReactCodeAndCss(reactCode) {
   let css = '';
   const styleRegex = /<style>\{`([\s\S]*?)`\}<\/style>/g;
@@ -694,7 +709,7 @@ function extractReactCodeAndCss(reactCode) {
     css += m[1] + '\n';
   }
   const code = reactCode.replace(styleRegex, '');
-  return { code, css };
+  return { code, css: repairTruncatedCSS(css) };
 }
 
 function buildViteProjectTree(componentName, componentCode, componentCss, assets, chartComponents) {

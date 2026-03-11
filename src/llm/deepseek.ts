@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { LLMProvider } from './provider.js';
+import type { LLMProvider, LLMMessage } from './provider.js';
 import { config, type DeepSeekConfig } from '../config.js';
 
 export class DeepSeekProvider implements LLMProvider {
@@ -74,6 +74,21 @@ export class DeepSeekProvider implements LLMProvider {
         (finishReason ? ` (finish_reason: ${finishReason})` : '.') +
         '\nPossible causes: content filtered, model refused request, or max_tokens too low.'
       );
+    }
+    return content;
+  }
+
+  async generateMultiTurn(messages: LLMMessage[]): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.config.model,
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      temperature: this.config.temperature,
+      max_tokens: this.config.maxTokens,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('DeepSeek returned an empty response.');
     }
     return content;
   }

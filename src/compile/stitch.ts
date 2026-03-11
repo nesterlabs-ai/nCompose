@@ -3,6 +3,10 @@
  *
  * Each section's raw LLM output (JSX + CSS) is extracted and combined
  * into one page-level component with merged CSS.
+ *
+ * All section CSS is scoped under the section's wrapper class to prevent
+ * cross-section class name collisions (e.g. two sections both defining
+ * `.card` with different properties).
  */
 
 import type { SectionInfo } from '../figma/page-layout.js';
@@ -150,6 +154,111 @@ export function extractJSXBody(rawCode: string): string {
   return body;
 }
 
+// ── CSS Scoping ──────────────────────────────────────────────────────────────
+
+/**
+ * Checks whether a CSS selector is already scoped under the given scope
+ * (i.e. IS the scope class or starts with it followed by a combinator).
+ */
+function isAlreadyScoped(selector: string, scope: string): boolean {
+  return (
+    selector === scope ||
+    selector.startsWith(scope + ' ') ||
+    selector.startsWith(scope + ':') ||
+    selector.startsWith(scope + '[') ||
+    selector.startsWith(scope + '.')
+  );
+}
+
+/**
+ * Scopes all CSS class selectors under a wrapper class to prevent
+ * class name collisions when multiple CSS blocks are merged.
+ *
+ * Examples:
+ *   `.card { }`         → `.wrapper .card { }`
+ *   `.card:hover { }`   → `.wrapper .card:hover { }`
+ *   `.card, .title { }` → `.wrapper .card, .wrapper .title { }`
+ *
+ * `@keyframes` blocks are left unchanged (they are global by nature).
+ *
+ * @param css - The CSS string to scope
+ * @param scopeClass - The wrapper class name (without leading dot)
+ * @param options.skipSelfScoping - When true, selectors that already start
+ *   with the scope class are left unchanged (prevents `.root .root { }` nesting)
+ */
+export function scopeSectionCSS(
+  css: string,
+  scopeClass: string,
+  options?: { skipSelfScoping?: boolean },
+): string {
+  if (!css.trim()) return css;
+
+  const scope = `.${scopeClass}`;
+
+  // Normalize multi-line comma-separated selectors into single lines
+  const normalized = css.replace(/,\s*\n\s*(?=\.)/g, ', ');
+
+  const lines = normalized.split('\n');
+  const output: string[] = [];
+  let inKeyframes = false;
+  let kfBraceDepth = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Track @keyframes blocks — don't scope their internal selectors (from, to, %)
+    if (/^@keyframes\b/.test(trimmed)) {
+      inKeyframes = true;
+      kfBraceDepth = 0;
+    }
+
+    if (inKeyframes) {
+      for (const ch of trimmed) {
+        if (ch === '{') kfBraceDepth++;
+        else if (ch === '}') kfBraceDepth--;
+      }
+      output.push(line);
+      if (kfBraceDepth <= 0) inKeyframes = false;
+      continue;
+    }
+
+    // Skip CSS comment lines
+    if (trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+      output.push(line);
+      continue;
+    }
+
+    // Match a CSS selector line: starts with . and contains {
+    const selectorMatch = trimmed.match(/^(\.[^{]+)\{(.*)$/);
+    if (selectorMatch) {
+      const [, selectorPart, afterBrace] = selectorMatch;
+      const indent = line.match(/^(\s*)/)?.[1] ?? '';
+
+      // Scope each comma-separated selector
+      const scoped = selectorPart
+        .split(',')
+        .map((s) => {
+          const sel = s.trim();
+          // When skipSelfScoping is set, don't double-nest selectors that
+          // already start with the scope class (e.g. .root:hover stays as-is)
+          if (options?.skipSelfScoping && isAlreadyScoped(sel, scope)) {
+            return sel;
+          }
+          return `${scope} ${sel}`;
+        })
+        .join(', ');
+
+      output.push(`${indent}${scoped} {${afterBrace}`);
+      continue;
+    }
+
+    // Everything else (properties, closing braces, @media, etc.) passes through
+    output.push(line);
+  }
+
+  return output.join('\n');
+}
+
 /**
  * Stitch section outputs into a single page component.
  *
@@ -222,34 +331,18 @@ ${jsxBody}
 }`;
 
   // Merge CSS: page layout first, then each section's CSS.
-  // Detect class-name collisions across sections so overlapping rules are visible.
+  // Scope each section's CSS under its wrapper class (e.g. .landing-page__hero)
+  // to prevent cross-section class name collisions.
   const cssBlocks = [pageLayoutCSS];
-  const seenClasses = new Map<string, string>(); // className → first-seen section
-  const collisions: string[] = [];
 
   for (const section of sections) {
     if (section.failed || !section.css) continue;
 
-    // Extract every .class-name that opens a CSS rule block.
-    // Only match selectors followed by '{' (after optional pseudo/combinator parts)
-    // to avoid false-positive collisions from pseudo-selectors like .foo::placeholder
-    // or compound selectors like .foo .bar being counted as separate definitions.
-    const classMatches = section.css.matchAll(/^\.([\w-]+)\s*[{,]/gm);
-    for (const m of classMatches) {
-      const cls = m[1];
-      if (seenClasses.has(cls)) {
-        collisions.push(`".${cls}" defined in both "${seenClasses.get(cls)}" and "${section.info.name}"`);
-      } else {
-        seenClasses.set(cls, section.info.name);
-      }
-    }
-
-    cssBlocks.push(`/* — ${section.info.name} — */\n${section.css}`);
-  }
-
-  if (collisions.length > 0) {
-    const warning = `/* ⚠ CSS class collisions detected across sections:\n${collisions.map((c) => ` *   ${c}`).join('\n')}\n * Rename conflicting classes to avoid cascade bleed. */`;
-    cssBlocks.splice(1, 0, warning); // Insert after page layout CSS
+    // Scope all selectors under the section's unique wrapper class.
+    // This guarantees .card in "hero" won't affect .card in "features"
+    // because they become .landing-page__hero .card and .landing-page__features .card.
+    const scopedCSS = scopeSectionCSS(section.css, section.info.baseClass);
+    cssBlocks.push(`/* — ${section.info.name} — */\n${scopedCSS}`);
   }
 
   const mergedCSS = cssBlocks.join('\n\n');

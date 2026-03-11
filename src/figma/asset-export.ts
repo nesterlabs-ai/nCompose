@@ -116,6 +116,11 @@ function getNodeDimensions(node: any): { width: number; height: number } | undef
   if (node.absoluteBoundingBox?.width != null && node.absoluteBoundingBox?.height != null) {
     return { width: node.absoluteBoundingBox.width, height: node.absoluteBoundingBox.height };
   }
+  // absoluteRenderBounds — available on deeply nested INSTANCE children where
+  // absoluteBoundingBox may be missing.
+  if (node.absoluteRenderBounds?.width != null && node.absoluteRenderBounds?.height != null) {
+    return { width: node.absoluteRenderBounds.width, height: node.absoluteRenderBounds.height };
+  }
   if (node.dimensions?.width != null && node.dimensions?.height != null) {
     return { width: node.dimensions.width, height: node.dimensions.height };
   }
@@ -192,13 +197,20 @@ export function isAssetNode(node: any): boolean {
   // These are leaf SVG shapes. Only detect small ones to avoid decorative elements.
   // Exception: ELLIPSE nodes with solid fills are rendered as CSS circles
   // (background-color + border-radius: 50%), not as SVG assets.
-  if (LEAF_VECTOR_TYPES.has(node.type) && node.id && dims) {
+  if (LEAF_VECTOR_TYPES.has(node.type) && node.id) {
     // Skip ELLIPSE nodes that have solid fills — they are CSS circles, not icons
     if (node.type === 'ELLIPSE' && node.fills?.some((f: any) => f.type === 'SOLID' && f.visible !== false)) {
       return false;
     }
-    const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
-    if (isSmall) return true;
+    if (dims) {
+      const isSmall = dims.width <= MAX_ICON_SIZE && dims.height <= MAX_ICON_SIZE;
+      if (isSmall) return true;
+    } else {
+      // No dimensions available (common for deeply nested INSTANCE children).
+      // Leaf vector types are almost always small icons/shapes — default to true.
+      // The SVG export will produce correctly-sized output regardless.
+      return true;
+    }
   }
 
   // GROUP containing only vector content
@@ -383,16 +395,56 @@ export async function exportAssets(
 ): Promise<AssetEntry[]> {
   if (nodes.length === 0) return [];
 
+  // Step 0: Deduplicate icon nodes — same name+dimensions+colors = same icon.
+  // On complex pages, the same icon (e.g. CaretDown 14×14) appears hundreds of
+  // times inside repeated component instances. We only need one representative
+  // per unique icon to export, then map all duplicates to the same file.
+  // Include color in the key because same-named icons can have different colors.
+  const dedupeKey = (n: { name: string; dimensions?: { width: number; height: number }; figmaStyles?: any }) => {
+    const w = n.dimensions?.width ?? 0;
+    const h = n.dimensions?.height ?? 0;
+    // Include fill/stroke colors so different-colored icons stay separate
+    let colorKey = '';
+    if (n.figmaStyles?.fills) {
+      colorKey += JSON.stringify(n.figmaStyles.fills);
+    }
+    if (n.figmaStyles?.strokes) {
+      colorKey += JSON.stringify(n.figmaStyles.strokes);
+    }
+    return `${n.name}|${w}x${h}|${colorKey}`;
+  };
+  const uniqueMap = new Map<string, typeof nodes[0]>();       // key → representative node
+  const dupeMapping = new Map<string, string>();              // duplicate nodeId → representative nodeId
+  for (const node of nodes) {
+    const key = dedupeKey(node);
+    if (!uniqueMap.has(key)) {
+      uniqueMap.set(key, node);
+    } else {
+      dupeMapping.set(node.id, uniqueMap.get(key)!.id);
+    }
+  }
+  const uniqueNodes = [...uniqueMap.values()];
+  if (nodes.length !== uniqueNodes.length) {
+    console.log(`[exportAssets] Deduplicated ${nodes.length} → ${uniqueNodes.length} unique icons`);
+  }
+
   // Step 1: Get SVG export URLs from Figma (scale=1 to match Figma dimensions)
-  const nodeIds = nodes.map((n) => n.id);
-  const imageUrls = await client.getImages(fileKey, nodeIds, 'svg', 1);
+  // Batch requests to avoid exceeding URL length limits (Figma API ≈4096 char URL limit).
+  const BATCH_SIZE = 50;
+  const imageUrls: Record<string, string | null> = {};
+  for (let i = 0; i < uniqueNodes.length; i += BATCH_SIZE) {
+    const batch = uniqueNodes.slice(i, i + BATCH_SIZE);
+    const batchIds = batch.map((n) => n.id);
+    const batchUrls = await client.getImages(fileKey, batchIds, 'svg', 1);
+    Object.assign(imageUrls, batchUrls);
+  }
 
   // Step 2: Build entries with deduplicated filenames and preserve dimensions
   const entries: AssetEntry[] = [];
   const baseCount = new Map<string, number>();
   const seenUrls = new Map<string, string>(); // url → first filename
 
-  for (const { id, name, dimensions, parentName } of nodes) {
+  for (const { id, name, dimensions, parentName } of uniqueNodes) {
     const url = imageUrls[id];
     if (!url) continue; // node not exported (invisible, out of scope, etc.)
 
@@ -449,8 +501,10 @@ export async function exportAssets(
         if (res.ok) {
           let content = await res.text();
 
-          // Normalise colours so inline SVGs respond to CSS `color` via currentColor.
-          content = makeColorInheritable(content);
+          // NOTE: Do NOT call makeColorInheritable() here.
+          // SVGs are served via <img> tags which are sandboxed —
+          // currentColor cannot inherit from parent CSS, causing empty/invisible SVGs.
+          // Keep original Figma colors intact.
 
           entry.content = content;
           downloadedUrls.add(entry.url);
@@ -468,6 +522,27 @@ export async function exportAssets(
       }
     }),
   );
+
+  // Step 4: Add entries for duplicate nodes (map to same filename as their representative)
+  const repIdToFilename = new Map<string, { filename: string; url: string; content?: string; dimensions?: any }>();
+  for (const entry of entries) {
+    repIdToFilename.set(entry.nodeId, { filename: entry.filename, url: entry.url, content: entry.content, dimensions: entry.dimensions });
+  }
+  for (const [dupeId, repId] of dupeMapping) {
+    const rep = repIdToFilename.get(repId);
+    if (rep) {
+      const dupeNode = nodes.find((n) => n.id === dupeId);
+      entries.push({
+        nodeId: dupeId,
+        nodeName: dupeNode?.name ?? '',
+        filename: rep.filename,
+        url: rep.url,
+        content: rep.content,
+        dimensions: rep.dimensions,
+        parentName: dupeNode?.parentName,
+      });
+    }
+  }
 
   return entries;
 }
@@ -588,8 +663,10 @@ export async function exportAssetsFromAllVariants(
             content = adjustViewBoxToPathBounds(content);
           }
 
-          // Normalise colours → currentColor so inline SVGs respond to CSS `color`.
-          content = makeColorInheritable(content);
+          // NOTE: Do NOT call makeColorInheritable() here.
+          // SVGs are served via <img> tags which are sandboxed —
+          // currentColor cannot inherit from parent CSS, causing empty/invisible SVGs.
+          // Keep original Figma colors intact.
 
           entry.content = content;
           downloadedUrls.set(entry.url, content);

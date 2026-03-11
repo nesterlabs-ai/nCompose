@@ -9,8 +9,11 @@ import { convertFigmaToCode } from '../convert.js';
 import { writeOutputFiles } from '../output.js';
 import { generateSessionId } from '../utils/session-id.js';
 import { generatePreviewHTML } from './preview.js';
+import { refineComponent } from './refine.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
 import type { Framework, ConversionResult } from '../types/index.js';
+import type { LLMMessage } from '../llm/provider.js';
+import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 
@@ -22,7 +25,16 @@ const PORT = config.server.port;
 
 // In-memory session storage with TTL (1 hour)
 const SESSION_TTL_MS = 60 * 60 * 1000;
-const sessionStore = new Map<string, { result: ConversionResult; createdAt: number }>();
+
+interface SessionEntry {
+  result: ConversionResult;
+  createdAt: number;
+  conversation: LLMMessage[];
+  llmProvider: string;
+  frameworks: Framework[];
+}
+
+const sessionStore = new Map<string, SessionEntry>();
 
 function getSession(id: string): ConversionResult | undefined {
   const entry = sessionStore.get(id);
@@ -34,8 +46,25 @@ function getSession(id: string): ConversionResult | undefined {
   return entry.result;
 }
 
-function setSession(id: string, result: ConversionResult): void {
-  sessionStore.set(id, { result, createdAt: Date.now() });
+function getSessionEntry(id: string): SessionEntry | undefined {
+  const entry = sessionStore.get(id);
+  if (!entry) return undefined;
+  if (Date.now() - entry.createdAt > SESSION_TTL_MS) {
+    sessionStore.delete(id);
+    return undefined;
+  }
+  return entry;
+}
+
+function setSession(id: string, result: ConversionResult, llmProvider?: string, frameworks?: Framework[]): void {
+  const existing = sessionStore.get(id);
+  sessionStore.set(id, {
+    result,
+    createdAt: Date.now(),
+    conversation: existing?.conversation || [],
+    llmProvider: llmProvider || existing?.llmProvider || config.server.defaultLLM,
+    frameworks: frameworks || existing?.frameworks || ['react'],
+  });
 }
 
 // Periodic cleanup of expired sessions (every 10 minutes)
@@ -125,7 +154,8 @@ app.post('/api/convert', (req: any, res: any) => {
   )
     .then((result) => {
       // Store result in session
-      setSession(sessionId, result);
+      const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
+      setSession(sessionId, result, llmName, selectedFrameworks);
 
       // Write output files to disk (same as CLI)
       const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
@@ -187,11 +217,11 @@ app.post('/api/convert', (req: any, res: any) => {
         })) ?? [],
         fidelity: result.fidelityReport
           ? {
-              overallPassed: result.fidelityReport.overallPassed,
-              checks: Object.fromEntries(
-                Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
-              ),
-            }
+            overallPassed: result.fidelityReport.overallPassed,
+            checks: Object.fromEntries(
+              Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
+            ),
+          }
           : undefined,
       });
 
@@ -202,11 +232,118 @@ app.post('/api/convert', (req: any, res: any) => {
       sendEvent('error', { message });
       res.end();
     })
-;
+    ;
 
   // Handle client disconnect
   req.on('close', () => {
     // Client disconnected — pipeline continues but events stop
+  });
+});
+
+/**
+ * POST /api/refine — SSE endpoint for iterative refinement
+ *
+ * Accepts JSON body: { sessionId, prompt }
+ * Streams progress via Server-Sent Events, then sends updated code.
+ */
+app.post('/api/refine', (req: any, res: any) => {
+  const { sessionId, prompt } = req.body;
+
+  if (!sessionId || typeof sessionId !== 'string') {
+    res.status(400).json({ error: 'sessionId is required' });
+    return;
+  }
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    res.status(400).json({ error: 'prompt is required' });
+    return;
+  }
+
+  const session = getSessionEntry(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const sendEvent = (event: string, data: Record<string, unknown>) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  sendEvent('step', { message: 'Starting refinement...' });
+
+  // Create LLM provider
+  let llmProvider;
+  try {
+    llmProvider = createLLMProvider(session.llmProvider as any);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendEvent('error', { message: `Failed to create LLM provider: ${msg}` });
+    res.end();
+    return;
+  }
+
+  // Extract current CSS: check ---CSS--- delimiter first, then fall back to result.css
+  let currentMitosis = session.result.mitosisSource;
+  let currentCSS = '';
+  const cssDelimIdx = currentMitosis.indexOf('---CSS---');
+  if (cssDelimIdx !== -1) {
+    currentCSS = currentMitosis.slice(cssDelimIdx + '---CSS---'.length).trim();
+    currentMitosis = currentMitosis.slice(0, cssDelimIdx).trim();
+  } else if (session.result.css) {
+    currentCSS = session.result.css;
+  }
+
+  refineComponent({
+    currentMitosis,
+    currentCSS,
+    userPrompt: prompt.trim(),
+    conversation: session.conversation,
+    llmProvider,
+    frameworks: session.frameworks,
+    componentName: session.result.componentName,
+    onStep: (step) => sendEvent('step', { message: step }),
+  })
+    .then((refined) => {
+      // Update session
+      session.result.mitosisSource = refined.mitosisSource;
+      for (const [fw, code] of Object.entries(refined.frameworkOutputs)) {
+        session.result.frameworkOutputs[fw as Framework] = code;
+      }
+      session.result.css = refined.css || session.result.css;
+
+      // Append to conversation history
+      session.conversation.push(
+        { role: 'user', content: `[Current code provided]\n\n${prompt.trim()}` },
+        { role: 'assistant', content: refined.assistantMessage },
+      );
+
+      // Keep conversation history manageable (last 20 turns)
+      if (session.conversation.length > 40) {
+        session.conversation = session.conversation.slice(-40);
+      }
+
+      console.log(`[refine] Session updated. React code length: ${session.result.frameworkOutputs.react?.length || 0}`);
+
+      sendEvent('complete', {
+        frameworkOutputs: session.result.frameworkOutputs,
+        mitosisSource: session.result.mitosisSource,
+      });
+      res.end();
+    })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      sendEvent('error', { message });
+      res.end();
+    });
+
+  req.on('close', () => {
+    // Client disconnected
   });
 });
 
@@ -377,6 +514,7 @@ app.get('/api/config', (_req: any, res: any) => {
  */
 app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
   const { sessionId } = req.params;
+  const { mode } = req.query;
   const result = getSession(sessionId);
 
   if (!result) {
@@ -386,33 +524,43 @@ app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
 
   const files: { name: string; content: string }[] = [];
 
-  // Mitosis source
-  files.push({
-    name: `${result.componentName}.lite.tsx`,
-    content: result.mitosisSource,
-  });
-
-  // Framework outputs
-  for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
-    if (code && !code.startsWith('// Error')) {
-      const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
-      files.push({
-        name: `${result.componentName}${ext}`,
-        content: code,
-      });
+  if (mode === 'wired') {
+    const appDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
+    if (existsSync(appDir)) {
+      const wiredFilesMap = readDirToFilesMap(appDir);
+      for (const [name, content] of Object.entries(wiredFilesMap)) {
+        files.push({ name, content });
+      }
     }
-  }
+  } else {
+    // Mitosis source
+    files.push({
+      name: `${result.componentName}.lite.tsx`,
+      content: result.mitosisSource,
+    });
 
-  // Chart components are inlined into the main React JSX — no separate files needed.
+    // Chart components are inlined into the main React JSX — no separate files needed.
 
-  // Assets
-  if (result.assets) {
-    for (const asset of result.assets) {
-      if (asset.content) {
+    // Framework outputs
+    for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+      if (code && !code.startsWith('// Error')) {
+        const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
         files.push({
-          name: `assets/${asset.filename}`,
-          content: asset.content,
+          name: `${result.componentName}${ext}`,
+          content: code,
         });
+      }
+    }
+
+    // Assets
+    if (result.assets) {
+      for (const asset of result.assets) {
+        if (asset.content) {
+          files.push({
+            name: `assets/${asset.filename}`,
+            content: asset.content,
+          });
+        }
       }
     }
   }
@@ -472,6 +620,8 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
     res.status(404).send('No React output available for preview');
     return;
   }
+
+  console.log(`[preview] Serving preview for ${sessionId}, react code length: ${reactCode.length}, first 100 chars: ${reactCode.substring(0, 100)}`);
 
   const html = generatePreviewHTML(
     reactCode,

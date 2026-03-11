@@ -225,6 +225,7 @@ export function isMultiSectionPage(enhanced: any): boolean {
   // Catches horizontal/grid rows of charts (e.g. 3 pie charts side by side).
   let chartChildCount = 0;
   for (const child of children) {
+    if (child.visible === false) continue; // skip hidden children
     if (child.type !== 'FRAME' && child.type !== 'COMPONENT' && child.type !== 'INSTANCE') continue;
     if (isChartSection(child)) chartChildCount++;
     if (chartChildCount >= 2) return true;
@@ -1418,13 +1419,20 @@ async function convertPage(
     pageBackground,
   };
 
+  // Build a list of visible children to match the sections array (which also skips hidden)
+  const visibleChildren: Array<{ child: any; rawChild: any }> = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
-    const rawChild = rawChildren[i] ?? child; // raw Figma child preserves arcData, padding, etc.
+    if (child.visible === false) continue;
+    visibleChildren.push({ child, rawChild: rawChildren[i] ?? child });
+  }
+
+  for (let i = 0; i < visibleChildren.length; i++) {
+    const { child, rawChild } = visibleChildren[i];
     const sectionInfo = sections[i];
     if (!sectionInfo) continue;
 
-    onStep?.(`[${i + 1}/${children.length}] Generating section "${sectionInfo.name}"...`);
+    onStep?.(`[${i + 1}/${visibleChildren.length}] Generating section "${sectionInfo.name}"...`);
 
     try {
       // Check if section is a chart/graph — use raw child for detection (has arcData, etc.)

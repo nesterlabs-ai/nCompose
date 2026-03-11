@@ -14,7 +14,12 @@
 
 import type { LLMProvider } from '../llm/provider.js';
 
-export type ChartType = 'area' | 'line' | 'bar' | 'pie' | 'donut' | 'radial' | 'unknown';
+/**
+ * Chart type is a string — NOT a fixed union.
+ * The LLM can return any Recharts-supported type (radar, scatter, funnel, treemap, etc.)
+ * Structural heuristics only detect well-known types; the LLM handles the rest.
+ */
+export type ChartType = string;
 
 export interface SeriesInfo {
   /** Series label, e.g. "Total invested" */
@@ -43,6 +48,8 @@ export interface ChartMetadata {
   yAxisMin: number;
   /** Y-axis max value */
   yAxisMax: number;
+  /** Y-axis tick values extracted from Figma (sorted ascending) */
+  yAxisTicks: number[];
   /** Number of data points */
   dataPointCount: number;
   /** Chart container background color */
@@ -159,6 +166,15 @@ export interface ChartMetadata {
   /** Bar corner radius [topLeft, topRight, bottomLeft, bottomRight] */
   barRadius: [number, number, number, number];
 
+  /** Bar chart data extracted from Figma bar structure (labels + values from heights).
+   *  When present, codegen uses these instead of generating synthetic data.
+   *  Each entry may include a color if bars have different fills. */
+  barData: Array<{ name: string; value: number; color?: string }> | null;
+
+  /** Radar chart axis labels (e.g. ["Extensions", "Site Content", "Clipboard Paste", ...]).
+   *  Extracted from TEXT nodes arranged radially around the chart center. */
+  radarAxes: string[];
+
   /** Chart area margin */
   chartMargin: { top: number; right: number; bottom: number; left: number };
 
@@ -224,6 +240,23 @@ const POS_TOLERANCE = 5;
 /** Size tolerance in pixels for grouping same-sized shapes */
 const SIZE_TOLERANCE = 5;
 
+/**
+ * Minimum diameter (px) for an ELLIPSE to be considered a pie/donut slice.
+ * Ellipses smaller than this are data-point dots on line/area charts, legend
+ * swatches, or decorative elements — never pie/donut arcs.
+ *
+ * Derived from the node tree: real pie slices are typically ≥ 15% of the
+ * container dimension, while data-point dots are 3–13 px.
+ */
+const MIN_PIE_ELLIPSE_DIAMETER = 20;
+
+/**
+ * Minimum height (px) for a stroked VECTOR to be treated as a chart data
+ * series (line / area).  Decorative divider lines have height ≈ 0; actual
+ * data-series paths always span a measurable vertical range.
+ */
+const MIN_SERIES_VECTOR_HEIGHT = 3;
+
 // ── Detection ───────────────────────────────────────────────────────────────
 
 /**
@@ -245,6 +278,7 @@ export function isChartSection(node: any): boolean {
   if (children.length >= 2) {
     let chartChildCount = 0;
     for (const child of children) {
+      if (child.visible === false) continue; // skip hidden children
       if (child.type === 'FRAME' || child.type === 'GROUP' || child.type === 'INSTANCE') {
         const childSignalA = hasDataShapeCluster(child);
         // Only count high-confidence chart signals to avoid false positives
@@ -272,16 +306,31 @@ export function isChartSection(node: any): boolean {
 interface ShapeClusterResult {
   detected: boolean;
   highConfidence: boolean;
+  /** Number of bar-like elements found (used for scoring) */
+  count?: number;
 }
 
 export function _debugHasDataShapeCluster(node: any): ShapeClusterResult { return hasDataShapeCluster(node); }
+export function _debugHasAxisLikeTextArrangement(node: any): boolean { return hasAxisLikeTextArrangement(node); }
+export function _debugHasParallelGridLines(node: any): boolean { return hasParallelGridLines(node); }
 function hasDataShapeCluster(node: any): ShapeClusterResult {
   const none: ShapeClusterResult = { detected: false, highConfidence: false };
 
-  // Check for overlapping ellipses (pie/donut)
-  // Include hidden ellipses: Figma charts often have hidden slices as overlays
-  const ellipses = findAllNodes(node, (n: any) => n.type === 'ELLIPSE');
-  const ellipseGroups = groupByCenter(ellipses, POS_TOLERANCE, SIZE_TOLERANCE);
+  const rootBB = node.absoluteBoundingBox;
+  const rootSize = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
+
+  // ── Pie / Donut: overlapping ellipses ────────────────────────────────────
+  // Only consider ellipses large enough to be actual chart slices.
+  // Small ellipses (< MIN_PIE_ELLIPSE_DIAMETER) are data-point dots,
+  // legend swatches, or decorative elements — never pie arcs.
+  const pieEllipses = findAllNodes(node, (n: any) => {
+    if (n.type !== 'ELLIPSE') return false;
+    const bb = n.absoluteBoundingBox;
+    if (!bb) return false;
+    const diameter = Math.max(bb.width, bb.height);
+    return diameter >= MIN_PIE_ELLIPSE_DIAMETER;
+  });
+  const ellipseGroups = groupByCenter(pieEllipses, POS_TOLERANCE, SIZE_TOLERANCE);
   for (const group of ellipseGroups) {
     if (group.length >= MIN_PIE_ELLIPSES) {
       const chromaticCount = group.filter((e: any) =>
@@ -297,16 +346,14 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
     }
   }
 
-  // Check for concentric ring charts (same center, different sizes)
-  // These are multi-ring progress/donut charts where each ring is a pair of
-  // ellipses (background track + progress arc) at different radii.
-  const concentricGroups = groupByCenterOnly(ellipses, POS_TOLERANCE);
+  // ── Concentric ring charts (radial) ──────────────────────────────────────
+  // Same center, different sizes, with partial arcs.
+  // Also requires size filter to avoid grouping data-point dots.
+  const concentricGroups = groupByCenterOnly(pieEllipses, POS_TOLERANCE);
   for (const group of concentricGroups) {
     if (group.length >= 4) { // At least 2 rings (2 ellipses each: background + progress)
-      // Check that there are multiple distinct sizes (concentric rings)
       const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
       const uniqueSizes = new Set(sizes);
-      // Check that some ellipses have partial arcs (progress indicators)
       const hasPartialArcs = group.some((e: any) => {
         if (!e.arcData) return false;
         const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
@@ -318,20 +365,25 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
     }
   }
 
-  // Check for aligned bar rectangles
-  const rects = findAllNodes(node, (n: any) => {
-    if (n.type !== 'RECTANGLE') return false;
+  // ── Bar shapes: aligned elements with varying height/width ────────────────
+  // Bars in Figma can be RECTANGLE, BOOLEAN_OPERATION (3D cylinders),
+  // FRAME (auto-layout containers), or any visual node type.
+  // Strategy 1: Any node type with chromatic fills, aligned like bars.
+  const barShapes = findAllNodes(node, (n: any) => {
+    const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
+    if (!BAR_TYPES.includes(n.type)) return false;
+    const bb = n.absoluteBoundingBox;
+    if (!bb || bb.width < 3 || bb.height < 3) return false;
     return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
   });
-  if (rects.length >= MIN_BAR_RECTS) {
+  if (barShapes.length >= MIN_BAR_RECTS) {
     // Group by shared bottom-edge y (vertical bars)
-    const bottomGroups = groupByProperty(rects, (r: any) => {
+    const bottomGroups = groupByProperty(barShapes, (r: any) => {
       const bb = r.absoluteBoundingBox;
       return bb ? bb.y + bb.height : 0;
     }, POS_TOLERANCE);
     for (const group of bottomGroups) {
       if (group.length >= MIN_BAR_RECTS) {
-        // Check varying height
         const heights = group.map((r: any) => r.absoluteBoundingBox?.height ?? 0);
         const heightRange = Math.max(...heights) - Math.min(...heights);
         if (heightRange > 10) {
@@ -340,7 +392,7 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
       }
     }
     // Group by shared left-edge x (horizontal bars)
-    const leftGroups = groupByProperty(rects, (r: any) => {
+    const leftGroups = groupByProperty(barShapes, (r: any) => {
       return r.absoluteBoundingBox?.x ?? 0;
     }, POS_TOLERANCE);
     for (const group of leftGroups) {
@@ -354,13 +406,31 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
     }
   }
 
-  // Check for series vectors (line/area charts)
+  // Strategy 2: Structural bar detection — sibling nodes with same width but
+  // varying heights (or same height, varying widths for horizontal).
+  // This catches bars that are empty FRAMEs without fills (color from variables/styles).
+  const structuralBars = findStructuralBarGroups(node);
+  if (structuralBars.detected) {
+    return structuralBars;
+  }
+
+  // ── Series vectors (line / area charts) ──────────────────────────────────
+  // A real data-series VECTOR has meaningful height (the line undulates) and
+  // meaningful width.  Decorative divider lines / separators are essentially
+  // zero-height or tiny, and should NOT trigger chart detection.
   const seriesVectors = findAllNodes(node, (n: any) => {
     if (n.type !== 'VECTOR') return false;
     const hasStroke = (n.strokes ?? []).length > 0;
     const bb = n.absoluteBoundingBox;
-    const isLandscape = bb && bb.width > bb.height * 2;
-    return hasStroke && isLandscape;
+    if (!bb) return false;
+    // Must be landscape (wider than tall)
+    if (bb.width <= bb.height * 2) return false;
+    // Must have meaningful height — flat/zero-height vectors are decorative dividers
+    if (bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
+    // Must span a significant portion of the container width to be a data series
+    // (not a tiny icon stroke or legend swatch line).
+    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
+    return hasStroke;
   });
   if (seriesVectors.length >= 1) {
     return { detected: true, highConfidence: seriesVectors.length >= 2 };
@@ -387,25 +457,43 @@ function hasAxisLikeTextArrangement(node: any): boolean {
     if (textChildren.length < MIN_AXIS_LABELS) continue;
 
     // X-axis: frame in the bottom 30%, texts arranged horizontally with short labels
+    // AND text nodes must be spread across the frame width (axis-like distribution).
     const isBottom = frameBB.y + frameBB.height / 2 > rootBB.y + rootBB.height * 0.7;
     const spansWidth = frameBB.width > rootBB.width * 0.4;
     if (isBottom && spansWidth && textChildren.length >= 3) {
       const allShortText = textChildren.every((t: any) =>
         (t.characters ?? t.content ?? '').trim().length < 8,
       );
-      if (allShortText) return true;
+      if (allShortText) {
+        // Check that text nodes are spread horizontally across the frame
+        const textXPositions = textChildren
+          .map((t: any) => t.absoluteBoundingBox?.x ?? 0)
+          .sort((a: number, b: number) => a - b);
+        const textSpread = textXPositions[textXPositions.length - 1] - textXPositions[0];
+        // Text nodes should span at least 50% of the frame width to be axis-like
+        if (textSpread > frameBB.width * 0.5) return true;
+      }
     }
 
-    // Y-axis: frame in the left 25% or right 25%, texts arranged vertically with numeric content
+    // Y-axis: frame in the left 25% or right 25%, texts arranged vertically with numeric content.
+    // Y-axis frames are narrow (label columns), not wide like content containers.
     const isLeftEdge = frameBB.x < rootBB.x + rootBB.width * 0.25;
     const isRightEdge = frameBB.x + frameBB.width > rootBB.x + rootBB.width * 0.75;
     const spansHeight = frameBB.height > rootBB.height * 0.3;
-    if ((isLeftEdge || isRightEdge) && spansHeight && textChildren.length >= MIN_AXIS_LABELS) {
-      const numericCount = textChildren.filter((t: any) => {
+    const isNarrowEnough = frameBB.width < rootBB.width * 0.4;
+    if ((isLeftEdge || isRightEdge) && spansHeight && isNarrowEnough && textChildren.length >= MIN_AXIS_LABELS) {
+      const numericTexts = textChildren.filter((t: any) => {
         const text = (t.characters ?? t.content ?? '').trim();
         return /^[\d.,\-$%kKmMbB]+$/.test(text);
-      }).length;
-      if (numericCount >= MIN_AXIS_LABELS) return true;
+      });
+      if (numericTexts.length >= MIN_AXIS_LABELS) {
+        // Y-axis labels should be vertically spread across the frame
+        const textYPositions = numericTexts
+          .map((t: any) => t.absoluteBoundingBox?.y ?? 0)
+          .sort((a: number, b: number) => a - b);
+        const textSpread = textYPositions[textYPositions.length - 1] - textYPositions[0];
+        if (textSpread > frameBB.height * 0.4) return true;
+      }
     }
   }
 
@@ -459,13 +547,39 @@ function hasParallelGridLines(node: any): boolean {
 /**
  * Detect chart type from structural analysis of node properties.
  * Analyzes shapes, positions, fills, strokes — not names.
+ *
+ * Uses a **competitive scoring** approach instead of first-match-wins:
+ * each chart type accumulates a confidence score and the highest wins.
+ * This prevents tiny data-point ellipses from overriding strong
+ * line/area/bar signals.
  */
 export function detectChartType(node: any): ChartType {
-  // 1. PIE / DONUT: overlapping same-sized ellipses with different chromatic fills
-  // Include hidden ellipses: Figma charts use hidden overlays as arc slices
-  const ellipses = findAllNodes(node, (n: any) => n.type === 'ELLIPSE');
-  const ellipseGroups = groupByCenter(ellipses, POS_TOLERANCE, SIZE_TOLERANCE);
-  for (const group of ellipseGroups) {
+  const rootBB = node.absoluteBoundingBox;
+  const rootSize = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
+
+  // Collect scores: { type → confidence }
+  const scores: Record<string, number> = {};
+  const addScore = (type: string, score: number) => {
+    scores[type] = (scores[type] ?? 0) + score;
+  };
+
+  // ── Cartesian axis signals (shared by line / area / bar) ─────────────────
+  // Detecting axes early lets us weight cartesian types higher when axes exist.
+  const hasAxes = hasAxisLikeTextArrangement(node);
+  const hasGrid = hasParallelGridLines(node);
+  const cartesianBoost = (hasAxes ? 3 : 0) + (hasGrid ? 2 : 0);
+
+  // ── 1. PIE / DONUT ──────────────────────────────────────────────────────
+  // Only large ellipses count — small ones are data-point dots.
+  const allEllipses = findAllNodes(node, (n: any) => n.type === 'ELLIPSE');
+  const pieEllipses = allEllipses.filter((n: any) => {
+    const bb = n.absoluteBoundingBox;
+    return bb && Math.max(bb.width, bb.height) >= MIN_PIE_ELLIPSE_DIAMETER;
+  });
+
+  let pieType: 'pie' | 'donut' | null = null;
+  const pieGroups = groupByCenter(pieEllipses, POS_TOLERANCE, SIZE_TOLERANCE);
+  for (const group of pieGroups) {
     if (group.length >= MIN_PIE_ELLIPSES) {
       const chromaticEllipses = group.filter((e: any) =>
         (e.fills ?? []).some((f: any) => {
@@ -475,51 +589,46 @@ export function detectChartType(node: any): ChartType {
         }),
       );
       if (chromaticEllipses.length >= MIN_PIE_ELLIPSES) {
-        // Determine donut vs pie using ONLY visible structural signals.
-        // Hidden nodes (visible: false) are excluded — they don't contribute
-        // to what the user sees in the Figma design.
-
+        // Determine donut vs pie
         const visibleGroup = group.filter((e: any) => e.visible !== false);
-
-        // Signal 1 (primary): arcData.innerRadius > 0 on any VISIBLE ellipse.
-        // Figma sets innerRadius as a 0–1 ratio; > 0 means the slice has a hole.
         const visibleWithInnerRadius = visibleGroup.filter((e: any) =>
           e.arcData && typeof e.arcData.innerRadius === 'number' && e.arcData.innerRadius > 0,
         );
-        if (visibleWithInnerRadius.length > 0) return 'donut';
+        if (visibleWithInnerRadius.length > 0) {
+          pieType = 'donut';
+        } else {
+          // Check for a visible inner element (center label / white circle)
+          const groupBB = getGroupBoundingBox(group);
+          const groupCenterX = groupBB.x + groupBB.width / 2;
+          const groupCenterY = groupBB.y + groupBB.height / 2;
+          const groupSize = Math.max(groupBB.width, groupBB.height);
 
-        // Signal 2: a VISIBLE smaller element centered within the group
-        // (e.g. a center label like "90.1%", or a white circle creating the hole).
-        const groupBB = getGroupBoundingBox(group);
-        const groupCenterX = groupBB.x + groupBB.width / 2;
-        const groupCenterY = groupBB.y + groupBB.height / 2;
-        const groupSize = Math.max(groupBB.width, groupBB.height);
+          const visibleInnerElements = findAllNodes(node, (n: any) => {
+            if (group.includes(n)) return false;
+            if (n.visible === false) return false;
+            const bb = n.absoluteBoundingBox;
+            if (!bb) return false;
+            const nCenterX = bb.x + bb.width / 2;
+            const nCenterY = bb.y + bb.height / 2;
+            const isNearCenter = Math.abs(nCenterX - groupCenterX) < groupSize * 0.3
+              && Math.abs(nCenterY - groupCenterY) < groupSize * 0.3;
+            const isSmaller = bb.width < groupSize * 0.6 && bb.height < groupSize * 0.6;
+            return isNearCenter && isSmaller;
+          });
+          pieType = visibleInnerElements.length > 0 ? 'donut' : 'pie';
+        }
 
-        const visibleInnerElements = findAllNodes(node, (n: any) => {
-          if (group.includes(n)) return false;
-          if (n.visible === false) return false;
-          const bb = n.absoluteBoundingBox;
-          if (!bb) return false;
-          const nCenterX = bb.x + bb.width / 2;
-          const nCenterY = bb.y + bb.height / 2;
-          const isNearCenter = Math.abs(nCenterX - groupCenterX) < groupSize * 0.3
-            && Math.abs(nCenterY - groupCenterY) < groupSize * 0.3;
-          const isSmaller = bb.width < groupSize * 0.6 && bb.height < groupSize * 0.6;
-          return isNearCenter && isSmaller;
-        });
-        if (visibleInnerElements.length > 0) return 'donut';
-
-        // No donut signals found — it's a pie chart.
-        // Note: partial arcs + gradients are NOT donut indicators.
-        // Both pie and donut charts use partial arc slices in Figma,
-        // and gradients are just shading effects on slices.
-        return 'pie';
+        // Score: base 5 for finding slices, plus bonus per extra slice.
+        // Penalised if cartesian signals are also present (unlikely for real pie).
+        const pieScore = 5 + chromaticEllipses.length - cartesianBoost;
+        addScore(pieType, pieScore);
+        break; // only one pie group needed
       }
     }
   }
 
-  // 1b. RADIAL: concentric ring chart (same center, different sizes, partial arcs)
-  const concentricGroups = groupByCenterOnly(ellipses, POS_TOLERANCE);
+  // ── 1b. RADIAL: concentric ring chart ───────────────────────────────────
+  const concentricGroups = groupByCenterOnly(pieEllipses, POS_TOLERANCE);
   for (const group of concentricGroups) {
     if (group.length >= 4) {
       const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
@@ -530,18 +639,25 @@ export function detectChartType(node: any): ChartType {
         return sweep > 0.01 && Math.abs(sweep - 2 * Math.PI) > 0.01;
       });
       if (uniqueSizes.size >= 2 && hasPartialArcs) {
-        return 'radial';
+        addScore('radial', 6 + group.length);
+        break;
       }
     }
   }
 
-  // 2. BAR: aligned rectangles with chromatic fills, similar width, varying height
-  const rects = findAllNodes(node, (n: any) => {
-    if (n.type !== 'RECTANGLE') return false;
+  // ── 2. BAR ──────────────────────────────────────────────────────────────
+  // Bars in Figma can be RECTANGLE, BOOLEAN_OPERATION, FRAME, or any visual type.
+  // Strategy A: nodes with chromatic fills, aligned like bars.
+  const barShapes = findAllNodes(node, (n: any) => {
+    const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
+    if (!BAR_TYPES.includes(n.type)) return false;
+    const bb = n.absoluteBoundingBox;
+    if (!bb || bb.width < 3 || bb.height < 3) return false;
     return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
   });
-  if (rects.length >= MIN_BAR_RECTS) {
-    const bottomGroups = groupByProperty(rects, (r: any) => {
+  if (barShapes.length >= MIN_BAR_RECTS) {
+    // Vertical bars: shared bottom edge, similar width
+    const bottomGroups = groupByProperty(barShapes, (r: any) => {
       const bb = r.absoluteBoundingBox;
       return bb ? bb.y + bb.height : 0;
     }, POS_TOLERANCE);
@@ -549,32 +665,63 @@ export function detectChartType(node: any): ChartType {
       if (group.length >= MIN_BAR_RECTS) {
         const widths = group.map((r: any) => r.absoluteBoundingBox?.width ?? 0);
         const allSimilarWidth = widths.every((w: number) => Math.abs(w - widths[0]) < SIZE_TOLERANCE);
-        if (allSimilarWidth) return 'bar';
+        if (allSimilarWidth) {
+          addScore('bar', 5 + group.length + cartesianBoost);
+        }
       }
     }
-    // Horizontal bars
-    const leftGroups = groupByProperty(rects, (r: any) => {
+    // Horizontal bars: shared left edge, similar height
+    const leftGroups = groupByProperty(barShapes, (r: any) => {
       return r.absoluteBoundingBox?.x ?? 0;
     }, POS_TOLERANCE);
     for (const group of leftGroups) {
       if (group.length >= MIN_BAR_RECTS) {
         const heights = group.map((r: any) => r.absoluteBoundingBox?.height ?? 0);
         const allSimilarHeight = heights.every((h: number) => Math.abs(h - heights[0]) < SIZE_TOLERANCE);
-        if (allSimilarHeight) return 'bar';
+        if (allSimilarHeight) {
+          addScore('bar', 5 + group.length + cartesianBoost);
+        }
       }
     }
   }
 
-  // 3. AREA: vectors with BOTH strokes AND gradient fills
+  // Strategy B: Structural bar detection — sibling nodes with same width but
+  // varying heights, even without fills (color from Figma variables/styles).
+  const structuralBarResult = findStructuralBarGroups(node);
+  if (structuralBarResult.detected) {
+    addScore('bar', 6 + (structuralBarResult.count ?? 0) + cartesianBoost);
+  }
+
+  // ── 3. AREA: vectors with BOTH strokes AND gradient fills ───────────────
   const areaVectors = findAllNodes(node, (n: any) => {
     if (n.type !== 'VECTOR') return false;
+    const bb = n.absoluteBoundingBox;
+    if (!bb || bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
     const hasStroke = (n.strokes ?? []).length > 0;
     const hasGradient = (n.fills ?? []).some((f: any) => f.type === 'GRADIENT_LINEAR');
     return hasStroke && hasGradient;
   });
-  if (areaVectors.length > 0) return 'area';
+  if (areaVectors.length > 0) {
+    // Area is very strong: gradient fill under a line is unmistakable.
+    addScore('area', 8 + areaVectors.length + cartesianBoost);
+  }
 
-  // 4. LINE: vectors with strokes, no chromatic fills, landscape aspect
+  // Also check for gradient-filled vectors WITHOUT strokes (fill-only area shape)
+  const fillOnlyAreaVectors = findAllNodes(node, (n: any) => {
+    if (n.type !== 'VECTOR') return false;
+    const bb = n.absoluteBoundingBox;
+    if (!bb || bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
+    const hasGradient = (n.fills ?? []).some((f: any) => f.type === 'GRADIENT_LINEAR');
+    const hasNoStroke = (n.strokes ?? []).length === 0;
+    return hasGradient && hasNoStroke && bb.width > bb.height;
+  });
+  if (fillOnlyAreaVectors.length > 0) {
+    addScore('area', 4 + fillOnlyAreaVectors.length + cartesianBoost);
+  }
+
+  // ── 4. LINE: stroked vectors, no chromatic fills, landscape ─────────────
   const lineVectors = findAllNodes(node, (n: any) => {
     if (n.type !== 'VECTOR') return false;
     const hasStroke = (n.strokes ?? []).length > 0;
@@ -582,12 +729,27 @@ export function detectChartType(node: any): ChartType {
       (f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color),
     );
     const bb = n.absoluteBoundingBox;
-    const isLandscape = bb && bb.width > bb.height * 2;
-    return hasStroke && noFill && isLandscape;
+    if (!bb) return false;
+    if (bb.width <= bb.height * 2) return false;
+    if (bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
+    return hasStroke && noFill;
   });
-  if (lineVectors.length > 0) return 'line';
+  if (lineVectors.length > 0) {
+    addScore('line', 5 + lineVectors.length + cartesianBoost);
+  }
 
-  return 'unknown';
+  // ── Pick winner ──────────────────────────────────────────────────────────
+  let bestType: ChartType = 'unknown';
+  let bestScore = 0;
+  for (const [type, score] of Object.entries(scores)) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestType = type;
+    }
+  }
+
+  return bestType;
 }
 
 // ── Metadata extraction ─────────────────────────────────────────────────────
@@ -670,6 +832,67 @@ export async function extractChartMetadata(
     }
   }
 
+  // For radar charts: extract series from colored VECTOR polygon nodes (data shapes).
+  // Radar charts have multiple overlaid polygons with different fill/stroke colors.
+  // This is more reliable than legend-based extraction for radar charts because
+  // some legend items may be hidden in Figma.
+  if (chartType === 'radar') {
+    // Find VECTOR nodes with chromatic fills (the data polygons, not grid lines)
+    // Find VECTOR nodes with chromatic fills that are likely data polygons (not grid lines).
+    // Data polygons: larger, have semi-transparent fills, fewer in number.
+    // Grid lines: thin stroked lines, often achromatic, repeated in patterns.
+    const dataVectors = findVisibleNodes(node, (n: any) => {
+      if (n.type !== 'VECTOR') return false;
+      const fills = n.fills ?? [];
+      const hasChromaticFill = fills.some((f: any) =>
+        f.type === 'SOLID' && f.color && isChromatic(f.color) && (f.opacity ?? 1) > 0.05,
+      );
+      if (!hasChromaticFill) return false;
+      // Exclude very thin vectors (grid lines / axis lines)
+      const bb = n.absoluteBoundingBox;
+      if (!bb) return false;
+      const minDim = Math.min(bb.width, bb.height);
+      // Grid lines have one tiny dimension; data polygons are more square-ish
+      if (minDim < 3) return false;
+      return true;
+    });
+    if (dataVectors.length >= 1) {
+      // Deduplicate by color
+      const colorMap = new Map<string, any>();
+      for (const v of dataVectors) {
+        const fill = (v.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
+        if (!fill) continue;
+        const hex = figmaColorToHex(fill.color);
+        if (!colorMap.has(hex)) colorMap.set(hex, v);
+      }
+      // Also check for VECTOR nodes with chromatic strokes (some polygons use strokes only)
+      const strokedVectors = findVisibleNodes(node, (n: any) => {
+        if (n.type !== 'VECTOR') return false;
+        const bb = n.absoluteBoundingBox;
+        if (!bb || Math.min(bb.width, bb.height) < 3) return false;
+        return (n.strokes ?? []).some((s: any) =>
+          s.type === 'SOLID' && s.color && isChromatic(s.color),
+        );
+      });
+      for (const v of strokedVectors) {
+        const stroke = (v.strokes ?? []).find((s: any) => s.type === 'SOLID' && s.color && isChromatic(s.color));
+        if (!stroke) continue;
+        const hex = figmaColorToHex(stroke.color);
+        if (!colorMap.has(hex)) colorMap.set(hex, v);
+      }
+      if (colorMap.size >= 1) {
+        // If legends exist, use legend names; otherwise use Series 1, 2, ...
+        const legendNames = series.length > 0 && series[0].name !== 'Chart' ? series.map((s) => s.name) : [];
+        const colors = [...colorMap.keys()];
+        series = colors.map((color, i) => ({
+          name: legendNames[i] ?? `Series ${i + 1}`,
+          color,
+          legendColor: color,
+        }));
+      }
+    }
+  }
+
   // Axis label color
   let axisLabelColor = '#A1A1A1';
   const anyAxisFrame = yAxisFrame ?? xAxisFrame;
@@ -680,22 +903,49 @@ export async function extractChartMetadata(
     }
   }
 
-  // X-axis labels
-  const xAxisLabels = xAxisFrame
+  // X-axis labels — exclude text nodes that belong to the Y-axis frame
+  let xAxisLabels = xAxisFrame
     ? collectTextNodes(xAxisFrame)
+        .filter((t: any) => !yAxisFrame || !isDescendantOf(t, yAxisFrame))
         .map((t: any) => t.characters ?? t.content ?? '')
         .filter(Boolean)
     : [];
 
-  // Y-axis labels → parse numeric min/max
-  const yAxisTexts = yAxisFrame
+  // Y-axis labels → parse numeric min/max (also check hidden Y-axis frames at root level)
+  let yAxisTexts = yAxisFrame
     ? collectTextNodes(yAxisFrame)
         .map((t: any) => t.characters ?? t.content ?? '')
         .filter(Boolean)
     : [];
-  const yAxisNums = yAxisTexts.map(Number).filter((n) => !isNaN(n));
+
+  // For bar/line/area: if no Y-axis frame found, check hidden sibling frames with numeric labels
+  if (yAxisTexts.length === 0 && (chartType === 'bar' || chartType === 'line' || chartType === 'area')) {
+    for (const child of node.children ?? []) {
+      if (child.visible !== false) continue; // only check hidden siblings
+      const texts = collectTextNodes(child)
+        .map((t: any) => (t.characters ?? t.content ?? '').trim())
+        .filter(Boolean);
+      const nums = texts.map((t: string) => parseAxisNumber(t)).filter((n) => !isNaN(n));
+      if (nums.length >= 3) {
+        yAxisTexts = texts;
+        break;
+      }
+    }
+  }
+
+  const yAxisNums = yAxisTexts.map((t: string) => parseAxisNumber(t)).filter((n) => !isNaN(n));
   const yAxisMin = yAxisNums.length > 0 ? Math.min(...yAxisNums) : 0;
   const yAxisMax = yAxisNums.length > 0 ? Math.max(...yAxisNums) : 100;
+  const yAxisTicks = yAxisNums.length > 0 ? [...new Set(yAxisNums)].sort((a, b) => a - b) : [];
+
+  // ── Bar chart data extraction: extract labels + values from bar column structure ──
+  let barSeriesData: Array<{ name: string; value: number }> | null = null;
+  if (chartType === 'bar' && xAxisLabels.length === 0) {
+    barSeriesData = extractBarChartData(node, yAxisMin, yAxisMax);
+    if (barSeriesData && barSeriesData.length > 0) {
+      xAxisLabels = barSeriesData.map((d) => d.name);
+    }
+  }
 
   // Data point count
   const dataPointCount = xAxisLabels.length || 12;
@@ -735,7 +985,7 @@ export async function extractChartMetadata(
   // ── Chart area height ──
   // If no structural landmarks found (no legend, switcher, axes), use full node height
   const hasNonChartChildren = legendsFrame || switcherFrame || xAxisFrame || yAxisFrame;
-  const chartAreaHeight = extractChartAreaHeight(chartAreaFrame, h, !hasNonChartChildren);
+  const chartAreaHeight = extractChartAreaHeight(chartAreaFrame, h, !hasNonChartChildren, yAxisFrame);
 
   // ── Inner radius ratio for donut charts (from visible Figma arcData) ──
   let innerRadiusRatio = 0;
@@ -858,6 +1108,13 @@ export async function extractChartMetadata(
     rings = extractRadialRings(node, chartAreaHeight);
   }
 
+  // ── Radar chart axis extraction ──
+  let radarAxes: string[] = [];
+  if (chartType === 'radar') {
+    const excludeFromRadar = new Set([legendsFrame, switcherFrame, xAxisFrame, yAxisFrame].filter(Boolean));
+    radarAxes = extractRadarAxes(node, chartAreaFrame, excludeFromRadar);
+  }
+
   // ── Axis font size ──
   let axisFontSize = 10;
   if (anyAxisFrame) {
@@ -910,12 +1167,13 @@ export async function extractChartMetadata(
     xAxisLabels,
     yAxisMin,
     yAxisMax,
+    yAxisTicks,
     dataPointCount,
     backgroundColor,
     axisLabelColor,
     periodOptions,
     hasSwitcher,
-    hasLegend: legendsFrame !== null,
+    hasLegend: legendsFrame !== null || (chartType === 'radar' && series.length > 1),
 
     ...textContentStyle,
 
@@ -942,6 +1200,8 @@ export async function extractChartMetadata(
     dotStrokeWidth,
     gradientStartOpacity,
     barRadius,
+    barData: barSeriesData ?? null,
+    radarAxes,
     chartMargin,
     ...legendStyle,
     ...switcherStyle,
@@ -970,6 +1230,9 @@ function findAxisFramesStructurally(
   let bestXScore = 0;
   let bestYScore = 0;
 
+  let bestXArea = Infinity;
+  let bestYArea = Infinity;
+
   for (const frame of allFrames) {
     const frameBB = frame.absoluteBoundingBox;
     if (!frameBB) continue;
@@ -977,9 +1240,13 @@ function findAxisFramesStructurally(
     const textNodes = findDirectTextNodes(frame);
     if (textNodes.length < MIN_AXIS_LABELS) continue;
 
+    const frameArea = frameBB.width * frameBB.height;
+
     // X-axis candidate: bottom 30%, spans width, short text labels
     const frameMidY = frameBB.y + frameBB.height / 2;
-    const isBottom = frameMidY > rootBB.y + rootBB.height * 0.7;
+    const frameBottomEdge = frameBB.y + frameBB.height;
+    const isBottom = frameMidY > rootBB.y + rootBB.height * 0.7
+      || frameBottomEdge > rootBB.y + rootBB.height * 0.85;
     const spansWidth = frameBB.width > rootBB.width * 0.4;
     if (isBottom && spansWidth && textNodes.length >= 3) {
       const allShort = textNodes.every((t: any) =>
@@ -987,26 +1254,56 @@ function findAxisFramesStructurally(
       );
       if (allShort) {
         const score = textNodes.length;
-        if (score > bestXScore) {
+        // Prefer smaller (tighter) frames when scores tie — avoids selecting
+        // a large container that also encompasses Y-axis labels.
+        if (score > bestXScore || (score === bestXScore && frameArea < bestXArea)) {
           bestXScore = score;
+          bestXArea = frameArea;
           xAxisFrame = frame;
         }
       }
     }
 
-    // Y-axis candidate: left/right 25%, spans height, numeric labels
+    // Fallback: frame spans width but its midpoint isn't at the bottom.
+    // Check if its TEXT children are individually positioned at the bottom.
+    // This catches tall container frames (e.g. chart+axis wrapper).
+    if (!isBottom && spansWidth && textNodes.length >= 3) {
+      const bottomTexts = textNodes.filter((t: any) => {
+        const tBB = t.absoluteBoundingBox;
+        if (!tBB) return false;
+        const tMidY = tBB.y + tBB.height / 2;
+        return tMidY > rootBB.y + rootBB.height * 0.7;
+      });
+      if (bottomTexts.length >= 3) {
+        const allShort = bottomTexts.every((t: any) =>
+          (t.characters ?? t.content ?? '').trim().length < 8,
+        );
+        if (allShort) {
+          const score = bottomTexts.length;
+          if (score > bestXScore || (score === bestXScore && frameArea < bestXArea)) {
+            bestXScore = score;
+            bestXArea = frameArea;
+            xAxisFrame = frame;
+          }
+        }
+      }
+    }
+
+    // Y-axis candidate: left/right 25%, spans height, narrow, numeric labels
     const isLeftEdge = frameBB.x < rootBB.x + rootBB.width * 0.25;
     const isRightEdge = frameBB.x + frameBB.width > rootBB.x + rootBB.width * 0.75;
     const spansHeight = frameBB.height > rootBB.height * 0.3;
-    if ((isLeftEdge || isRightEdge) && spansHeight) {
+    const isNarrow = frameBB.width < rootBB.width * 0.2; // Y-axis frames are narrow
+    if ((isLeftEdge || isRightEdge) && spansHeight && isNarrow) {
       const numericCount = textNodes.filter((t: any) => {
         const text = (t.characters ?? t.content ?? '').trim();
         return /^[\d.,\-$%kKmMbB]+$/.test(text);
       }).length;
       if (numericCount >= MIN_AXIS_LABELS) {
         const score = numericCount;
-        if (score > bestYScore) {
+        if (score > bestYScore || (score === bestYScore && frameArea < bestYArea)) {
           bestYScore = score;
+          bestYArea = frameArea;
           yAxisFrame = frame;
         }
       }
@@ -1045,9 +1342,7 @@ function findLegendFrameStructurally(node: any): any | null {
       const dotNode = findSmallShapeNode(child);
       if (!dotNode) continue;
 
-      const dotFill = (dotNode.fills ?? []).find(
-        (f: any) => f.type === 'SOLID' && f.color,
-      );
+      const dotFill = findFirstChromaticFill(dotNode);
       if (dotFill) dotColors.add(figmaColorToHex(dotFill.color));
       matchCount++;
     }
@@ -1084,13 +1379,33 @@ function findLegendFrameStructurally(node: any): any | null {
  * Find small shape node (dot) inside a frame — ELLIPSE or RECTANGLE with bbox <= 16x16.
  */
 function findSmallShapeNode(node: any): any | null {
+  const SHAPE_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
   const shapes = findAllNodes(node, (n: any) => {
-    if (n.type !== 'ELLIPSE' && n.type !== 'RECTANGLE' && n.type !== 'LINE') return false;
+    if (!SHAPE_TYPES.includes(n.type)) return false;
     const bb = n.absoluteBoundingBox;
     if (!bb) return false;
     return bb.width <= 16 && bb.height <= 16;
   });
   return shapes[0] ?? null;
+}
+
+/**
+ * Recursively find the first chromatic solid fill in a node's subtree.
+ * Checks the node itself first, then children depth-first.
+ * Used for legend dot colors where the fill may be on a nested VECTOR inside an INSTANCE.
+ */
+function findFirstChromaticFill(node: any): { color: any; opacity?: number } | null {
+  if (!node) return null;
+  for (const f of node.fills ?? []) {
+    if (f.type === 'SOLID' && f.color && isChromatic(f.color) && f.visible !== false) {
+      return { color: f.color, opacity: f.opacity };
+    }
+  }
+  for (const child of node.children ?? []) {
+    const found = findFirstChromaticFill(child);
+    if (found) return found;
+  }
+  return null;
 }
 
 /**
@@ -1169,9 +1484,11 @@ function findChartAreaFrame(
     return hasShapes;
   });
 
-  // Pick the largest by bounding-box area (not the root)
+  // Score candidates: prefer frames that directly contain chart data shapes
+  // (not wrapper frames that also contain headings/text above the chart).
+  // A good chart area frame has a high ratio of shape area to total area.
   let best: any = null;
-  let bestArea = 0;
+  let bestScore = 0;
   for (const f of candidates) {
     // Skip if it is a descendant of legend or switcher
     if (legendFrame && isDescendantOf(f, legendFrame)) continue;
@@ -1180,8 +1497,48 @@ function findChartAreaFrame(
     const bb = f.absoluteBoundingBox;
     if (!bb) continue;
     const area = bb.width * bb.height;
-    if (area > bestArea) {
-      bestArea = area;
+
+    // Count direct chromatic shape children (indicates a data-focused frame).
+    // Exclude plain lines/vectors (separators, grid lines) which are decorative.
+    const directShapes = (f.children ?? []).filter((c: any) => {
+      if (!['RECTANGLE', 'ELLIPSE', 'BOOLEAN_OPERATION'].includes(c.type)) return false;
+      return (c.fills ?? []).some((fl: any) => fl.type === 'SOLID' && fl.color && isChromatic(fl.color));
+    }).length;
+    // Check if this frame is a wrapper/container that holds both
+    // non-chart content (headings, text labels) and a chart sub-frame.
+    // Wrappers have child frames but no direct shapes — the data shapes
+    // are nested deeper. We want the deepest frame that directly contains shapes.
+    const fChildren = (f.children ?? []).filter((c: any) => c.visible !== false);
+    const hasTextChild = fChildren.some((c: any) =>
+      c.type === 'TEXT' || (
+        (c.type === 'FRAME' || c.type === 'INSTANCE') &&
+        findAllNodes(c, (n: any) => n.type === 'TEXT').length > 0 &&
+        findAllNodes(c, (n: any) => ['RECTANGLE', 'ELLIPSE'].includes(n.type)).length === 0
+      ),
+    );
+    const hasChartChild = fChildren.some((c: any) =>
+      (c.type === 'FRAME' || c.type === 'GROUP') &&
+      findAllNodes(c, (n: any) => {
+        if (!['RECTANGLE', 'ELLIPSE', 'VECTOR', 'LINE'].includes(n.type)) return false;
+        // Check chromatic fills OR chromatic strokes (chart vectors often use strokes)
+        const hasChromaticFill = (n.fills ?? []).some(
+          (fl: any) => fl.type === 'SOLID' && fl.color && isChromatic(fl.color),
+        );
+        const hasChromaticStroke = (n.strokes ?? []).some(
+          (s: any) => s.type === 'SOLID' && s.color && isChromatic(s.color),
+        );
+        return hasChromaticFill || hasChromaticStroke;
+      }).length >= 3,
+    );
+    const isWrapper = hasTextChild && hasChartChild && directShapes === 0;
+
+    // Score: area * bonus for direct shapes, penalize wrappers
+    const shapeBonus = directShapes > 0 ? 2 : 1;
+    const wrapperPenalty = isWrapper ? 0.1 : 1;
+    const score = area * shapeBonus * wrapperPenalty;
+
+    if (score > bestScore) {
+      bestScore = score;
       best = f;
     }
   }
@@ -1251,17 +1608,27 @@ function extractChartTextContent(
     [chartAreaFrame, legendsFrame, switcherFrame, xAxisFrame, yAxisFrame].filter(Boolean),
   );
 
-  // Also exclude any frame containing >= 3 VISIBLE shape nodes with chromatic fills (data areas)
-  // Skip the root node itself — it contains everything, excluding it would block all text.
-  // Uses findVisibleNodes so hidden subtrees are not walked into.
+  // Also exclude frames that directly contain chart data shapes (not parent containers
+  // that also hold headings). Only exclude the most specific frame containing the shapes.
+  // A data area has ≥3 chromatic shapes as direct children (max 1 level deep).
   const dataAreas = findVisibleNodes(rootNode, (n: any) => {
     if (n === rootNode) return false;
+    if (excludeFrames.has(n)) return false;
     if (n.type !== 'FRAME' && n.type !== 'GROUP') return false;
-    const shapes = findVisibleNodes(n, (c: any) =>
+    // Count shapes that are direct children (not deeply nested)
+    const directShapes = (n.children ?? []).filter((c: any) =>
       ['RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE'].includes(c.type) &&
       (c.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color)),
-    );
-    return shapes.length >= 3;
+    ).length;
+    if (directShapes >= 3) return true;
+    // Also match bar chart containers: child frames each containing a rectangle
+    const childFramesWithBars = (n.children ?? []).filter((c: any) => {
+      if (c.type !== 'FRAME' && c.type !== 'GROUP') return false;
+      return (c.children ?? []).some((gc: any) =>
+        gc.type === 'RECTANGLE' && (gc.fills ?? []).some((f: any) =>
+          f.type === 'SOLID' && f.color && isChromatic(f.color)));
+    }).length;
+    return childFramesWithBars >= 3;
   });
   for (const da of dataAreas) excludeFrames.add(da);
 
@@ -1274,10 +1641,20 @@ function extractChartTextContent(
     return true;
   });
 
-  // Determine chart area vertical bounds for above/below classification
+  // Determine chart area vertical bounds for above/below classification.
+  // Use yAxisFrame or xAxisFrame position as more reliable reference than chartAreaFrame,
+  // since chartAreaFrame might be a wrapper that includes the heading.
+  const yAxisBB = yAxisFrame?.absoluteBoundingBox;
+  const xAxisBB = xAxisFrame?.absoluteBoundingBox;
   const chartAreaBB = chartAreaFrame?.absoluteBoundingBox;
-  const chartTop = chartAreaBB?.y ?? 0;
-  const chartBottom = chartAreaBB ? chartAreaBB.y + chartAreaBB.height : Infinity;
+  const chartTop = yAxisBB?.y ?? xAxisBB?.y ?? chartAreaBB?.y ?? 0;
+  const chartBottom = xAxisBB
+    ? xAxisBB.y + xAxisBB.height
+    : yAxisBB
+      ? yAxisBB.y + yAxisBB.height
+      : chartAreaBB
+        ? chartAreaBB.y + chartAreaBB.height
+        : Infinity;
 
   // Sort by vertical position
   const sorted = outsideTexts.sort((a: any, b: any) => {
@@ -1490,8 +1867,9 @@ function extractSeriesFromLegends(
       if (n.type !== 'FRAME' && n.type !== 'GROUP' && n.type !== 'INSTANCE') return false;
       const directChildren = n.children ?? [];
       const hasText = directChildren.some((c: any) => c.type === 'TEXT');
+      const DOT_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
       const hasDot = directChildren.some((c: any) => {
-        if (c.type !== 'ELLIPSE' && c.type !== 'RECTANGLE' && c.type !== 'LINE') return false;
+        if (!DOT_TYPES.includes(c.type)) return false;
         const bb = c.absoluteBoundingBox;
         return bb && bb.width <= 16 && bb.height <= 16;
       });
@@ -1506,14 +1884,15 @@ function extractSeriesFromLegends(
         const text = (textNode?.characters ?? textNode?.content ?? '').trim();
         if (!textNode || text.length <= 1) continue;
 
+        const DOT_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
         const dotNode = (legendItem.children ?? []).find((c: any) => {
-          if (c.type !== 'ELLIPSE' && c.type !== 'RECTANGLE' && c.type !== 'LINE') return false;
+          if (!DOT_TYPES.includes(c.type)) return false;
           const bb = c.absoluteBoundingBox;
           return bb && bb.width <= 16 && bb.height <= 16;
         });
         let legendColor = '#9747ff';
         if (dotNode) {
-          const fill = (dotNode.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+          const fill = findFirstChromaticFill(dotNode);
           if (fill) legendColor = figmaColorToCss(fill.color, fill.opacity);
         }
 
@@ -1541,10 +1920,12 @@ function extractSeriesFromLegends(
         const dotNode =
           findNodeByType(legendItem, 'ELLIPSE') ??
           findNodeByType(legendItem, 'RECTANGLE') ??
-          findNodeByType(legendItem, 'LINE');
+          findNodeByType(legendItem, 'LINE') ??
+          findNodeByType(legendItem, 'VECTOR') ??
+          findNodeByType(legendItem, 'INSTANCE');
         let legendColor = '#9747ff';
         if (dotNode) {
-          const fill = (dotNode.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+          const fill = findFirstChromaticFill(dotNode);
           if (fill) legendColor = figmaColorToCss(fill.color, fill.opacity);
         }
 
@@ -1822,9 +2203,132 @@ function extractRadialRings(
   return rings;
 }
 
-function extractChartAreaHeight(chartAreaFrame: any | null, fallbackHeight: number, isChartOnly = false): number {
+/**
+ * Extract radar/spider chart axis labels from TEXT nodes arranged radially around the chart center.
+ * Radar charts have labels positioned around a central polygon — the labels are the axis names.
+ *
+ * Uses the chart area frame (not root) as center reference, and excludes text from
+ * known structural frames (legends, switchers, axes) to avoid polluting axis labels
+ * with title, subtitle, legend, or summary text.
+ */
+function extractRadarAxes(
+  node: any,
+  chartAreaFrame: any | null,
+  excludeFrames: Set<any>,
+): string[] {
+  const rootBB = node.absoluteBoundingBox;
+  if (!rootBB) return [];
+
+  // Build set of all node IDs inside excluded frames (legend, switcher, axes)
+  const excludedNodeIds = new Set<string>();
+  for (const frame of excludeFrames) {
+    if (!frame) continue;
+    const allInFrame = findAllNodes(frame, () => true);
+    for (const n of allInFrame) {
+      if (n.id) excludedNodeIds.add(n.id);
+    }
+  }
+
+  // For radar charts, axis labels sit OUTSIDE the chart area polygon,
+  // so we need to find the center from the chart data shapes (vectors/ellipses)
+  // rather than using chartAreaFrame which may be too small.
+  // Strategy: find the center of the VECTOR/shape cluster in the chart area.
+  const searchArea = chartAreaFrame ?? node;
+  const shapeNodes = findVisibleNodes(searchArea, (n: any) =>
+    ['VECTOR', 'ELLIPSE', 'LINE'].includes(n.type) && n.absoluteBoundingBox,
+  );
+
+  let cx: number, cy: number, chartRadius: number;
+  if (shapeNodes.length >= 3) {
+    // Compute bounding box of all shapes to find chart center
+    const allX = shapeNodes.flatMap((n: any) => [n.absoluteBoundingBox.x, n.absoluteBoundingBox.x + n.absoluteBoundingBox.width]);
+    const allY = shapeNodes.flatMap((n: any) => [n.absoluteBoundingBox.y, n.absoluteBoundingBox.y + n.absoluteBoundingBox.height]);
+    const minX = Math.min(...allX), maxX = Math.max(...allX);
+    const minY = Math.min(...allY), maxY = Math.max(...allY);
+    cx = (minX + maxX) / 2;
+    cy = (minY + maxY) / 2;
+    chartRadius = Math.max(maxX - minX, maxY - minY) / 2;
+  } else {
+    // Fallback to chart area or root center
+    const ref = chartAreaFrame?.absoluteBoundingBox ?? rootBB;
+    cx = ref.x + ref.width / 2;
+    cy = ref.y + ref.height / 2;
+    chartRadius = Math.min(ref.width, ref.height) / 2;
+  }
+
+  // Collect all visible TEXT nodes from the root, excluding structural frames
+  const textNodes = findVisibleNodes(node, (n: any) => {
+    if (n.type !== 'TEXT') return false;
+    if (n.id && excludedNodeIds.has(n.id)) return false;
+    return true;
+  });
+  if (textNodes.length === 0) return [];
+
+  // Filter to text nodes positioned radially around the chart center
+  const radialTexts = textNodes
+    .map((t: any) => {
+      const bb = t.absoluteBoundingBox;
+      if (!bb) return null;
+      const tcx = bb.x + bb.width / 2;
+      const tcy = bb.y + bb.height / 2;
+      const dist = Math.sqrt((tcx - cx) ** 2 + (tcy - cy) ** 2);
+      const angle = Math.atan2(tcy - cy, tcx - cx);
+      const text = (t.characters ?? t.content ?? '').trim();
+      const fontSize = t.style?.fontSize ?? 12;
+
+      // Skip very short or very long labels
+      if (text.length < 2 || text.length > 25) return null;
+      // Skip numeric-only labels (axis tick values, totals like "9100")
+      if (/^[\d.,\-%$kKmMbB\s]+$/.test(text)) return null;
+      // Skip labels that look like titles (large font)
+      if (fontSize >= 16) return null;
+      // Must be near the chart polygon (between 40%–150% of chart radius from center)
+      if (dist < chartRadius * 0.4 || dist > chartRadius * 1.5) return null;
+      return { text, dist, angle, tcx, tcy, fontSize };
+    })
+    .filter(Boolean) as Array<{ text: string; dist: number; angle: number; tcx: number; tcy: number; fontSize: number }>;
+
+  if (radialTexts.length < 3) return [];
+
+  // Check radial arrangement: texts should span at least ~180° (not all in a row)
+  const angles = radialTexts.map((t) => t.angle);
+  const angleRange = Math.max(...angles) - Math.min(...angles);
+  if (angleRange < Math.PI * 0.7) return [];
+
+  // Check they are at similar distances from center (axis labels form a ring)
+  const dists = radialTexts.map((t) => t.dist);
+  const avgDist = dists.reduce((a, b) => a + b, 0) / dists.length;
+  // Keep only texts within 50% of average distance (removes outliers like title/summary)
+  const filtered = radialTexts.filter((t) => Math.abs(t.dist - avgDist) < avgDist * 0.5);
+  if (filtered.length < 3) return [];
+
+  // Sort by angle (clockwise from top: -π/2) for consistent ordering
+  filtered.sort((a, b) => {
+    const na = ((a.angle + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI));
+    const nb = ((b.angle + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI));
+    return na - nb;
+  });
+
+  return filtered.map((t) => t.text);
+}
+
+function extractChartAreaHeight(
+  chartAreaFrame: any | null,
+  fallbackHeight: number,
+  isChartOnly = false,
+  yAxisFrame?: any | null,
+): number {
+  // The Y-axis frame height is the most reliable indicator of chart plot area height
+  // because the Y-axis spans exactly the plot area vertically.
+  const yAxisHeight = yAxisFrame?.absoluteBoundingBox?.height;
+  if (yAxisHeight && yAxisHeight > 50) {
+    return Math.round(yAxisHeight);
+  }
+
   if (chartAreaFrame?.absoluteBoundingBox?.height) {
-    return Math.round(chartAreaFrame.absoluteBoundingBox.height);
+    const h = Math.round(chartAreaFrame.absoluteBoundingBox.height);
+    // Guard: chartAreaFrame might be a heading/small frame picked by mistake
+    if (h >= 100) return h;
   }
   // If the node is purely chart (no legends, header, axes), use full height
   if (isChartOnly) {
@@ -1898,6 +2402,153 @@ function extractBarRadius(node: any): [number, number, number, number] {
   return [4, 4, 0, 0];
 }
 
+/**
+ * Parse axis label text to a number, handling suffixes like k, K, M, B.
+ * e.g. "100k" → 100000, "50" → 50, "2.5M" → 2500000
+ */
+function parseAxisNumber(text: string): number {
+  const cleaned = text.replace(/[$%,\s]/g, '').trim();
+  const match = cleaned.match(/^(-?\d+(?:\.\d+)?)\s*([kKmMbBtT]?)$/);
+  if (!match) return Number(cleaned);
+  const num = parseFloat(match[1]);
+  const suffix = match[2].toLowerCase();
+  switch (suffix) {
+    case 'k': return num * 1000;
+    case 'm': return num * 1000000;
+    case 'b': return num * 1000000000;
+    case 't': return num * 1000000000000;
+    default: return num;
+  }
+}
+
+/**
+ * Extract bar chart data (labels + values) from bar column structures.
+ *
+ * Detects the common Figma pattern for bar charts:
+ *   Parent FRAME (horizontal layout) → child column FRAMEs (vertical layout)
+ *     Each column has: FRAME/RECTANGLE "Bar" + TEXT label
+ *
+ * Returns array of { name, value } where value is derived from bar height
+ * relative to the Y-axis scale, or null if the pattern isn't found.
+ */
+function extractBarChartData(
+  node: any, yAxisMin: number, yAxisMax: number,
+): Array<{ name: string; value: number }> | null {
+  // Find the bar chart container: a frame with multiple visible child frames,
+  // each containing a rectangle/frame (bar) and a text node (label).
+  const barContainers = findAllNodes(node, (n: any) => {
+    if (n.type !== 'FRAME' && n.type !== 'GROUP') return false;
+    const visibleChildren = (n.children ?? []).filter((c: any) => c.visible !== false);
+    if (visibleChildren.length < 3) return false;
+
+    // Check if children look like bar columns: each has a rectangle-ish frame + text
+    let columnCount = 0;
+    for (const child of visibleChildren) {
+      if (child.type !== 'FRAME' && child.type !== 'GROUP') continue;
+      const cc = (child.children ?? []).filter((gc: any) => gc.visible !== false);
+      const hasBar = cc.some((gc: any) =>
+        gc.type === 'RECTANGLE' || (gc.type === 'FRAME' && !gc.children?.length) ||
+        (gc.type === 'FRAME' && gc.name?.toLowerCase().includes('bar')),
+      );
+      const hasLabel = cc.some((gc: any) => gc.type === 'TEXT');
+      if (hasBar && hasLabel) columnCount++;
+    }
+
+    return columnCount >= 3;
+  });
+
+  if (barContainers.length === 0) return null;
+
+  // Pick the largest bar container
+  let bestContainer: any = null;
+  let bestArea = 0;
+  for (const c of barContainers) {
+    const bb = c.absoluteBoundingBox;
+    if (!bb) continue;
+    const area = bb.width * bb.height;
+    if (area > bestArea) { bestArea = area; bestContainer = c; }
+  }
+  if (!bestContainer) return null;
+
+  // Extract data from each bar column
+  const result: Array<{ name: string; value: number; color?: string }> = [];
+  const containerBB = bestContainer.absoluteBoundingBox;
+  if (!containerBB) return null;
+
+  // Filter to visible column frames (skip Y-axis number frames)
+  const visibleColumns = (bestContainer.children ?? []).filter((c: any) => {
+    if (c.visible === false) return false;
+    if (c.type !== 'FRAME' && c.type !== 'GROUP') return false;
+    // Must have a TEXT child (the label) to be a bar column
+    const cc = (c.children ?? []).filter((gc: any) => gc.visible !== false);
+    return cc.some((gc: any) => gc.type === 'TEXT');
+  });
+
+  // Helper: find the actual colored bar element within a column.
+  // Pattern 1: direct RECTANGLE child with chromatic fill
+  // Pattern 2: FRAME "Bar" containing a RECTANGLE with chromatic fill
+  function findBarRect(col: any): any | null {
+    const cc = (col.children ?? []).filter((gc: any) => gc.visible !== false);
+    // Direct rectangle
+    const directRect = cc.find((gc: any) =>
+      gc.type === 'RECTANGLE' && (gc.fills ?? []).some((f: any) =>
+        f.type === 'SOLID' && f.color && isChromatic(f.color)),
+    );
+    if (directRect) return directRect;
+    // Rectangle inside a "Bar" frame or any child frame
+    for (const gc of cc) {
+      if (gc.type !== 'FRAME') continue;
+      const innerRect = (gc.children ?? []).find((igc: any) =>
+        igc.type === 'RECTANGLE' && (igc.fills ?? []).some((f: any) =>
+          f.type === 'SOLID' && f.color && isChromatic(f.color)),
+      );
+      if (innerRect) return innerRect;
+    }
+    return null;
+  }
+
+  // Find the max bar slot height (the tallest column's available space for bars)
+  let maxBarSlotHeight = 0;
+  for (const col of visibleColumns) {
+    const colBB = col.absoluteBoundingBox;
+    if (!colBB) continue;
+    const colChildren = (col.children ?? []).filter((gc: any) => gc.visible !== false);
+    const labelNode = colChildren.find((gc: any) => gc.type === 'TEXT');
+    const labelHeight = labelNode?.absoluteBoundingBox?.height ?? 15;
+    const slotHeight = colBB.height - labelHeight;
+    if (slotHeight > maxBarSlotHeight) maxBarSlotHeight = slotHeight;
+  }
+
+  if (maxBarSlotHeight <= 0) return null;
+
+  for (const col of visibleColumns) {
+    const colChildren = (col.children ?? []).filter((gc: any) => gc.visible !== false);
+    const labelNode = colChildren.find((gc: any) => gc.type === 'TEXT');
+    const barRect = findBarRect(col);
+
+    if (!labelNode || !barRect) continue;
+
+    const label = (labelNode.characters ?? labelNode.content ?? '').trim();
+    if (!label) continue;
+
+    const barBB = barRect.absoluteBoundingBox;
+    if (!barBB) continue;
+
+    // Value is proportional: barRectHeight / maxSlotHeight * yAxisRange
+    const barHeight = barBB.height;
+    const proportion = barHeight / maxBarSlotHeight;
+    const value = Math.round(yAxisMin + proportion * (yAxisMax - yAxisMin));
+
+    // Extract bar color
+    const solidFill = (barRect.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
+    const color = solidFill ? figmaColorToHex(solidFill.color) : undefined;
+
+    result.push({ name: label, value, color });
+  }
+
+  return result.length > 0 ? result : null;
+}
+
 /** Extract chart margin from the chart area frame's auto-layout padding. */
 function extractChartMargin(chartAreaFrame: any | null): {
   top: number; right: number; bottom: number; left: number;
@@ -1949,19 +2600,36 @@ function extractLegendStyle(legendsFrame: any, rootNode: any): {
   let legendDotOpacity = defaults.legendDotOpacity;
 
   if (legendItem) {
-    const dotNode =
-      findNodeByType(legendItem, 'ELLIPSE') ?? findNodeByType(legendItem, 'RECTANGLE');
+    // Use findSmallShapeNode FIRST — it has a ≤16×16 size constraint that prevents
+    // picking up large mask rectangles or other non-dot shapes from component internals.
+    // Fall back to findNodeByType only for standard ELLIPSE/RECTANGLE dots with size validation.
+    let dotNode = findSmallShapeNode(legendItem);
+    if (!dotNode) {
+      const ellipse = findNodeByType(legendItem, 'ELLIPSE');
+      const rect = findNodeByType(legendItem, 'RECTANGLE');
+      // Only accept ELLIPSE/RECTANGLE if reasonably small (≤ 24px) — avoids mask/bg shapes
+      for (const candidate of [ellipse, rect].filter(Boolean)) {
+        const cw = candidate.absoluteBoundingBox?.width ?? 0;
+        const ch = candidate.absoluteBoundingBox?.height ?? 0;
+        if (cw > 0 && cw <= 24 && ch > 0 && ch <= 24) {
+          dotNode = candidate;
+          break;
+        }
+      }
+    }
     if (dotNode) {
       legendDotSize = Math.round(
         dotNode.absoluteBoundingBox?.width ?? dotNode.size?.x ?? defaults.legendDotSize,
       );
+      // ELLIPSE or VECTOR/INSTANCE circles → round; RECTANGLE → use cornerRadius
       legendDotBorderRadius =
-        dotNode.type === 'ELLIPSE'
+        dotNode.type === 'ELLIPSE' || dotNode.type === 'VECTOR' || dotNode.type === 'INSTANCE'
           ? '50%'
           : `${dotNode.cornerRadius ?? 0}px`;
-      const fill = (dotNode.fills ?? [])[0];
-      if (fill?.opacity !== undefined) {
-        legendDotOpacity = Math.round(fill.opacity * 100) / 100;
+      // Extract fill opacity from the dot (use recursive search for nested fills)
+      const chromaticFill = findFirstChromaticFill(dotNode);
+      if (chromaticFill?.opacity !== undefined) {
+        legendDotOpacity = Math.round(chromaticFill.opacity * 100) / 100;
       } else if (dotNode.opacity !== undefined) {
         legendDotOpacity = Math.round(dotNode.opacity * 100) / 100;
       }
@@ -2175,12 +2843,20 @@ async function detectChartTypeWithLLM(
   node: any,
   llmProvider: LLMProvider,
 ): Promise<ChartType> {
-  // Always try structural detection first — it's more reliable for pie/donut
-  // because it uses arcData.innerRadius and visibility which the LLM summary lacks.
+  // Structural detection is most reliable for arc-based charts (pie/donut/radial)
+  // because it uses arcData.innerRadius which the LLM summary lacks.
+  // For those, trust the structural detector (which now has proper size filtering).
   const structuralResult = detectChartType(node);
-  if (structuralResult !== 'unknown') return structuralResult;
+  if (structuralResult === 'pie' || structuralResult === 'donut' || structuralResult === 'radial') {
+    return structuralResult;
+  }
+  // If the structural detector already has a strong non-unknown answer for
+  // cartesian types (line/area/bar), still pass through to LLM for validation,
+  // but use structuralResult as the fallback.
 
-  // Structural detection couldn't determine — fall back to LLM
+  // For ALL other chart types, use the LLM as primary detector.
+  // This makes the pipeline generic — the LLM can identify radar, scatter, funnel,
+  // treemap, or any other chart type from the Figma structure.
   const summary = buildNodeSummary(node);
 
   const systemPrompt = `You are a design analysis expert. Given a Figma layer tree, identify the chart/graph type.
@@ -2188,17 +2864,31 @@ async function detectChartTypeWithLLM(
 Respond with ONLY a JSON object — no markdown, no explanation:
 {"chartType": "<type>"}
 
-Chart type values:
-- "line"    — data shown as connected points/lines
-- "area"    — like line but with filled region beneath
-- "bar"     — vertical or horizontal bars/columns
-- "pie"     — circular segments (full circle, no hole)
-- "donut"   — circular segments with hollow center (has inner cutout, text in center, or smaller concentric element)
-- "radial"  — concentric rings/progress bars (multiple rings at different radii, each showing progress)
-- "unknown" — cannot determine
+Chart type values (use exactly these strings):
+- "line"       — data shown as connected points/lines
+- "area"       — like line but with filled region beneath
+- "bar"        — vertical or horizontal bars/columns
+- "pie"        — circular segments (full circle, no hole)
+- "donut"      — circular segments with hollow center
+- "radial"     — concentric rings/progress bars
+- "radar"      — spider/web chart with data plotted on radial axes from a center point (look for: polygon shapes, hexagonal/pentagonal grid lines, axis labels arranged in a circle)
+- "scatter"    — dots/points plotted on X-Y axes without connecting lines
+- "funnel"     — progressively narrowing horizontal sections (widest at top, narrowest at bottom)
+- "treemap"    — nested rectangles filling the entire area, sized by value
+- "composed"   — multiple chart types overlaid (e.g. bars + lines together)
+- "unknown"    — cannot determine
+
+Key structural patterns to look for:
+- Radar/spider charts: VECTOR nodes forming polygon shapes (hexagonal, pentagonal, etc.) with text labels arranged radially around a center point. Grid lines form concentric polygon shapes.
+- Bar charts: aligned RECTANGLE nodes with chromatic fills, similar width, varying height.
+- Line charts: VECTOR nodes with strokes, landscape aspect ratio, no gradient fills.
+- Area charts: VECTOR nodes with BOTH strokes AND gradient fills.
+- Scatter charts: many small ELLIPSE/RECTANGLE nodes scattered across a 2D area without connections.
+- Funnel charts: RECTANGLE/VECTOR nodes decreasing in width from top to bottom.
+- Treemap charts: many adjacent RECTANGLEs filling the container with different colors.
 
 Analyze the node types (VECTOR, RECTANGLE, ELLIPSE, LINE), their sizes, positions, fills, strokes, and spatial arrangement.
-Do NOT rely on layer names — focus on structural properties like overlapping same-sized ellipses, aligned rectangles, stroked vectors, etc.`;
+Do NOT rely on layer names — focus on structural properties.`;
 
   const userPrompt = `Figma layer tree:\n\n${summary}\n\nWhat type of chart is this?`;
 
@@ -2206,14 +2896,22 @@ Do NOT rely on layer names — focus on structural properties like overlapping s
     const response = await llmProvider.generate(userPrompt, systemPrompt);
     const jsonMatch = response.match(/\{[\s\S]*?"chartType"\s*:\s*"([^"]+)"[\s\S]*?\}/);
     if (jsonMatch) {
-      const chartType = jsonMatch[1] as ChartType;
-      const valid: ChartType[] = ['area', 'line', 'bar', 'pie', 'donut', 'radial', 'unknown'];
-      if (valid.includes(chartType)) return chartType;
+      const chartType = jsonMatch[1];
+      // Accept any non-empty chart type from the LLM
+      if (chartType && chartType !== 'unknown') {
+        // For "composed", prefer the structural result if it's specific (bar/line/area).
+        // The structural detector is more reliable at distinguishing individual chart types.
+        if (chartType === 'composed' && structuralResult !== 'unknown') {
+          return structuralResult;
+        }
+        return chartType;
+      }
     }
   } catch {
     // fall through to structural detection
   }
 
+  // Fallback to structural heuristics if LLM fails or returns unknown
   return structuralResult;
 }
 
@@ -2258,9 +2956,12 @@ function buildNodeSummary(node: any, depth = 0, maxDepth = 7): string {
   const text = type === 'TEXT' ? ` "${node.characters ?? node.content ?? ''}"` : '';
   const layout = node.layoutMode ? ` layout:${node.layoutMode}` : '';
   const radius = node.cornerRadius ? ` radius:${node.cornerRadius}` : '';
+  const arcInfo = node.arcData ? ` arc:${node.arcData.startingAngle.toFixed(2)}→${node.arcData.endingAngle.toFixed(2)}` : '';
+  const strokeW = node.strokeWeight ? ` strokeW:${node.strokeWeight}` : '';
+  const visible = node.visible === false ? ' HIDDEN' : '';
   const attrs = [fills, strokes].filter(Boolean).join(' | ');
 
-  let line = `${indent}${type} "${name}"${size}${pos}${text}${layout}${radius}${attrs ? ` [${attrs}]` : ''}`;
+  let line = `${indent}${type} "${name}"${size}${pos}${text}${layout}${radius}${arcInfo}${strokeW}${visible}${attrs ? ` [${attrs}]` : ''}`;
 
   const children = node.children ?? [];
   if (children.length > 0) {
@@ -2423,6 +3124,171 @@ function groupByProperty(nodes: any[], propFn: (n: any) => number, tolerance: nu
   }
 
   return groups;
+}
+
+/**
+ * Structural bar detection using two strategies:
+ *
+ * 1. Sibling detection: parent nodes whose children form bar-like groups
+ *    (same width + varying height, or same height + varying width).
+ *
+ * 2. Cross-tree detection: collect ALL small FRAME/BOOLEAN_OPERATION/RECTANGLE
+ *    nodes across the tree that share similar width but vary in height
+ *    (or similar height, varying width). This catches bars split across
+ *    multiple BarGroup/BarBlock parents — common in grouped bar charts.
+ *
+ * No fills required — catches bars styled via Figma variables/styles.
+ */
+function findStructuralBarGroups(root: any): ShapeClusterResult {
+  const none: ShapeClusterResult = { detected: false, highConfidence: false };
+
+  // ── Strategy 1: Sibling-based ──
+  const candidates: any[][] = [];
+  (function walk(node: any) {
+    const children = node.children ?? [];
+    if (children.length >= MIN_BAR_RECTS) {
+      const visual = children.filter((c: any) => {
+        const bb = c.absoluteBoundingBox;
+        if (!bb || bb.width < 2 || bb.height < 2) return false;
+        return c.type !== 'TEXT' && c.type !== 'LINE';
+      });
+
+      if (visual.length >= MIN_BAR_RECTS) {
+        const widths = visual.map((c: any) => c.absoluteBoundingBox?.width ?? 0);
+        const heights = visual.map((c: any) => c.absoluteBoundingBox?.height ?? 0);
+        const avgWidth = widths.reduce((a: number, b: number) => a + b, 0) / widths.length;
+        const avgHeight = heights.reduce((a: number, b: number) => a + b, 0) / heights.length;
+        const allSimilarWidth = widths.every((w: number) => Math.abs(w - avgWidth) < SIZE_TOLERANCE);
+        const heightRange = Math.max(...heights) - Math.min(...heights);
+
+        // Bars need meaningful height variation (>10px, matching chromatic bar threshold)
+        // and bar-like proportions (narrow relative to tall, not wide card-like elements).
+        const rootBB = root.absoluteBoundingBox;
+        const rootW = rootBB?.width ?? 0;
+        const maxBarWidth = rootW > 0 ? rootW * 0.3 : 120;
+        const areBarsNarrow = avgWidth < maxBarWidth;
+
+        if (allSimilarWidth && heightRange > 10 && areBarsNarrow) {
+          candidates.push(visual);
+        } else {
+          const allSimilarHeight = heights.every((h: number) => Math.abs(h - avgHeight) < SIZE_TOLERANCE);
+          const widthRange = Math.max(...widths) - Math.min(...widths);
+          const maxBarHeight = (rootBB?.height ?? 0) > 0 ? rootBB.height * 0.3 : 120;
+          const areBarsShort = avgHeight < maxBarHeight;
+          if (allSimilarHeight && widthRange > 10 && areBarsShort) {
+            candidates.push(visual);
+          }
+        }
+      }
+    }
+    for (const child of children) {
+      walk(child);
+    }
+  })(root);
+
+  if (candidates.length > 0) {
+    const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
+    return { detected: true, highConfidence: best.length >= 5, count: best.length };
+  }
+
+  // ── Strategy 2: Cross-tree leaf-node grouping ──
+  // Collect all small "bar-shaped" leaf-ish nodes (few or no children),
+  // then group by similar width to find vertical bars.
+  // Guard: bar candidates must occupy a meaningful area of the container.
+  // Tiny icons, legend dots, and button groups are filtered out.
+  const rootBB = root.absoluteBoundingBox;
+  const rootW = rootBB?.width ?? 0;
+  const rootH = rootBB?.height ?? 0;
+  const minBarDim = Math.max(Math.min(rootW, rootH) * 0.08, 15); // bars ≥8% of shorter axis or 15px
+  const barLeaves: any[] = [];
+  (function collectLeaves(node: any) {
+    const children = node.children ?? [];
+    const bb = node.absoluteBoundingBox;
+    if (!bb || bb.width < 2 || bb.height < 1) {
+      for (const child of children) collectLeaves(child);
+      return;
+    }
+    // Consider leaf-ish visual nodes (0-3 children, not the root, not huge)
+    const isLeafLike = children.length <= 3 && node !== root;
+    const isSmallEnough = rootW > 0 ? bb.width < rootW * 0.25 : bb.width < 80;
+    const isTallEnough = bb.height >= minBarDim || bb.width >= minBarDim;
+    const isVisual = node.type !== 'TEXT' && node.type !== 'LINE';
+    if (isLeafLike && isSmallEnough && isTallEnough && isVisual) {
+      barLeaves.push(node);
+    }
+    for (const child of children) {
+      collectLeaves(child);
+    }
+  })(root);
+
+  if (barLeaves.length >= MIN_BAR_RECTS) {
+    // Helper: check that bar candidates share a common edge (like real chart bars).
+    // Vertical bars share a bottom-edge y; horizontal bars share a left-edge x.
+    // Scattered UI elements (amounts, buttons) at different positions don't qualify.
+    const groupIsAligned = (group: any[], axis: 'vertical' | 'horizontal'): boolean => {
+      const bbs = group.map((n: any) => n.absoluteBoundingBox);
+      if (axis === 'vertical') {
+        // Check shared bottom-edge y
+        const bottomYs = bbs.map((b: any) => Math.round(b.y + b.height));
+        const edgeGroups = new Map<number, number>();
+        for (const y of bottomYs) {
+          let matched = false;
+          for (const [key, count] of edgeGroups) {
+            if (Math.abs(y - key) < POS_TOLERANCE) {
+              edgeGroups.set(key, count + 1);
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) edgeGroups.set(y, 1);
+        }
+        return Math.max(...edgeGroups.values()) >= MIN_BAR_RECTS;
+      } else {
+        // Check shared left-edge x
+        const leftXs = bbs.map((b: any) => Math.round(b.x));
+        const edgeGroups = new Map<number, number>();
+        for (const x of leftXs) {
+          let matched = false;
+          for (const [key, count] of edgeGroups) {
+            if (Math.abs(x - key) < POS_TOLERANCE) {
+              edgeGroups.set(key, count + 1);
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) edgeGroups.set(x, 1);
+        }
+        return Math.max(...edgeGroups.values()) >= MIN_BAR_RECTS;
+      }
+    };
+
+    // Group by similar width (vertical bars)
+    const widthGroups = groupByProperty(barLeaves,
+      (n: any) => n.absoluteBoundingBox?.width ?? 0, SIZE_TOLERANCE);
+    for (const group of widthGroups) {
+      if (group.length >= MIN_BAR_RECTS) {
+        const heights = group.map((n: any) => n.absoluteBoundingBox?.height ?? 0);
+        const heightRange = Math.max(...heights) - Math.min(...heights);
+        if (heightRange > 10 && groupIsAligned(group, 'vertical')) {
+          return { detected: true, highConfidence: group.length >= 5, count: group.length };
+        }
+      }
+    }
+    // Group by similar height (horizontal bars)
+    const heightGroups = groupByProperty(barLeaves,
+      (n: any) => n.absoluteBoundingBox?.height ?? 0, SIZE_TOLERANCE);
+    for (const group of heightGroups) {
+      if (group.length >= MIN_BAR_RECTS) {
+        const widths = group.map((n: any) => n.absoluteBoundingBox?.width ?? 0);
+        const widthRange = Math.max(...widths) - Math.min(...widths);
+        if (widthRange > 10 && groupIsAligned(group, 'horizontal')) {
+          return { detected: true, highConfidence: group.length >= 5, count: group.length };
+        }
+      }
+    }
+  }
+
+  return none;
 }
 
 /** Get the combined bounding box of a group of nodes. */

@@ -347,29 +347,28 @@ function renderProjectList() {
   if (!projectListEl) return;
   const projects = loadProjects();
   if (projects.length === 0) {
-    projectListEl.innerHTML = '';
-    return;
-  }
-  const items = projects.slice(0, 8);
-  let html = '';
-  for (const p of items) {
-    const isActive = currentProjectId === p.id;
-    const thumbStyle = p.thumbnail
-      ? `background-image: url(${p.thumbnail}); background-size: cover;`
-      : `background: hsl(200, 55%, 45%);`;
-    const letter = (p.name || '?')[0].toUpperCase();
-    html += `<div class="sidebar__project-item${isActive ? ' active' : ''}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
-      <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
-      <div class="sidebar__project-info">
-        <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
-        <div class="sidebar__project-date">${formatTimeAgo(p.updatedAt || p.createdAt)}</div>
-      </div>
-      <button class="sidebar__project-delete" data-delete-id="${escapeHtml(p.id)}" title="Delete project" aria-label="Delete project">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>`;
+    html = `<div class="sidebar__project-empty">No projects yet</div>`;
+  } else {
+    const items = projects.slice(0, 8);
+    for (const p of items) {
+      const isActive = currentProjectId === p.id;
+      const thumbStyle = p.thumbnail
+        ? `background-image: url(${p.thumbnail}); background-size: cover;`
+        : `background: hsl(200, 55%, 45%);`;
+      const letter = (p.name || '?')[0].toUpperCase();
+      html += `<div class="sidebar__project-item${isActive ? ' active' : ''}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
+        <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
+        <div class="sidebar__project-info">
+          <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
+          <div class="sidebar__project-date">${formatTimeAgo(p.updatedAt || p.createdAt)}</div>
+        </div>
+        <button class="sidebar__project-delete" data-delete-id="${escapeHtml(p.id)}" title="Delete project" aria-label="Delete project">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>`;
+    }
   }
   html += `<button class="sidebar__new-project-btn" id="new-project-btn" type="button">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -848,6 +847,7 @@ function startConversion(skipDuplicateCheck) {
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
   mainHero.closest('.main')?.classList.add('split-visible');
+  document.querySelectorAll('.sidebar__nav-item').forEach(item => item.classList.remove('active'));
 
   // Sync URL and framework selection to panel for "convert another"
   figmaUrlInput.value = figmaUrl;

@@ -121,6 +121,9 @@ let codeViewMode = 'generated'; // 'generated' | 'wired'
 let wiredAppFiles = {}; // path -> content (when template was wired)
 let generatedTabsData = [];
 let templateWired = false;
+let currentUpdatedShadcnSource = null;
+let currentShadcnComponentName = null;
+let currentComponentPropertyDefs = null;
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
 let wiredExplorerExpanded = new Set(['src', 'public']);
 
@@ -713,8 +716,15 @@ function extractReactCodeAndCss(reactCode) {
 }
 
 function buildViteProjectTree(componentName, componentCode, componentCss, assets, chartComponents) {
+  const hasShadcn = !!(currentUpdatedShadcnSource && currentShadcnComponentName);
   const componentPath = `./components/${componentName}`;
-  const appTsx = `import ${componentName} from "${componentPath}";
+
+  // Build App.tsx — if shadcn with variant grid, build full grid; otherwise simple preview
+  let appTsx;
+  if (hasShadcn && currentComponentPropertyDefs) {
+    appTsx = buildShadcnVariantGridApp(componentName, currentComponentPropertyDefs);
+  } else {
+    appTsx = `import ${componentName} from "${componentPath}";
 function App() {
   return (
     <div className="p-6">
@@ -725,10 +735,23 @@ function App() {
 }
 export default App;
 `;
+  }
+
   const hasCharts = (chartComponents && chartComponents.length > 0) ||
     /from ['"]recharts['"]/.test(componentCode);
   const deps = { react: '^18.3.1', 'react-dom': '^18.3.1' };
   if (hasCharts) deps['recharts'] = '^2.12.0';
+  if (hasShadcn) {
+    deps['class-variance-authority'] = '^0.7.0';
+    deps['clsx'] = '^2.1.0';
+    deps['tailwind-merge'] = '^2.2.0';
+    deps['@radix-ui/react-slot'] = '^1.0.2';
+  }
+
+  // Vite config — add @/ path alias for shadcn imports
+  const viteConfig = hasShadcn
+    ? 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; import path from "path"; export default defineConfig({ plugins: [react()], resolve: { alias: { "@": path.resolve(__dirname, "./src") } } });'
+    : 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });';
 
   const packageJson = JSON.stringify({
     name: 'preview-app',
@@ -747,7 +770,7 @@ export default App;
   });
   const files = {
     'package.json': packageJson,
-    'vite.config.ts': 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });',
+    'vite.config.ts': viteConfig,
     'index.html': '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Preview</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>',
     'tailwind.config.js': 'export default { content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"], theme: { extend: {} }, plugins: [] };',
     'postcss.config.js': 'export default { plugins: { tailwindcss: {}, autoprefixer: {} } };',
@@ -757,6 +780,13 @@ export default App;
     [`src/components/${componentName}.jsx`]: (componentCss ? `import "./${componentName}.css";\n` : '') + componentCode.replace(/\.\/assets\//g, '/assets/'),
     [`src/components/${componentName}.css`]: componentCss || `/* ${componentName} */`,
   };
+
+  // Add shadcn component + cn() utility
+  if (hasShadcn) {
+    files[`src/components/ui/${currentShadcnComponentName}.tsx`] = currentUpdatedShadcnSource;
+    files['src/lib/utils.ts'] = 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n';
+  }
+
   // Chart components are inlined into the main React JSX — no separate files needed.
   if (assets && assets.length) {
     assets.forEach((a) => {
@@ -764,6 +794,102 @@ export default App;
     });
   }
   return toFileSystemTree(files);
+}
+
+/**
+ * Build a variant grid App.tsx that renders ALL Figma variant combinations.
+ * Reads axes from componentPropertyDefinitions (Figma metadata).
+ */
+function buildShadcnVariantGridApp(componentName, propDefs) {
+  // Parse variant axes from componentPropertyDefinitions
+  const variantAxes = []; // { name, camel, values[] }
+  const sizeAxes = [];
+  const stateAxes = [];
+  const booleanProps = [];
+  const stateKeywords = ['default','hover','focus','disabled','loading','active','pressed','error','selected','rest'];
+
+  if (propDefs && typeof propDefs === 'object') {
+    for (const [name, def] of Object.entries(propDefs)) {
+      if (def && def.type === 'VARIANT' && Array.isArray(def.variantOptions)) {
+        const lower = name.toLowerCase().trim();
+        const vals = def.variantOptions;
+        const lowerVals = vals.map(v => v.toLowerCase());
+
+        // Detect state axis
+        if (lower === 'state' || lowerVals.filter(v => stateKeywords.includes(v)).length >= 2) {
+          stateAxes.push({ name, values: vals });
+          continue;
+        }
+        // Detect size axis
+        if (lower === 'size') {
+          sizeAxes.push({ name, values: vals });
+          continue;
+        }
+        // Everything else is a variant axis (Style, Type, etc.)
+        variantAxes.push({ name, values: vals });
+      } else if (def && def.type === 'BOOLEAN') {
+        booleanProps.push({ name, defaultValue: def.defaultValue });
+      }
+    }
+  }
+
+  const stateValues = stateAxes.length > 0 ? stateAxes[0].values : ['Default'];
+  const sizeValues = sizeAxes.length > 0 ? sizeAxes[0].values : ['Default'];
+  const variantValues = variantAxes.length > 0 ? variantAxes[0].values : ['Default'];
+  const variantAxisName = variantAxes.length > 0 ? variantAxes[0].name : null;
+
+  const totalCount = variantValues.length * sizeValues.length * stateValues.length;
+
+  // Build the App component that renders the full grid
+  return `import ${componentName} from "./components/${componentName}";
+
+const variantValues = ${JSON.stringify(variantValues)};
+const sizeValues = ${JSON.stringify(sizeValues)};
+const stateValues = ${JSON.stringify(stateValues)};
+
+function App() {
+  return (
+    <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <h1 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>
+          ${componentName}
+        </h1>
+        <p style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
+          {variantValues.length} variant${variantValues.length !== 1 ? 's' : ''} × {sizeValues.length} size${sizeValues.length !== 1 ? 's' : ''} × {stateValues.length} state${stateValues.length !== 1 ? 's' : ''} = ${totalCount} combinations
+        </p>
+        {variantValues.map((variant) => (
+          <div key={variant} style={{ marginBottom: '32px' }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#333', marginBottom: '12px', textTransform: 'capitalize' }}>
+              {variant}
+            </h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(' + stateValues.length + ', 1fr)', gap: '12px' }}>
+              {stateValues.map((state) => (
+                <div key={state} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {state}
+                  </div>
+                  {sizeValues.map((size) => (
+                    <div key={size} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                      <${componentName}
+                        variant={variant.toLowerCase()}
+                        size={size.toLowerCase()}
+                        state={state.toLowerCase()}
+                      />
+                      <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{size}</div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default App;
+`;
 }
 
 function getTabKeyToWcPath() {
@@ -865,6 +991,9 @@ function handleComplete(data) {
   currentFrameworkOutputs = data.frameworkOutputs || {};
   currentComponentName = data.componentName;
   templateWired = Boolean(data.templateWired);
+  currentUpdatedShadcnSource = data.updatedShadcnSource || null;
+  currentShadcnComponentName = data.shadcnComponentName || null;
+  currentComponentPropertyDefs = data.componentPropertyDefinitions || null;
 
   // Build code tabs (generated view)
   buildTabs(data);

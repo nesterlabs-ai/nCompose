@@ -97,6 +97,10 @@ export interface ConversionResult {
   fidelityReport?: FidelityReport;
   /** Standalone chart components generated from chart sections */
   chartComponents?: ChartComponent[];
+  /** LLM-customized shadcn component source (.tsx with CVA variants) */
+  updatedShadcnSource?: string;
+  /** shadcn component name (e.g. "button") */
+  shadcnComponentName?: string;
 }
 
 /**

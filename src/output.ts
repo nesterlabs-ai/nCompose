@@ -21,6 +21,10 @@ export interface WriteOutputOptions {
   fidelityReport?: FidelityReport;
   /** Standalone chart components generated from chart sections */
   chartComponents?: ChartComponent[];
+  /** LLM-customized shadcn component source (.tsx) */
+  updatedShadcnSource?: string;
+  /** shadcn component name (e.g. "button") */
+  shadcnComponentName?: string;
 }
 
 /**
@@ -79,6 +83,13 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     };
     writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     writtenPaths.push(metadataPath);
+  }
+
+  // Write LLM-customized shadcn component source
+  if (options.updatedShadcnSource && options.shadcnComponentName) {
+    const shadcnPath = join(outputDir, `${options.shadcnComponentName}.tsx`);
+    writeFileSync(shadcnPath, options.updatedShadcnSource, 'utf-8');
+    writtenPaths.push(shadcnPath);
   }
 
   // Write fidelity diagnostics report

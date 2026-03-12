@@ -46,6 +46,8 @@ import { config } from './config.js';
 import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent } from './types/index.js';
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
+import { isShadcnSupported } from './shadcn/shadcn-types.js';
+import { generateShadcnComponentSet } from './shadcn/shadcn-codegen.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
@@ -862,6 +864,76 @@ export async function convertFigmaToCode(
         chartComponents: allChartComponents,
       };
     }
+
+    // --- shadcn intercept: if button (or other shadcn type) + templateMode → shadcn codegen ---
+    if (options.templateMode) {
+      const csRootNode = enhanced?.nodes?.[0];
+      const csName = csRootNode?.name ?? '';
+      const csCategory = detectComponentCategory(csName);
+      if (isShadcnSupported(csCategory)) {
+        const { onStep } = callbacks ?? {};
+        try {
+          onStep?.(`[shadcn] Detected "${csCategory}" → using shadcn codegen path...`);
+          const csData = parseComponentSet(enhanced);
+          if (!csData) throw new Error('Failed to parse COMPONENT_SET');
+
+          const csComponentName = options.name ?? toPascalCase(csName);
+          const csLlm = createLLMProvider(options.llm);
+
+          const shadcnResult = await generateShadcnComponentSet(
+            csRootNode, csCategory, csData, csComponentName, csLlm, onStep,
+          );
+
+          // Collect assets
+          const csVariantNodes = csRootNode?.children ?? [];
+          const csContexts = collectAssetNodesFromAllVariants(
+            csVariantNodes.map((vn: any) => ({ node: vn, variantName: vn.name || 'unknown' }))
+          );
+          const csAssets = csContexts.length > 0
+            ? await exportAssetsFromAllVariants(csContexts, fileKey, client).catch(() => [])
+            : [];
+
+          // Build variant metadata for preview
+          const csVariantMetadata = {
+            axes: csData.axes.map((a: any) => ({
+              name: a.name,
+              values: a.values,
+              default: csData.defaultVariant?.props?.[a.name] ?? a.values[0],
+            })),
+            variants: csData.variants.map((v: any) => ({
+              name: csData.axes
+                .map((axis: any) => v.props[axis.name])
+                .filter((val: any) => typeof val === 'string' && val.length > 0)
+                .join(', '),
+              props: v.props,
+            })),
+          };
+
+          // React gets consumer code, others get placeholder
+          const csFrameworkOutputs: Record<string, string> = {};
+          for (const fw of options.frameworks) {
+            csFrameworkOutputs[fw] = fw === 'react'
+              ? shadcnResult.consumerCode
+              : `// ${csComponentName} — shadcn/ui component (React only).\n`;
+          }
+
+          return {
+            componentName: csComponentName,
+            mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
+            frameworkOutputs: csFrameworkOutputs as Record<Framework, string>,
+            assets: csAssets,
+            componentPropertyDefinitions: csData.componentPropertyDefinitions,
+            variantMetadata: csVariantMetadata,
+            updatedShadcnSource: shadcnResult.updatedShadcnSource,
+            shadcnComponentName: shadcnResult.shadcnComponentName,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          (callbacks?.onStep ?? (() => {}))(`[shadcn] Failed: ${msg} — falling back to standard codegen`);
+        }
+      }
+    }
+
     return convertComponentSet(enhanced, yamlContent, fileKey, client, options, callbacks);
   }
 

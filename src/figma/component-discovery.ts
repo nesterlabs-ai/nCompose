@@ -27,6 +27,7 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
   { pattern: /^button\b|btn\b|cta\b/i, formRole: 'button' },
   { pattern: /button\s*icon|icon\s*button/i, formRole: 'iconButton' },
   { pattern: /chip\b|tag\b|badge\b/i, formRole: 'chip' },
+  { pattern: /status\s*indicator|status\s*badge|status\s*dot/i, formRole: 'statusIndicator' },
   { pattern: /tab\b|tab\s*item/i, formRole: 'tab' },
   { pattern: /breadcrumb/i, formRole: 'breadcrumb' },
   { pattern: /avatar/i, formRole: 'avatar' },

@@ -54,6 +54,7 @@ Your task: Take a base shadcn component source and customize it with design data
    - Do NOT use CSS pseudo-classes (\`hover:\`, \`focus:\`) — all states must be explicit for static preview
    - Each state variant should contain the exact colors from Figma for that state
    - State names are kebab-case: "filled-in", "filled-in-hover" (not "filled in")
+   - **CRITICAL: Cover ALL axis combinations.** If there are N variant values × M sizes × S states, you need compoundVariants for every combination that exists in the Figma data. Missing combinations will render with no styles. When two combinations share the same styles (e.g. all colors have the same bg/border for a given state), use an ARRAY value for that axis (e.g. \`color: ["green", "yellow", "red", "blue"]\`) to avoid duplication — but make sure every size×state is covered for each.
 
 5. **Component structure from Figma**: The style data includes a \`structure:\` field showing the actual Figma component tree — which elements are children of which containers, and what traits each container has (border, bg, rounded, padding, flex direction).
    - **Replicate this exact nesting in your JSX output.** If Figma shows an icon and text INSIDE a bordered frame, your JSX must also put the icon and input inside a bordered wrapper div.

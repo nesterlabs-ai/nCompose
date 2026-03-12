@@ -178,6 +178,7 @@ export type ComponentCategory =
   | 'table' | 'list' | 'list-item'
   | 'accordion' | 'breadcrumb' | 'divider' | 'link'
   | 'navigation' | 'sidebar' | 'header' | 'footer'
+  | 'status-indicator'
   | 'unknown';
 
 export interface ComponentSetData {
@@ -436,6 +437,7 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
   [/\bcheckbox\b/, 'checkbox'],
   [/\bradio\b/, 'radio'],
   [/\btoggle\b|\bswitch\b/, 'toggle'],
+  [/\bstatus[-\s]?indicator\b/, 'status-indicator'],
   [/\bbadge\b/, 'badge'],
   [/\bchip\b/, 'chip'],
   [/\btag\b/, 'tag'],
@@ -485,6 +487,7 @@ export const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
   'table': 'table', 'list': 'ul', 'list-item': 'li',
   'accordion': 'div', 'breadcrumb': 'nav', 'divider': 'hr', 'link': 'a',
   'navigation': 'nav', 'sidebar': 'aside', 'header': 'header', 'footer': 'footer',
+  'status-indicator': 'span',
   'unknown': 'div',
 };
 
@@ -500,6 +503,7 @@ export const CATEGORY_ARIA_ROLES: Record<ComponentCategory, string> = {
   'table': 'table', 'list': 'list', 'list-item': 'listitem',
   'accordion': 'region', 'breadcrumb': 'navigation', 'divider': 'separator', 'link': 'link',
   'navigation': 'navigation', 'sidebar': 'complementary', 'header': 'banner', 'footer': 'contentinfo',
+  'status-indicator': 'status',
   'unknown': '',
 };
 

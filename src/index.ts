@@ -133,11 +133,16 @@ program
         const starterDir = join(projectRoot, 'src', 'figma-to-code-starter-main');
         if (existsSync(starterDir)) {
           try {
+            // Build figmaVariantNames from variant metadata for filtering non-existent combos
+            const figmaVariantNames = result.variantMetadata?.variants?.map((v: { props: Record<string, string> }) =>
+              Object.entries(v.props).map(([k, val]) => `${k}=${val}`).join(', ')
+            );
             const appDir = wireIntoStarter({
               componentOutputDir: componentOutputDir,
               componentName: result.componentName,
               starterDir,
               componentPropertyDefinitions: result.componentPropertyDefinitions,
+              figmaVariantNames,
             });
             console.log(chalk.bold.cyan('Template wired: runnable app in'));
             console.log(chalk.cyan(`  ${appDir}\n`));

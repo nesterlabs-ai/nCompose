@@ -297,6 +297,7 @@ const UI_NEGATIVE_TOKENS: ReadonlyMap<string, number> = new Map([
   ['header',      2], ['footer',      2], ['toolbar',     2],
   ['menu',        2], ['breadcrumb',  2], ['pagination',  2],
   ['tab',         1], ['drawer',      2], ['appbar',      2],
+  ['statusbar',   3], ['status',      1],
   // form elements
   ['form',        3], ['input',       2], ['textarea',    2],
   ['select',      2], ['dropdown',    2], ['checkbox',    3],
@@ -428,6 +429,21 @@ function semanticNameSignal(node: any): 'chart' | 'ui' | 'ambiguous' {
 export function isChartSection(node: any): boolean {
   if (!node) return false;
   const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSection "${node.name ?? '?'}"] ${msg}`) : () => {};
+
+  // ── Phase 0: Minimum size gate ──
+  // Charts need meaningful vertical and horizontal space. Very shallow frames
+  // (status bars, nav bars, headers) or extremely narrow strips cannot be charts.
+  const bb = node.absoluteBoundingBox;
+  if (bb) {
+    const w = bb.width ?? 0;
+    const h = bb.height ?? 0;
+    // Reject if height < 15% of width (too shallow — status bars, headers, breadcrumbs)
+    // or if height < 60px absolute (even a sparkline chart needs ~60px vertical space)
+    if (h < w * 0.15 || h < 60) {
+      _dbg(`→ REJECT: too shallow (${w}×${h}, ratio=${(h/w).toFixed(2)})`);
+      return false;
+    }
+  }
 
   // ── Phase 1: Semantic name analysis ──
   // Check Figma node names in the subtree for chart vs UI signals.

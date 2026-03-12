@@ -42,6 +42,7 @@ const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 const mainMenuBtn = document.getElementById('main-menu-btn');
 const figmaTokenInput = document.getElementById('figma-token');
+const sidebarHomeBtn = document.getElementById('sidebar-home-btn');
 const tokenToggle = document.getElementById('token-toggle');
 const saveTokenBtn = document.getElementById('save-token-btn');
 const tokenStatus = document.getElementById('token-status');
@@ -401,6 +402,8 @@ function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
 
+  document.querySelectorAll('.sidebar__nav-item').forEach(item => item.classList.remove('active'));
+
   currentProjectId = project.id;
   currentSessionId = project.sessionId || project.id;
   currentComponentName = project.name || '';
@@ -587,6 +590,8 @@ function resetToHero() {
   tabsData = [];
 
   setStatus('ready', 'Ready to convert');
+  document.querySelectorAll('.sidebar__nav-item').forEach(item => item.classList.remove('active'));
+  if (sidebarHomeBtn) sidebarHomeBtn.classList.add('active');
   renderProjectList();
 }
 
@@ -663,6 +668,12 @@ document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
     el.classList.add('active');
   });
 });
+
+if (sidebarHomeBtn) {
+  sidebarHomeBtn.addEventListener('click', () => {
+    resetToHero();
+  });
+}
 
 // When collapsed, clicking a section header expands the sidebar
 document.querySelectorAll('.sidebar__section-header').forEach((el) => {

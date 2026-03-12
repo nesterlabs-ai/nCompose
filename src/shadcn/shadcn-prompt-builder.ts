@@ -55,12 +55,11 @@ Your task: Take a base shadcn component source and customize it with design data
    - Each state variant should contain the exact colors from Figma for that state
    - State names are kebab-case: "filled-in", "filled-in-hover" (not "filled in")
 
-5. **Inner element styles**: When Figma data includes \`inner-*\` properties (inner-background, inner-border, inner-border-radius, inner-height, inner-padding-horizontal, inner-padding-vertical, inner-box-shadow), these describe the ACTUAL interactive element (e.g. input box) inside a wrapper.
-   - Apply inner-background as \`bg-[#HEX]\` on the actual input/button element
-   - Apply inner-border as \`border border-[#HEX]\` on the actual element
-   - Apply inner-border-radius as \`rounded-[Npx]\` on the actual element
-   - Apply inner-height as \`h-[Npx]\` on the actual element
-   - The outer wrapper styles (background, gap, padding) go on the wrapping container
+5. **Component structure from Figma**: The style data includes a \`structure:\` field showing the actual Figma component tree — which elements are children of which containers, and what traits each container has (border, bg, rounded, padding, flex direction).
+   - **Replicate this exact nesting in your JSX output.** If Figma shows an icon and text INSIDE a bordered frame, your JSX must also put the icon and input inside a bordered wrapper div.
+   - Apply inner-* styles (inner-background, inner-border, inner-border-radius, inner-padding) on the wrapper div that matches the Figma frame with those traits.
+   - The actual \`<input>\` element should be unstyled (transparent bg, no border) and fill the remaining space.
+   - Elements outside the inner frame in Figma (e.g. error text) should also be outside the bordered wrapper in JSX.
 
 6. **Named text colors**: When Figma data includes label-color, placeholder-color, or error-color:
    - Use label-color for the label text styling
@@ -71,8 +70,8 @@ Your task: Take a base shadcn component source and customize it with design data
    - Inline the SVG directly in JSX (convert attributes to camelCase: stroke-width → strokeWidth, stroke-linecap → strokeLinecap, stroke-linejoin → strokeLinejoin, fill-rule → fillRule, clip-rule → clipRule, xmlns → xmlns)
    - The SVGs use \`currentColor\` for stroke/fill — they inherit color from the parent
    - Wrap each icon in \`<span style={{ color: iconColor }} className="size-4">\` where iconColor is the correct color for that variant×state
-   - Define iconColor per variant×state in the consumer component's style map
-   - If icons have variant associations (e.g. spinner only in loading state), add conditional rendering to swap icons based on state
+   - **Use the \`icon-color\` value from Figma styles for iconColor** — do NOT copy the text-color. If Figma data shows icon-color is the same across all states, use a single constant color
+   - Only swap icons between states if the Figma data explicitly shows DIFFERENT icons per state (different variant associations). Do NOT replace icons with cursor lines or other made-up elements
    - For boolean show/hide props (e.g. showLeftIcon, showRightIcon), conditionally render the icon wrapper
 
 8. **Consumer component**: The .jsx file should:
@@ -145,7 +144,7 @@ export function buildShadcnUserPrompt(ctx: ShadcnPromptContext): string {
     if (byPosition.size > 0) {
       parts.push('### Icon Slot Mapping');
       parts.push('Wrap each icon slot in `<span style={{ color: iconColor }}>` — the SVG inherits color via currentColor.');
-      parts.push('Define iconColor per variant×state in your style map.');
+      parts.push('Use the `icon-color` from the Figma style data for each state. If icon-color is the same across all states, use that constant color.');
       parts.push('');
       for (const [position, posAssets] of byPosition) {
         if (posAssets.length === 1) {
@@ -188,8 +187,8 @@ export function buildShadcnUserPrompt(ctx: ShadcnPromptContext): string {
   if (ctx.assets && ctx.assets.length > 0) {
     parts.push('- Inline SVG markup directly in JSX — do NOT use <img> tags');
     parts.push('- Wrap icons in <span style={{ color: iconColor }}> so currentColor works');
-    parts.push('- Define iconColor per variant×state from the Figma style data (text-color values)');
-    parts.push('- Add conditional rendering for state-specific icons (e.g. spinner in loading state)');
+    parts.push('- Use the icon-color from Figma style data for iconColor (NOT text-color). If icon-color is the same across all states, use a constant');
+    parts.push('- Only swap icons between states if Figma data shows different icons per state — do NOT invent cursor lines or other replacements');
   }
 
   return parts.join('\n');

@@ -1923,6 +1923,12 @@ async function convertPage(
             : '';
         const hooksImport = `import { useState, useMemo } from 'react';\n`;
 
+        // Strip existing React imports from rawCode to avoid duplicates
+        // (Mitosis may have emitted `import * as React from "react"` or named imports)
+        rawCode = rawCode
+          .replace(/import\s+\*\s+as\s+React\s+from\s+['"]react['"]\s*;?\n?/g, '')
+          .replace(/import\s*\{[^}]*\}\s*from\s*['"]react['"]\s*;?\n?/g, '');
+
         // Prepend: hooks import, recharts import, then chart definitions, then main code
         rawCode =
           hooksImport +

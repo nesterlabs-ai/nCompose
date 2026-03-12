@@ -5,6 +5,8 @@
  */
 
 import type { LLMProvider } from '../llm/provider.js';
+import type { AssetEntry } from '../types/index.js';
+import { makeColorInheritable } from '../figma/asset-export.js';
 import { getShadcnComponentType } from './shadcn-types.js';
 import type { ShadcnCodegenResult } from './shadcn-types.js';
 import { readShadcnSource } from './shadcn-source-reader.js';
@@ -22,6 +24,7 @@ export async function generateShadcnComponentSet(
   componentName: string,
   llm: LLMProvider,
   onStep?: (step: string) => void,
+  assets?: AssetEntry[],
 ): Promise<ShadcnCodegenResult> {
   const shadcnType = getShadcnComponentType(formRoleOrCategory);
   if (!shadcnType) throw new Error(`No shadcn mapping for "${formRoleOrCategory}"`);
@@ -66,6 +69,15 @@ export async function generateShadcnComponentSet(
     content,
     axes,
     booleanProps: Object.keys(booleanProps).length > 0 ? booleanProps : undefined,
+    assets: assets && assets.length > 0
+      ? assets.map((a: any) => ({
+          filename: a.filename,
+          parentName: a.parentName,
+          variants: a.variants,
+          dimensions: a.dimensions,
+          svgContent: a.content ? makeColorInheritable(a.content) : undefined,
+        }))
+      : undefined,
   });
 
   onStep?.(`[shadcn] Generating via ${llm.name}...`);

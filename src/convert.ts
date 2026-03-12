@@ -880,11 +880,7 @@ export async function convertFigmaToCode(
           const csComponentName = options.name ?? toPascalCase(csName);
           const csLlm = createLLMProvider(options.llm);
 
-          const shadcnResult = await generateShadcnComponentSet(
-            csRootNode, csCategory, csData, csComponentName, csLlm, onStep,
-          );
-
-          // Collect assets
+          // Collect assets BEFORE generating so we can pass icon info to the LLM
           const csVariantNodes = csRootNode?.children ?? [];
           const csContexts = collectAssetNodesFromAllVariants(
             csVariantNodes.map((vn: any) => ({ node: vn, variantName: vn.name || 'unknown' }))
@@ -892,6 +888,10 @@ export async function convertFigmaToCode(
           const csAssets = csContexts.length > 0
             ? await exportAssetsFromAllVariants(csContexts, fileKey, client).catch(() => [])
             : [];
+
+          const shadcnResult = await generateShadcnComponentSet(
+            csRootNode, csCategory, csData, csComponentName, csLlm, onStep, csAssets,
+          );
 
           // Build variant metadata for preview
           const csVariantMetadata = {

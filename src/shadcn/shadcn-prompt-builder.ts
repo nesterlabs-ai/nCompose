@@ -10,6 +10,15 @@ import { formatStylesForPrompt } from './style-extractor.js';
 import type { ExtractedContent } from './content-extractor.js';
 import { formatContentForPrompt } from './content-extractor.js';
 
+export interface IconAssetInfo {
+  filename: string;
+  parentName?: string;
+  variants?: string[];
+  dimensions?: { width: number; height: number };
+  /** SVG markup with currentColor (for inline rendering) */
+  svgContent?: string;
+}
+
 export interface ShadcnPromptContext {
   componentName: string;
   shadcnType: string;
@@ -18,6 +27,7 @@ export interface ShadcnPromptContext {
   content: ExtractedContent;
   axes: Array<{ name: string; values: string[] }>;
   booleanProps?: Record<string, boolean>;
+  assets?: IconAssetInfo[];
 }
 
 export function buildShadcnSystemPrompt(): string {
@@ -57,16 +67,24 @@ Your task: Take a base shadcn component source and customize it with design data
    - Use placeholder-color for placeholder/description text
    - Use error-color for error message text
 
-7. **Consumer component**: The .jsx file should:
+7. **Inline SVG icons**: When SVG markup is provided for icons:
+   - Inline the SVG directly in JSX (convert attributes to camelCase: stroke-width → strokeWidth, stroke-linecap → strokeLinecap, stroke-linejoin → strokeLinejoin, fill-rule → fillRule, clip-rule → clipRule, xmlns → xmlns)
+   - The SVGs use \`currentColor\` for stroke/fill — they inherit color from the parent
+   - Wrap each icon in \`<span style={{ color: iconColor }} className="size-4">\` where iconColor is the correct color for that variant×state
+   - Define iconColor per variant×state in the consumer component's style map
+   - If icons have variant associations (e.g. spinner only in loading state), add conditional rendering to swap icons based on state
+   - For boolean show/hide props (e.g. showLeftIcon, showRightIcon), conditionally render the icon wrapper
+
+8. **Consumer component**: The .jsx file should:
    - Import the shadcn component from \`@/components/ui/{type}\`
    - Accept props: variant, size, state, label, disabled, and any boolean visibility props
    - Pass all props through to the shadcn component
    - Use default export
 
-8. **Preserve imports**: Keep all original imports (React, Slot, cva, cn) from the base source.
+9. **Preserve imports**: Keep all original imports (React, Slot, cva, cn) from the base source.
    Make sure the updated component also exports the variants function (e.g. \`buttonVariants\`).
 
-9. **No extra explanations** — just the two code blocks.
+10. **No extra explanations** — just the two code blocks.
 `;
 }
 
@@ -95,6 +113,62 @@ export function buildShadcnUserPrompt(ctx: ShadcnPromptContext): string {
     parts.push('');
   }
 
+  // Include icon asset information with inline SVG content
+  if (ctx.assets && ctx.assets.length > 0) {
+    parts.push('## Icon Assets (from Figma — inline these as SVG in JSX)');
+    parts.push('');
+
+    for (const asset of ctx.assets) {
+      const dims = asset.dimensions ? ` (${asset.dimensions.width}×${asset.dimensions.height})` : '';
+      const variants = asset.variants && asset.variants.length > 0
+        ? ` — appears in variants: ${asset.variants.join(', ')}`
+        : '';
+      const position = asset.parentName ? ` [position: ${asset.parentName}]` : '';
+      parts.push(`### \`${asset.filename}\`${dims}${position}${variants}`);
+      if (asset.svgContent) {
+        parts.push('SVG markup (uses currentColor — inherits from parent color):');
+        parts.push('```svg');
+        parts.push(asset.svgContent.trim());
+        parts.push('```');
+      }
+      parts.push('');
+    }
+
+    // Group by position to help LLM understand icon slots
+    const byPosition = new Map<string, IconAssetInfo[]>();
+    for (const asset of ctx.assets) {
+      const pos = asset.parentName || 'icon';
+      if (!byPosition.has(pos)) byPosition.set(pos, []);
+      byPosition.get(pos)!.push(asset);
+    }
+
+    if (byPosition.size > 0) {
+      parts.push('### Icon Slot Mapping');
+      parts.push('Wrap each icon slot in `<span style={{ color: iconColor }}>` — the SVG inherits color via currentColor.');
+      parts.push('Define iconColor per variant×state in your style map.');
+      parts.push('');
+      for (const [position, posAssets] of byPosition) {
+        if (posAssets.length === 1) {
+          parts.push(`- **${position}**: Always show the \`${posAssets[0].filename}\` SVG inline`);
+        } else {
+          const sorted = [...posAssets].sort((a, b) => (b.variants?.length ?? 0) - (a.variants?.length ?? 0));
+          const defaultIcon = sorted[0];
+          const stateIcons = sorted.slice(1);
+          parts.push(`- **${position}**:`);
+          parts.push(`  - Default: inline \`${defaultIcon.filename}\` SVG${defaultIcon.variants ? ` (${defaultIcon.variants.join(', ')})` : ''}`);
+          for (const si of stateIcons) {
+            const stateHints = si.variants?.map((v: string) => {
+              const vParts = v.split('/');
+              return vParts.length > 1 ? vParts[1] : v;
+            }).filter((v: string, i: number, arr: string[]) => arr.indexOf(v) === i) ?? [];
+            parts.push(`  - When state is ${stateHints.join(' or ')}: swap to \`${si.filename}\` SVG${si.variants ? ` (${si.variants.join(', ')})` : ''}`);
+          }
+        }
+      }
+      parts.push('');
+    }
+  }
+
   parts.push('## Base shadcn Component Source (customize this)');
   parts.push('');
   parts.push('```tsx');
@@ -111,6 +185,12 @@ export function buildShadcnUserPrompt(ctx: ShadcnPromptContext): string {
   parts.push('- States must be explicit CVA variants with compoundVariants, NOT CSS pseudo-classes');
   parts.push('- The consumer component must use default export');
   parts.push(`- The consumer component name is: ${ctx.componentName}`);
+  if (ctx.assets && ctx.assets.length > 0) {
+    parts.push('- Inline SVG markup directly in JSX — do NOT use <img> tags');
+    parts.push('- Wrap icons in <span style={{ color: iconColor }}> so currentColor works');
+    parts.push('- Define iconColor per variant×state from the Figma style data (text-color values)');
+    parts.push('- Add conditional rendering for state-specific icons (e.g. spinner in loading state)');
+  }
 
   return parts.join('\n');
 }

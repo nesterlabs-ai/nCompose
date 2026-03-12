@@ -186,6 +186,10 @@ app.post('/api/convert', (req: any, res: any) => {
         const starterDir = join(projectRoot, 'figma-to-code-starter-main');
         if (existsSync(starterDir)) {
           try {
+            // Build figmaVariantNames from variant metadata for filtering non-existent combos
+            const figmaVariantNames = result.variantMetadata?.variants?.map((v: { props: Record<string, string> }) =>
+              Object.entries(v.props).map(([k, val]) => `${k}=${val}`).join(', ')
+            );
             wireIntoStarter({
               componentOutputDir,
               componentName: result.componentName,
@@ -193,6 +197,7 @@ app.post('/api/convert', (req: any, res: any) => {
               componentPropertyDefinitions: result.componentPropertyDefinitions,
               updatedShadcnSource: result.updatedShadcnSource,
               shadcnComponentName: result.shadcnComponentName,
+              figmaVariantNames,
             });
             templateWired = true;
             sendEvent('step', {
@@ -230,6 +235,7 @@ app.post('/api/convert', (req: any, res: any) => {
         updatedShadcnSource: result.updatedShadcnSource ?? undefined,
         shadcnComponentName: result.shadcnComponentName ?? undefined,
         componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
+        variantMetadata: result.variantMetadata ?? undefined,
       });
 
       res.end();

@@ -37,6 +37,8 @@ export interface WireIntoStarterOptions {
   updatedShadcnSource?: string;
   /** shadcn component name (e.g. "button") */
   shadcnComponentName?: string;
+  /** Actual Figma variant names (e.g. ["State=Default, Size=Medium, Color=Green", ...]) — used to filter preview to only existing combos */
+  figmaVariantNames?: string[];
 }
 
 /**
@@ -74,7 +76,7 @@ function copyDirRecursive(src: string, dest: string): void {
  * @returns Path to the app directory (e.g. componentOutputDir/app)
  */
 export function wireIntoStarter(options: WireIntoStarterOptions): string {
-  const { componentOutputDir, componentName, starterDir, componentPropertyDefinitions, updatedShadcnSource, shadcnComponentName } = options;
+  const { componentOutputDir, componentName, starterDir, componentPropertyDefinitions, updatedShadcnSource, shadcnComponentName, figmaVariantNames } = options;
 
   if (!existsSync(starterDir)) {
     throw new Error(`Starter template not found at ${starterDir}`);
@@ -164,7 +166,7 @@ export function ComponentPreviewPage() {
 `;
   } else {
     // Variant grid preview: compute allVariants in Node based on prop definitions
-    const variantAxes: Array<{ name: string; camel: string; values: string[] }> = [];
+    const variantAxes: Array<{ name: string; camel: string; values: string[]; defaultValue?: string }> = [];
     const booleanProps: Array<{ name: string; camel: string; defaultValue: boolean }> = [];
 
     for (const [name, def] of Object.entries(componentPropertyDefinitions)) {
@@ -173,6 +175,7 @@ export function ComponentPreviewPage() {
           name,
           camel: toCamelCase(name),
           values: def.variantOptions as string[],
+          defaultValue: (def as any).defaultValue as string | undefined,
         });
       } else if (def && def.type === 'BOOLEAN') {
         booleanProps.push({
@@ -263,7 +266,7 @@ export function ComponentPreviewPage() {
             // Only set prop when axis value differs from default
             propMappings.forEach((m) => {
               const value = currentAxisValues[m.axis.camel] ?? m.axis.values[0];
-              const defaultVal = m.axis.values[0];
+              const defaultVal = m.axis.defaultValue ?? m.axis.values[0];
               if (String(value).toLowerCase() !== String(defaultVal).toLowerCase()) {
                 props[m.propName] = isShadcn ? normalizeVariantName(String(value)) : String(value).toLowerCase();
               }
@@ -284,6 +287,29 @@ export function ComponentPreviewPage() {
       }
 
       allVariants = buildVariants(0, {});
+    }
+
+    // Filter to only combos that actually exist in Figma (avoid rendering non-existent combos like grey+default)
+    if (figmaVariantNames && figmaVariantNames.length > 0) {
+      // Build a set of normalized Figma combo keys: sorted lowercase values joined by "|"
+      const figmaCombos = new Set<string>();
+      for (const name of figmaVariantNames) {
+        const values: string[] = [];
+        for (const part of name.split(',').map((s: string) => s.trim())) {
+          const eq = part.indexOf('=');
+          if (eq > 0) values.push(part.slice(eq + 1).trim().toLowerCase());
+        }
+        // Sort values alphabetically for consistent matching
+        const key = values.sort().join('|');
+        figmaCombos.add(key);
+      }
+
+      allVariants = allVariants.filter((entry) => {
+        // Collect all values from label (which has ALL axis values including defaults)
+        const labelParts = entry.label.split(' / ').map((s: string) => s.trim().toLowerCase());
+        const key = [...labelParts].sort().join('|');
+        return figmaCombos.has(key);
+      });
     }
 
     const allVariantsLiteral = JSON.stringify(allVariants, null, 2);

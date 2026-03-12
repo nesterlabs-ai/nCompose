@@ -124,6 +124,7 @@ let templateWired = false;
 let currentUpdatedShadcnSource = null;
 let currentShadcnComponentName = null;
 let currentComponentPropertyDefs = null;
+let currentVariantMetadata = null;
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
 let wiredExplorerExpanded = new Set(['src', 'public']);
 
@@ -722,7 +723,7 @@ function buildViteProjectTree(componentName, componentCode, componentCss, assets
   // Build App.tsx — if shadcn with variant grid, build full grid; otherwise simple preview
   let appTsx;
   if (hasShadcn && currentComponentPropertyDefs) {
-    appTsx = buildShadcnVariantGridApp(componentName, currentComponentPropertyDefs);
+    appTsx = buildShadcnVariantGridApp(componentName, currentComponentPropertyDefs, currentVariantMetadata);
   } else {
     appTsx = `import ${componentName} from "${componentPath}";
 function App() {
@@ -800,9 +801,9 @@ export default App;
  * Build a variant grid App.tsx that renders ALL Figma variant combinations.
  * Reads axes from componentPropertyDefinitions (Figma metadata).
  */
-function buildShadcnVariantGridApp(componentName, propDefs) {
+function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
   // Parse variant axes from componentPropertyDefinitions
-  const variantAxes = []; // { name, camel, values[] }
+  const variantAxes = []; // { name, camel, values[], defaultValue }
   const sizeAxes = [];
   const stateAxes = [];
   const booleanProps = [];
@@ -817,16 +818,16 @@ function buildShadcnVariantGridApp(componentName, propDefs) {
 
         // Detect state axis
         if (lower === 'state' || lowerVals.filter(v => stateKeywords.includes(v)).length >= 2) {
-          stateAxes.push({ name, values: vals });
+          stateAxes.push({ name, values: vals, defaultValue: def.defaultValue });
           continue;
         }
         // Detect size axis
         if (lower === 'size') {
-          sizeAxes.push({ name, values: vals });
+          sizeAxes.push({ name, values: vals, defaultValue: def.defaultValue });
           continue;
         }
-        // Everything else is a variant axis (Style, Type, etc.)
-        variantAxes.push({ name, values: vals });
+        // Everything else is a variant axis (Style, Type, Color, etc.)
+        variantAxes.push({ name, values: vals, defaultValue: def.defaultValue });
       } else if (def && def.type === 'BOOLEAN') {
         booleanProps.push({ name, defaultValue: def.defaultValue });
       }
@@ -837,22 +838,73 @@ function buildShadcnVariantGridApp(componentName, propDefs) {
   const sizeValues = sizeAxes.length > 0 ? sizeAxes[0].values : ['Default'];
   const variantValues = variantAxes.length > 0 ? variantAxes[0].values : ['Default'];
   const variantAxisName = variantAxes.length > 0 ? variantAxes[0].name : null;
+  // Determine the actual prop name for the variant axis (e.g. "color", "variant", "style" → "variant")
+  const variantPropName = variantAxisName
+    ? (/^style$|^type$/i.test(variantAxisName) ? 'variant' : variantAxisName.charAt(0).toLowerCase() + variantAxisName.slice(1))
+    : 'variant';
 
-  const totalCount = variantValues.length * sizeValues.length * stateValues.length;
+  // Build set of valid Figma variant combos for filtering
+  // Format: sorted lowercase values joined by "|"
+  let figmaComboSet = null;
+  if (variantMetadata && Array.isArray(variantMetadata.variants) && variantMetadata.variants.length > 0) {
+    const combos = [];
+    for (const v of variantMetadata.variants) {
+      const values = Object.values(v.props).map(val => String(val).toLowerCase()).sort();
+      combos.push(values.join('|'));
+    }
+    figmaComboSet = new Set(combos);
+  }
 
-  // Build the App component that renders the full grid
+  // Track which axes are real (not fallback 'Default')
+  const hasVariantAxis = variantAxes.length > 0;
+  const hasStateAxis = stateAxes.length > 0;
+  const hasSizeAxis = sizeAxes.length > 0;
+
+  // Build list of valid combos (filter cartesian product against actual Figma variants)
+  const allCombos = [];
+  for (const variant of variantValues) {
+    for (const state of stateValues) {
+      for (const size of sizeValues) {
+        // Check if this combo exists in Figma
+        if (figmaComboSet) {
+          // Only include values from axes that actually exist in Figma (skip fallback 'Default')
+          const keyParts = [];
+          if (hasVariantAxis) keyParts.push(variant.toLowerCase());
+          if (hasStateAxis) keyParts.push(state.toLowerCase());
+          if (hasSizeAxis) keyParts.push(size.toLowerCase());
+          const comboKey = keyParts.sort().join('|');
+          if (!figmaComboSet.has(comboKey)) continue;
+        }
+        allCombos.push({ variant, state, size });
+      }
+    }
+  }
+
+  const totalCount = allCombos.length;
+  const allCombosJson = JSON.stringify(allCombos);
+
+  // Build the App component that renders only valid combos
   return `import ${componentName} from "./components/${componentName}";
 
-const variantValues = ${JSON.stringify(variantValues)};
-const sizeValues = ${JSON.stringify(sizeValues)};
-const stateValues = ${JSON.stringify(stateValues)};
+const allCombos = ${allCombosJson};
 
 // Normalize variant names: "Primary (Action Violet)" → "primary", "Filled in - Hover" → "filled-in-hover"
 function normalizeName(name) {
   return name.trim().replace(/\\s*\\([^)]*\\)\\s*/g, '').toLowerCase().replace(/\\s*-\\s*/g, '-').replace(/\\s+/g, '-');
 }
 
+// Group combos by variant value for display
+function groupByVariant(combos) {
+  const groups = {};
+  for (const c of combos) {
+    if (!groups[c.variant]) groups[c.variant] = [];
+    groups[c.variant].push(c);
+  }
+  return groups;
+}
+
 function App() {
+  const grouped = groupByVariant(allCombos);
   return (
     <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
       <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
@@ -860,29 +912,22 @@ function App() {
           ${componentName}
         </h1>
         <p style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
-          {variantValues.length} variant${variantValues.length !== 1 ? 's' : ''} × {sizeValues.length} size${sizeValues.length !== 1 ? 's' : ''} × {stateValues.length} state${stateValues.length !== 1 ? 's' : ''} = ${totalCount} combinations
+          ${totalCount} variant combinations
         </p>
-        {variantValues.map((variant) => (
+        {Object.entries(grouped).map(([variant, combos]) => (
           <div key={variant} style={{ marginBottom: '32px' }}>
             <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#333', marginBottom: '12px', textTransform: 'capitalize' }}>
               {variant}
             </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(' + stateValues.length + ', 1fr)', gap: '12px' }}>
-              {stateValues.map((state) => (
-                <div key={state} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    {state}
-                  </div>
-                  {sizeValues.map((size) => (
-                    <div key={size} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
-                      <${componentName}
-                        variant={normalizeName(variant)}
-                        size={normalizeName(size)}
-                        state={normalizeName(state)}
-                      />
-                      <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{size}</div>
-                    </div>
-                  ))}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+              {combos.map((c, idx) => (
+                <div key={idx} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                  <${componentName}
+                    ${variantPropName}={normalizeName(c.variant)}
+                    size={normalizeName(c.size)}
+                    state={normalizeName(c.state)}
+                  />
+                  <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{c.state} / {c.size}</div>
                 </div>
               ))}
             </div>
@@ -999,6 +1044,7 @@ function handleComplete(data) {
   currentUpdatedShadcnSource = data.updatedShadcnSource || null;
   currentShadcnComponentName = data.shadcnComponentName || null;
   currentComponentPropertyDefs = data.componentPropertyDefinitions || null;
+  currentVariantMetadata = data.variantMetadata || null;
 
   // Build code tabs (generated view)
   buildTabs(data);

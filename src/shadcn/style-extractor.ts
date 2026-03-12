@@ -227,6 +227,11 @@ function extractIconColor(node: any): string | undefined {
   if (!node || !Array.isArray(node.children)) return undefined;
 
   for (const child of node.children) {
+    // Check ELLIPSE nodes (colored dots, status indicators)
+    if (child.type === 'ELLIPSE') {
+      const fillColor = extractSolidColor(child.fills);
+      if (fillColor) return fillColor;
+    }
     // Check INSTANCE nodes (icon components)
     if (child.type === 'INSTANCE') {
       const color = getDeepVectorColor(child);
@@ -502,13 +507,17 @@ export function extractVariantStyles(rootNode: any): VariantStyles {
     const isDefault = DEFAULT_STATE_VALUES.has(rawStateValue.toLowerCase().split(/[\s-]+/)[0]);
     const variantKey = variantAxes.map(ax => normalizeVariantName(props[ax] ?? '')).filter(Boolean).join('|') || 'default';
     const sizeValue = sizeAxis ? (props[sizeAxis] ?? '') : '';
+    const normalizedSize = sizeValue ? normalizeVariantName(sizeValue) : '';
 
     if (isDefault && !byVariant[variantKey]) byVariant[variantKey] = style;
     if (isDefault && sizeValue && !bySize[sizeValue]) bySize[sizeValue] = style;
     if (!isDefault) {
-      // Use normalized state name as key
+      // Include size in the key when size axis exists, so all combos are preserved
       const normalizedState = normalizeStateName(rawStateValue);
-      byVariantState[`${variantKey}|${normalizedState}`] = style;
+      const stateKey = normalizedSize
+        ? `${variantKey}|${normalizedSize}|${normalizedState}`
+        : `${variantKey}|${normalizedState}`;
+      byVariantState[stateKey] = style;
     }
     if (isDefault && Object.keys(defaultStyle).length === 0) defaultStyle = style;
   }

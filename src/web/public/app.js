@@ -468,6 +468,13 @@ function restoreProject(projectId) {
   mainSplit.classList.add('visible');
   mainHero.closest('.main')?.classList.add('split-visible');
 
+  // Auto-collapse sidebar on selection (non-mobile)
+  if (window.innerWidth > 768) {
+    sidebar.classList.add('collapsed');
+    updateSidebarToggleTitle();
+    updateMenuButtonVisibility();
+  }
+
   // Set URL input
   figmaUrlInput.value = project.figmaUrl || '';
 
@@ -1607,6 +1614,13 @@ function handleComplete(data) {
   if (progressToggleTitle) progressToggleTitle.textContent = 'Generated ' + data.componentName;
   updateProgressBadge('done');
   collapseProgress();
+
+  // Auto-collapse sidebar on completion (non-mobile)
+  if (window.innerWidth > 768) {
+    sidebar.classList.add('collapsed');
+    updateSidebarToggleTitle();
+    updateMenuButtonVisibility();
+  }
 
   panelBody.scrollTop = panelBody.scrollHeight;
 

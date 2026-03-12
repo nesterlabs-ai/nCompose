@@ -1090,6 +1090,36 @@ export function buildComponentSetUserPrompt(
     }
   }
 
+  // ── Variant-specific text content ───────────────────────────────────────
+  if (componentSetData?.variantTextDiffs && componentSetData.variantTextDiffs.length > 0) {
+    lines.push('### Variant-Specific Text Content');
+    lines.push('These TEXT layers have DIFFERENT content depending on the variant.');
+    lines.push('You MUST generate conditional text rendering based on the variant prop.');
+    lines.push('');
+    for (const diff of componentSetData.variantTextDiffs) {
+      const axisName = diff.axisName;
+      const propName = axisName.toLowerCase() === 'style' || axisName.toLowerCase() === 'type'
+        ? 'variant'
+        : toCamelCase(axisName);
+      lines.push(`- Layer class \`${diff.layerKey}\`:`);
+      lines.push(`  - Default (${axisName}): "${diff.defaultText}"`);
+      for (const [variantLabel, text] of Object.entries(diff.variantTexts)) {
+        lines.push(`  - ${variantLabel}: "${text}"`);
+      }
+      // Build a concrete code hint
+      const entries = Object.entries(diff.variantTexts);
+      if (entries.length <= 4) {
+        const conditions = entries
+          .map(([label, text]) => `props.${propName} === '${label.toLowerCase()}' ? '${text.replace(/'/g, "\\'")}'`)
+          .join(' : ');
+        lines.push(`  → Use: \`{${conditions} : '${diff.defaultText.replace(/'/g, "\\'")}'}\``);
+      } else {
+        lines.push(`  → Derive text from the \`props.${propName}\` prop value`);
+      }
+      lines.push('');
+    }
+  }
+
   // ── CSS tokens / design variables ────────────────────────────────────────
   if (promptData.cssTokens.length > 0) {
     lines.push('### CSS Design Tokens');

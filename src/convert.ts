@@ -294,7 +294,12 @@ const MAX_SERIALIZE_DEPTH = 15;
 
 function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column'): any {
   if (!node) return null;
-  if (node.name?.startsWith('_')) return null;
+  // Only skip `_` prefixed nodes that are truly meta/utility layers.
+  // Many Figma UI kits use `_` prefix for internal component structures
+  // (e.g. "_Nav item base", "_Select input base") that contain visible content.
+  // Skip only if the node has NO children and NO text content — those are
+  // genuinely empty utility placeholders.
+  if (node.name?.startsWith('_') && !node.children?.length && !node.characters) return null;
 
   // If this node is an exported SVG asset, emit a compact ICON marker
   // instead of serializing the full subtree. This tells the LLM to
@@ -348,8 +353,17 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
       layout.alignItems = alignMap[node.counterAxisAlignItems] || 'stretch';
     }
 
-    // Gap
-    if (node.itemSpacing) layout.gap = `${node.itemSpacing}px`;
+    // Gap — only emit when meaningful for CSS:
+    // 1. Skip when justify-content is space-between — the gap value from Figma
+    //    is a computed result, not an intended minimum gap. CSS space-between
+    //    handles spacing automatically.
+    // 2. Skip when the container has 0 or 1 children — gap between siblings
+    //    is irrelevant when there are no siblings.
+    const childCount = node.children?.length ?? 0;
+    const isSpaceBetween = node.primaryAxisAlignItems === 'SPACE_BETWEEN';
+    if (node.itemSpacing && !isSpaceBetween && childCount > 1) {
+      layout.gap = `${node.itemSpacing}px`;
+    }
     if (node.counterAxisSpacing) layout.rowGap = `${node.counterAxisSpacing}px`;
 
     // Padding (from extracted object or raw individual props)
@@ -672,31 +686,7 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
  * Walks the raw Figma node tree and for each node whose id is in the asset map,
  * emits a line describing where the icon is and what file to use.
  */
-function buildPathBAssetHints(assets: AssetEntry[], rootNode: any): string {
-  if (!assets.length || !rootNode) return '';
-  const assetMap = buildAssetMap(assets);
-  const lines: string[] = [];
 
-  function walk(node: any, ancestors: string[]): void {
-    if (!node) return;
-    const path = node.name ? [...ancestors, node.name] : ancestors;
-    if (node.id && assetMap.has(node.id)) {
-      const w = node.absoluteBoundingBox?.width ?? node.size?.x;
-      const h = node.absoluteBoundingBox?.height ?? node.size?.y;
-      const dims = w && h ? ` (${Math.round(w)}×${Math.round(h)})` : '';
-      const location = path.length > 1 ? path.slice(0, -1).join(' > ') : 'root';
-      lines.push(`- Node "${node.name}"${dims} inside "${location}" → \`${assetMap.get(node.id)}\``);
-    }
-    if (node.children && Array.isArray(node.children)) {
-      for (const child of node.children) walk(child, path);
-    }
-  }
-
-  walk(rootNode, []);
-  if (lines.length === 0) return '';
-
-  return `\n**Icon/Asset slots in this design:**\n${lines.join('\n')}\nRender these as \`<img src="./assets/..." alt="" />\` at the matching position.\n`;
-}
 
 /**
  * Core pipeline: Figma URL → framework code.
@@ -1342,8 +1332,8 @@ async function convertSingleComponent(
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
     : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : enhanced, { lineWidth: 120, noRefs: true });
-  const assetHints = buildPathBAssetHints(assets, rootNode);
-  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode, assetHints);
+  // Asset info is already embedded in the YAML as type: ICON nodes — no separate hints needed
+  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
 
   // Generate Mitosis code via LLM with retry
   const llm = createLLMProvider(options.llm);
@@ -1700,8 +1690,7 @@ async function convertPage(
         const sectionAssetMap = buildAssetMap(sectionAssets);
         const assetAwareSerializer = (node: any) => serializeNodeForPrompt(node, 0, sectionAssetMap);
 
-        // Also keep text-based hints as supplementary guidance
-        const sectionAssetHints = buildPathBAssetHints(sectionAssets, child);
+        // Asset info is already embedded in the YAML as type: ICON nodes — no separate hints needed
 
         const compoundResult = await generateCompoundSection(
           child,
@@ -1716,7 +1705,6 @@ async function convertPage(
           options.templateMode,
           rawChild,
           usedChartNames,
-          sectionAssetHints,
         );
 
         // Store chart components directly on the section output for reliable mapping.

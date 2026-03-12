@@ -1065,6 +1065,7 @@ async function convertComponentSet(
     frameworkOutputs: frameworkOutputs as Record<Framework, string>,
     assets,
     componentPropertyDefinitions: componentSetData.componentPropertyDefinitions,
+    css: variantCSS,
     variantMetadata,
     fidelityReport,
   };
@@ -1410,6 +1411,7 @@ async function convertSingleComponent(
     mitosisSource: parseResult.rawCode,
     frameworkOutputs: frameworkOutputs as Record<Framework, string>,
     assets,
+    css: parseResult.css,
     fidelityReport,
   };
 }

@@ -68,6 +68,98 @@ function setSession(id: string, result: ConversionResult, llmProvider?: string, 
   });
 }
 
+/**
+ * Load a conversion result from disk when the in-memory session has expired.
+ * Scans the output directory for a folder ending with `-{sessionId}`.
+ */
+function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
+  const outputDir = config.server.outputDir;
+  if (!existsSync(outputDir)) return undefined;
+
+  // Find directory matching *-{sessionId}
+  let matchDir: string | undefined;
+  try {
+    const dirs = readdirSync(outputDir, { withFileTypes: true });
+    for (const d of dirs) {
+      if (d.isDirectory() && d.name.endsWith(`-${sessionId}`)) {
+        matchDir = join(outputDir, d.name);
+        break;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  if (!matchDir) return undefined;
+
+  // Derive component name from directory name (strip -sessionId suffix)
+  const dirName = matchDir.split('/').pop() || '';
+  const componentName = dirName.slice(0, dirName.length - sessionId.length - 1);
+  if (!componentName) return undefined;
+
+  // Read mitosis source
+  let mitosisSource = '';
+  const mitosisPath = join(matchDir, `${componentName}.lite.tsx`);
+  try { mitosisSource = readFileSync(mitosisPath, 'utf-8'); } catch { /* optional */ }
+
+  // Read framework outputs
+  const frameworkOutputs: Record<string, string> = {};
+  const fwExts: Record<string, string> = { react: '.jsx', vue: '.vue', svelte: '.svelte', angular: '.ts', solid: '.tsx' };
+  for (const [fw, ext] of Object.entries(fwExts)) {
+    const fwPath = join(matchDir, `${componentName}${ext}`);
+    try { frameworkOutputs[fw] = readFileSync(fwPath, 'utf-8'); } catch { /* skip */ }
+  }
+
+  // Read meta.json for componentPropertyDefinitions
+  let componentPropertyDefinitions: Record<string, any> | undefined;
+  const metaPath = join(matchDir, `${componentName}.meta.json`);
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+    componentPropertyDefinitions = meta.componentPropertyDefinitions;
+  } catch { /* optional */ }
+
+  // Read assets
+  const assets: Array<{ filename: string; content: string }> = [];
+  const assetsDir = join(matchDir, 'assets');
+  if (existsSync(assetsDir)) {
+    try {
+      for (const f of readdirSync(assetsDir)) {
+        try {
+          const content = readFileSync(join(assetsDir, f), 'utf-8');
+          assets.push({ filename: f, content });
+        } catch { /* skip binary */ }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Read chart components
+  const chartComponents: Array<{ name: string; reactCode: string; css: string }> = [];
+
+  return {
+    componentName,
+    mitosisSource,
+    frameworkOutputs: frameworkOutputs as any,
+    assets,
+    componentPropertyDefinitions,
+    chartComponents,
+  } as ConversionResult;
+}
+
+/**
+ * Get session result from memory, falling back to disk if expired.
+ * Optionally re-hydrates the session store.
+ */
+function getSessionWithDiskFallback(sessionId: string): ConversionResult | undefined {
+  const memResult = getSession(sessionId);
+  if (memResult) return memResult;
+
+  const diskResult = loadResultFromDisk(sessionId);
+  if (diskResult) {
+    // Re-hydrate into session store for subsequent requests
+    setSession(sessionId, diskResult);
+  }
+  return diskResult;
+}
+
 // Periodic cleanup of expired sessions (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -211,6 +303,8 @@ app.post('/api/convert', (req: any, res: any) => {
         mitosisSource: result.mitosisSource,
         templateWired,
         assetCount: result.assets?.length ?? 0,
+        componentPropertyDefinitions: result.componentPropertyDefinitions || null,
+        assets: (result.assets || []).filter(a => a.content).map(a => ({ filename: a.filename, content: a.content })),
         chartComponents: result.chartComponents?.map((c) => ({
           name: c.name,
           reactCode: c.reactCode,
@@ -366,7 +460,7 @@ app.post('/api/refine', (req: any, res: any) => {
  */
 app.get('/api/download/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = getSession(sessionId);
+  const result = getSessionWithDiskFallback(sessionId);
 
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
@@ -442,13 +536,30 @@ function readDirToFilesMap(dirPath: string, baseDir: string = dirPath): Record<s
  */
 app.get('/api/session/:sessionId/wired-app-files', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = getSession(sessionId);
-  if (!result) {
-    res.status(404).json({ error: 'Session not found or expired' });
-    return;
+  let result = getSession(sessionId);
+
+  // Try to find the app directory either via session or by scanning output dir
+  let appDir: string | undefined;
+
+  if (result) {
+    appDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
+  } else {
+    // Disk fallback: scan for directory ending with -sessionId
+    const outputDir = config.server.outputDir;
+    if (existsSync(outputDir)) {
+      try {
+        const dirs = readdirSync(outputDir, { withFileTypes: true });
+        for (const d of dirs) {
+          if (d.isDirectory() && d.name.endsWith(`-${sessionId}`)) {
+            appDir = join(outputDir, d.name, 'app');
+            break;
+          }
+        }
+      } catch { /* fall through */ }
+    }
   }
-  const appDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
-  if (!existsSync(appDir)) {
+
+  if (!appDir || !existsSync(appDir)) {
     res.status(404).json({ error: 'No wired app for this session' });
     return;
   }
@@ -476,7 +587,7 @@ app.post('/api/save-file', async (req: any, res: any) => {
     return;
   }
 
-  const result = getSession(sessionId);
+  const result = getSessionWithDiskFallback(sessionId);
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
@@ -529,7 +640,7 @@ app.get('/api/config', (_req: any, res: any) => {
 app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
   const { sessionId } = req.params;
   const { mode } = req.query;
-  const result = getSession(sessionId);
+  const result = getSessionWithDiskFallback(sessionId);
 
   if (!result) {
     res.status(404).json({ error: 'Session not found or expired' });
@@ -622,7 +733,7 @@ app.get('/auth/github/callback', (_req: any, res: any) => {
  */
 app.get('/api/preview/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
-  const result = getSession(sessionId);
+  const result = getSessionWithDiskFallback(sessionId);
 
   if (!result) {
     res.status(404).send('Session not found or expired');
@@ -657,21 +768,38 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
  */
 app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
   const { sessionId, filename } = req.params;
-  const result = getSession(sessionId);
+  let result = getSession(sessionId);
 
-  if (!result) {
-    res.status(404).send('Session not found');
-    return;
+  // Try in-memory first, then disk fallback for asset file directly
+  if (result) {
+    const asset = result.assets?.find((a) => a.filename === filename);
+    if (asset?.content) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.send(asset.content);
+      return;
+    }
   }
 
-  const asset = result.assets?.find((a) => a.filename === filename);
-  if (!asset?.content) {
-    res.status(404).send('Asset not found');
-    return;
+  // Disk fallback: read asset file directly from output directory
+  const outputDir = config.server.outputDir;
+  if (existsSync(outputDir)) {
+    try {
+      const dirs = readdirSync(outputDir, { withFileTypes: true });
+      for (const d of dirs) {
+        if (d.isDirectory() && d.name.endsWith(`-${sessionId}`)) {
+          const assetPath = join(outputDir, d.name, 'assets', filename);
+          if (existsSync(assetPath)) {
+            const content = readFileSync(assetPath, 'utf-8');
+            res.setHeader('Content-Type', 'image/svg+xml');
+            res.send(content);
+            return;
+          }
+        }
+      }
+    } catch { /* fall through to 404 */ }
   }
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.send(asset.content);
+  res.status(404).send('Asset not found');
 });
 
 // Start server

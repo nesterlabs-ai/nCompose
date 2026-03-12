@@ -227,7 +227,64 @@ function loadProjects() {
 }
 
 function saveProjects(projects) {
-  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+  try {
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
+      console.warn('[storage] Quota exceeded, trimming project data...');
+      const trimmed = trimProjectsForStorage(projects);
+      try {
+        localStorage.setItem(PROJECTS_KEY, JSON.stringify(trimmed));
+      } catch (e2) {
+        console.error('[storage] Could not save even after trimming:', e2);
+      }
+    } else {
+      console.error('[storage] Failed to save projects:', e);
+    }
+  }
+}
+
+/**
+ * Progressively strip large data from oldest projects to fit localStorage quota.
+ * Strips: assets first, then chatHistory, then removes oldest projects entirely.
+ */
+function trimProjectsForStorage(projects) {
+  let trimmed = projects.map(p => ({ ...p }));
+  // Sort by updatedAt descending so we strip from oldest first
+  const byAge = [...trimmed].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+  // Pass 1: strip assets from oldest projects
+  for (let i = byAge.length - 1; i >= 0; i--) {
+    const p = trimmed.find(pp => pp.id === byAge[i].id);
+    if (p && p.assets && p.assets.length > 0) {
+      p.assets = [];
+      if (fitsInStorage(trimmed)) return trimmed;
+    }
+  }
+  // Pass 2: strip chatHistory from oldest projects
+  for (let i = byAge.length - 1; i >= 0; i--) {
+    const p = trimmed.find(pp => pp.id === byAge[i].id);
+    if (p && p.chatHistory && p.chatHistory.length > 0) {
+      p.chatHistory = [];
+      if (fitsInStorage(trimmed)) return trimmed;
+    }
+  }
+  // Pass 3: remove oldest projects entirely
+  while (trimmed.length > 1) {
+    trimmed.pop();
+    if (fitsInStorage(trimmed)) return trimmed;
+  }
+  return trimmed;
+}
+
+function fitsInStorage(projects) {
+  try {
+    const str = JSON.stringify(projects);
+    // Rough check: localStorage typically has 5-10MB limit
+    return str.length < 4 * 1024 * 1024; // 4MB safety margin
+  } catch {
+    return false;
+  }
 }
 
 function saveProject(project) {
@@ -436,6 +493,31 @@ function restoreProject(projectId) {
   buildTabs(fakeData);
   generatedTabsData = tabsData.map(t => ({ ...t }));
 
+  // Restore templateWired state and code view mode toggle
+  templateWired = Boolean(project.templateWired);
+  if (templateWired && codeViewModeEl) {
+    codeViewModeEl.style.display = 'flex';
+  } else if (codeViewModeEl) {
+    codeViewModeEl.style.display = 'none';
+  }
+
+  // Restore saved UI state: openFiles, activeFile, codeViewMode
+  const savedCodeViewMode = project.codeViewMode || 'generated';
+  const savedOpenFiles = (project.openFiles || []).filter(k => tabsData.some(t => t.key === k));
+  const savedActiveFile = (project.activeFile && savedOpenFiles.includes(project.activeFile))
+    ? project.activeFile
+    : (savedOpenFiles[0] || tabsData[0]?.key || null);
+
+  if (savedOpenFiles.length > 0) {
+    openFiles = savedOpenFiles;
+    activeFile = savedActiveFile;
+  }
+
+  buildEditorTabs();
+  if (activeFile) {
+    openFile(activeFile);
+  }
+
   // Restore download button
   downloadBtn.style.display = 'inline-flex';
   const pushGithubBtn = document.getElementById('push-github-btn');
@@ -453,6 +535,29 @@ function restoreProject(projectId) {
       }
     })
     .catch(() => showInlinePreview(project));
+
+  // Restore wired app files if template was wired
+  if (templateWired) {
+    fetch(`/api/session/${currentSessionId}/wired-app-files`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(res => {
+        if (res && res.files) {
+          wiredAppFiles = res.files;
+          // If saved code view was 'wired', switch now that files are loaded
+          if (savedCodeViewMode === 'wired') {
+            switchCodeViewMode('wired');
+          }
+        } else {
+          // Wired files unavailable, hide toggle
+          templateWired = false;
+          if (codeViewModeEl) codeViewModeEl.style.display = 'none';
+        }
+      })
+      .catch(() => {
+        templateWired = false;
+        if (codeViewModeEl) codeViewModeEl.style.display = 'none';
+      });
+  }
 
   // Restore chat history
   if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
@@ -498,6 +603,172 @@ function transformForBrowser(reactCode, componentName) {
   return { code, css };
 }
 
+/**
+ * Convert a property name to camelCase for variant grid props.
+ * e.g. "Show Left Icon#3371:152" → "showLeftIcon"
+ */
+function toCamelCaseClient(str) {
+  const clean = str.replace(/#\d+:\d+$/, '');
+  return clean
+    .replace(/[-_\s]+(.)?/g, (_, c) => (c ? c.toUpperCase() : ''))
+    .replace(/^[A-Z]/, (c) => c.toLowerCase());
+}
+
+/**
+ * Build the variant grid App component source (client-side port of preview.ts buildVariantGridApp).
+ * Returns JSX string that renders all variant combinations in a grid.
+ */
+function buildClientVariantGridApp(componentName, propDefs) {
+  if (!propDefs) {
+    return `
+    function App() {
+      return (
+        <div style={{ padding: '1rem' }}>
+          <${componentName} />
+        </div>
+      );
+    }`;
+  }
+
+  const variantAxes = [];
+  const booleanProps = [];
+  for (const [name, def] of Object.entries(propDefs)) {
+    if (def.type === 'VARIANT' && def.variantOptions) {
+      variantAxes.push({ name, camel: toCamelCaseClient(name), values: def.variantOptions });
+    } else if (def.type === 'BOOLEAN') {
+      booleanProps.push({ name, camel: toCamelCaseClient(name), defaultValue: def.defaultValue ?? true });
+    }
+  }
+
+  const stateKeywords = ['default', 'hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error'];
+  const stateAxisIdx = variantAxes.findIndex((a) => {
+    if (a.name.toLowerCase() === 'state') return true;
+    const lowerVals = a.values.map((v) => v.toLowerCase());
+    return lowerVals.filter((v) => stateKeywords.includes(v)).length >= 2;
+  });
+  const stateAxis = stateAxisIdx >= 0 ? variantAxes.splice(stateAxisIdx, 1)[0] : null;
+  const propAxes = variantAxes;
+
+  const axisArraysJS = propAxes.map((axis) => {
+    const values = JSON.stringify(axis.values.map((v) => v.toLowerCase()));
+    return `  const ${axis.camel}Values = ${values};`;
+  }).join('\n');
+
+  let statesJS = `  const stateEntries = [{ label: 'Default', props: {} }];`;
+  if (stateAxis) {
+    const entries = stateAxis.values.map((val) => {
+      const lower = val.toLowerCase();
+      if (lower === 'default') return `    { label: '${val}', props: {} }`;
+      const parts = val.split(/[-\\s]+/).filter(Boolean);
+      const propsObj = parts.map((p) => `${toCamelCaseClient(p)}: true`).join(', ');
+      return `    { label: '${val}', props: { ${propsObj} } }`;
+    });
+    statesJS = `  const stateEntries = [\n${entries.join(',\n')}\n  ];`;
+  }
+
+  const basePropsEntries = [];
+  for (const bp of booleanProps) {
+    if (bp.defaultValue === true) basePropsEntries.push(`${bp.camel}: true`);
+  }
+  const basePropsJS = basePropsEntries.length > 0
+    ? `  const baseProps = { ${basePropsEntries.join(', ')} };`
+    : `  const baseProps = {};`;
+
+  const propMappings = propAxes.map((axis) => {
+    const propName = axis.name.toLowerCase() === 'style' ? 'variant'
+                   : axis.name.toLowerCase() === 'type' ? 'variant'
+                   : axis.camel;
+    return { axis, propName };
+  });
+
+  let variantBuildJS;
+  if (propAxes.length === 0) {
+    variantBuildJS = `
+  const allVariants = stateEntries.map((state) => ({
+    label: state.label,
+    props: { ...baseProps, ...state.props },
+  }));`;
+  } else {
+    const indent = '    ';
+    let inner = `({
+${indent}  label: [${propMappings.map((m) => m.axis.camel).join(', ')}, state.label].join(' / '),
+${indent}  props: {
+${indent}    ...baseProps,
+${indent}    ${propMappings.map((m) => {
+      const defaultVal = m.axis.values[0].toLowerCase();
+      return `...(${m.axis.camel} !== '${defaultVal}' ? { ${m.propName}: ${m.axis.camel} } : {})`;
+    }).join(`,\n${indent}    `)},
+${indent}    ...state.props,
+${indent}  },
+${indent}})`;
+    let expr = `stateEntries.map((state) => ${inner})`;
+    for (let i = propMappings.length - 1; i >= 0; i--) {
+      const m = propMappings[i];
+      expr = `${m.axis.camel}Values.flatMap((${m.axis.camel}) =>\n      ${expr}\n    )`;
+    }
+    variantBuildJS = `\n  const allVariants = ${expr};`;
+  }
+
+  return `
+${axisArraysJS}
+${statesJS}
+${basePropsJS}
+${variantBuildJS}
+
+    function App() {
+      return (
+        <div style={{ padding: '1rem', minHeight: '100vh' }}>
+          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
+          <p style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
+            {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {allVariants.map((v, i) => (
+              <div key={i} style={{ width: '100%' }}>
+                <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
+                <div style={{ width: '100%' }}>
+                  <${componentName} {...v.props} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }`;
+}
+
+/**
+ * Build a map of asset filenames to data URIs from project.assets.
+ */
+function buildAssetDataURIMap(assets) {
+  const map = {};
+  if (!assets || !assets.length) return map;
+  for (const a of assets) {
+    if (a.filename && a.content) {
+      map[a.filename] = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(a.content)));
+    }
+  }
+  return map;
+}
+
+/**
+ * Rewrite asset paths in code and CSS to use data URIs.
+ */
+function rewriteAssetsToDataURIs(code, css, assetMap) {
+  let newCode = code;
+  let newCss = css;
+  for (const [filename, dataURI] of Object.entries(assetMap)) {
+    // In code: src="./assets/icon.svg" or src="/api/preview/.../assets/icon.svg"
+    const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const codePattern = new RegExp(`(["'])(?:\\.\\/assets\\/|/api/preview/[^/]+/assets/)${escaped}\\1`, 'g');
+    newCode = newCode.replace(codePattern, `"${dataURI}"`);
+    // In CSS: url(./assets/icon.svg) or url("/api/preview/.../assets/icon.svg")
+    const cssPattern = new RegExp(`url\\(["']?(?:\\.\\/assets\\/|/api/preview/[^/]+/assets/)${escaped}["']?\\)`, 'g');
+    newCss = newCss.replace(cssPattern, `url("${dataURI}")`);
+  }
+  return { code: newCode, css: newCss };
+}
+
 function showInlinePreview(project) {
   const reactCode = (project.frameworkOutputs || {}).react;
   if (!reactCode) {
@@ -506,11 +777,35 @@ function showInlinePreview(project) {
     return;
   }
   const componentName = project.name || 'Component';
-  const { code, css } = transformForBrowser(reactCode, componentName);
+  let { code, css } = transformForBrowser(reactCode, componentName);
+
+  // Rewrite asset paths to data URIs using stored assets
+  const assetMap = buildAssetDataURIMap(project.assets);
+  if (Object.keys(assetMap).length > 0) {
+    const rewritten = rewriteAssetsToDataURIs(code, css, assetMap);
+    code = rewritten.code;
+    css = rewritten.css;
+  }
+
+  // Build variant grid App (or simple App) using stored componentPropertyDefinitions
+  const appCode = buildClientVariantGridApp(componentName, project.componentPropertyDefinitions);
+
+  // Detect recharts usage
+  const usesRecharts = /from ['"]recharts['"]/.test(reactCode) ||
+    (project.chartComponents && project.chartComponents.length > 0);
+  const rechartsScript = usesRecharts
+    ? '\n<script src="https://unpkg.com/recharts@2/umd/Recharts.js" crossorigin><\\/script>'
+    : '';
+  const rechartsGlobals = usesRecharts
+    ? `\nconst { AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+      XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+      ComposedChart, ReferenceLine, Brush } = Recharts;`
+    : '';
+
   // Build JSX source for manual Babel.transform (with error handling)
-  const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;\n` +
+  const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
     code + '\n' +
-    `function App() {\n  return React.createElement("div", { style: { padding: "1rem" } },\n    React.createElement(${componentName}, null)\n  );\n}\n` +
+    appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`;
   const escapedJSX = jsxSource.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
   const escapedCss = css.replace(/<\//g, '<\\/');
@@ -522,7 +817,7 @@ function showInlinePreview(project) {
 .preview-error h3{margin-bottom:0.5rem;font-size:14px;}
 ${escapedCss}</style>
 <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin><\/script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin><\/script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin><\/script>${rechartsScript}
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
 </head><body>
 <div id="root"></div>
@@ -533,7 +828,7 @@ window.onerror = function(msg, src, line, col, err) {
 };
 try {
   var jsxCode = \`${escapedJSX}\`;
-  var result = Babel.transform(jsxCode, { presets: ['react'] });
+  var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
   var script = document.createElement('script');
   script.textContent = result.code;
   document.body.appendChild(script);
@@ -1396,6 +1691,10 @@ function handleComplete(data) {
     mitosisSource: data.mitosisSource || '',
     thumbnail: generatePlaceholderThumbnail(data.componentName),
     chatHistory: [],
+    componentPropertyDefinitions: data.componentPropertyDefinitions || null,
+    assets: data.assets || [],
+    templateWired: Boolean(data.templateWired),
+    chartComponents: data.chartComponents || [],
   });
 
   // Initialize chat for iterative refinement
@@ -1978,6 +2277,11 @@ function openFile(key) {
 
   layoutMonaco();
   updateCodeActionsState();
+
+  // Persist UI state
+  if (currentProjectId) {
+    updateProjectField(currentProjectId, { activeFile, openFiles: [...openFiles] });
+  }
 }
 
 function closeFile(key) {
@@ -2002,6 +2306,11 @@ function closeFile(key) {
 
   updateCodeActionsState();
   layoutMonaco();
+
+  // Persist UI state
+  if (currentProjectId) {
+    updateProjectField(currentProjectId, { activeFile, openFiles: [...openFiles] });
+  }
 }
 
 // ── Build Tabs (initial setup) ──
@@ -2042,6 +2351,10 @@ function switchCodeViewMode(mode) {
     generatedTabsData = tabsData.map((t) => ({ ...t }));
   }
   codeViewMode = mode;
+  // Persist code view mode
+  if (currentProjectId) {
+    updateProjectField(currentProjectId, { codeViewMode: mode });
+  }
   document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });

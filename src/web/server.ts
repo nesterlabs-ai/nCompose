@@ -16,6 +16,7 @@ import type { LLMMessage } from '../llm/provider.js';
 import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
+import { injectCSS } from '../compile/inject-css.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -310,6 +311,19 @@ app.post('/api/refine', (req: any, res: any) => {
     onStep: (step) => sendEvent('step', { message: step }),
   })
     .then((refined) => {
+      // Safety net: if LLM dropped CSS during refinement, re-inject the original CSS
+      if (!refined.css && currentCSS) {
+        console.log(`[refine] LLM dropped CSS — re-injecting original CSS (${currentCSS.length} chars)`);
+        refined.css = currentCSS;
+        refined.mitosisSource = `${refined.mitosisSource}\n---CSS---\n${currentCSS}`;
+        for (const fw of session.frameworks) {
+          const code = refined.frameworkOutputs[fw];
+          if (code && !code.startsWith('// Error')) {
+            refined.frameworkOutputs[fw] = injectCSS(code, currentCSS, fw);
+          }
+        }
+      }
+
       // Update session
       session.result.mitosisSource = refined.mitosisSource;
       for (const [fw, code] of Object.entries(refined.frameworkOutputs)) {
@@ -622,6 +636,10 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
   }
 
   console.log(`[preview] Serving preview for ${sessionId}, react code length: ${reactCode.length}, first 100 chars: ${reactCode.substring(0, 100)}`);
+
+  // Prevent browser caching so refinement updates are always fresh
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
 
   const html = generatePreviewHTML(
     reactCode,

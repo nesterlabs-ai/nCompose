@@ -1544,7 +1544,7 @@ function handleRefineComplete(data) {
     const staticUrl = `/api/preview/${currentSessionId}?t=${Date.now()}`;
 
     if (webContainerSyncEnabled && webContainerInstance && currentComponentName && reactCode) {
-      // WebContainer path: write updated files for Vite HMR
+      // WebContainer path: write updated component + CSS files
       const { code, css } = extractReactCodeAndCss(reactCode);
       const componentCode = code.replace(/\.\/assets\//g, '/assets/');
       const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
@@ -1553,18 +1553,29 @@ function handleRefineComplete(data) {
       const cssPath = `src/components/${currentComponentName}.css`;
       delete webContainerLastWritten[wcPath];
       delete webContainerLastWritten[cssPath];
+
+      // Also rewrite App.jsx with a new timestamp to force Vite full re-render
+      const appJsxPath = 'src/App.jsx';
+      const appJsx = `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
+        `// Refined: ${Date.now()}\n` +
+        `function App() {\n  return (\n    <div className="p-6">\n` +
+        `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
+        `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
+      delete webContainerLastWritten[appJsxPath];
+
       writeWebContainerFiles({
         [wcPath]: finalCode,
         [cssPath]: css || `/* ${currentComponentName} */`,
+        [appJsxPath]: appJsx,
       }).then(() => {
-        // Force reload: blank then restore to bypass same-URL no-reload
+        // Force reload after Vite processes file changes
         setTimeout(() => {
           if (previewFrame && webContainerPreviewUrl) {
             const url = webContainerPreviewUrl;
             previewFrame.src = 'about:blank';
-            setTimeout(() => { previewFrame.src = url; }, 100);
+            setTimeout(() => { previewFrame.src = url; }, 150);
           }
-        }, 1500);
+        }, 2000);
       }).catch(() => {
         previewFrame.src = staticUrl;
       });

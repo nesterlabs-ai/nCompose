@@ -2,7 +2,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* ── Reset ── */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -102,10 +104,21 @@ body {
 }
 
 /* ── Theme Toggle Icons ── */
-.theme-icon--sun { display: block; }
-.theme-icon--moon { display: none; }
-[data-theme="light"] .theme-icon--sun { display: none; }
-[data-theme="light"] .theme-icon--moon { display: block; }
+.theme-icon--sun {
+  display: block;
+}
+
+.theme-icon--moon {
+  display: none;
+}
+
+[data-theme="light"] .theme-icon--sun {
+  display: none;
+}
+
+[data-theme="light"] .theme-icon--moon {
+  display: block;
+}
 
 /* ── App Shell ── */
 .app-shell {
@@ -371,6 +384,15 @@ body {
   padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: var(--border-light) transparent;
+}
+
+.sidebar__project-empty {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  font-style: italic;
+  opacity: 0.8;
 }
 
 .sidebar__project-item {
@@ -967,7 +989,9 @@ body {
 }
 
 @keyframes blink {
-  50% { opacity: 0; }
+  50% {
+    opacity: 0;
+  }
 }
 
 .hero__prompt-input {
@@ -1043,14 +1067,14 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-.chip-label input:checked + .chip--prompt {
+.chip-label input:checked+.chip--prompt {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
   box-shadow: 0 2px 12px rgba(239, 49, 57, 0.4);
 }
 
-.chip-label input:checked:hover + .chip--prompt {
+.chip-label input:checked:hover+.chip--prompt {
   background: var(--accent-hover);
   box-shadow: 0 4px 16px rgba(239, 49, 57, 0.5);
   transform: translateY(-1px);
@@ -1256,7 +1280,7 @@ body {
   border-color: var(--border-light);
 }
 
-.chip-label input:checked + .chip {
+.chip-label input:checked+.chip {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
@@ -1638,12 +1662,23 @@ body {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.8); }
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
 }
 
 /* ── Progress Collapsible ── */
@@ -1879,6 +1914,7 @@ body {
   padding: 6px 10px 4px;
   margin-bottom: 2px;
 }
+
 .code-view-mode-btn {
   flex: 1;
   font-size: 11px;
@@ -1890,15 +1926,18 @@ body {
   color: var(--text-muted);
   cursor: pointer;
 }
+
 .code-view-mode-btn:hover {
   color: var(--text);
   background: var(--bg-hover);
 }
+
 .code-view-mode-btn.active {
   background: var(--accent);
   color: var(--accent-fg, #fff);
   border-color: var(--accent);
 }
+
 .explorer-section-title {
   font-size: 10px;
   font-weight: 600;
@@ -1943,23 +1982,60 @@ body {
   align-items: center;
   justify-content: center;
 }
+
 .explorer-file-icon svg {
   width: 16px;
   height: 16px;
 }
+
 /* Cursor-style file type colors */
-.explorer-file-icon--doc { color: #8a8a8a; }
-.explorer-file-icon--json { color: #cbcb41; }
-.explorer-file-icon--html { color: #e37933; }
-.explorer-file-icon--ts { color: #3178c6; }
-.explorer-file-icon--js { color: #f7df1e; }
-.explorer-file-icon--svg { color: #7c7cc8; }
-.explorer-file-icon--css { color: #563d7c; }
-.explorer-file-icon--md { color: #519aba; }
-.explorer-file-icon--env { color: #2d5a27; }
-.explorer-file-icon--gitignore { color: #4ec9b0; }
-.explorer-file-icon--config { color: #8a8a8a; }
-.explorer-file-icon--vite { color: #f0c674; }
+.explorer-file-icon--doc {
+  color: #8a8a8a;
+}
+
+.explorer-file-icon--json {
+  color: #cbcb41;
+}
+
+.explorer-file-icon--html {
+  color: #e37933;
+}
+
+.explorer-file-icon--ts {
+  color: #3178c6;
+}
+
+.explorer-file-icon--js {
+  color: #f7df1e;
+}
+
+.explorer-file-icon--svg {
+  color: #7c7cc8;
+}
+
+.explorer-file-icon--css {
+  color: #563d7c;
+}
+
+.explorer-file-icon--md {
+  color: #519aba;
+}
+
+.explorer-file-icon--env {
+  color: #2d5a27;
+}
+
+.explorer-file-icon--gitignore {
+  color: #4ec9b0;
+}
+
+.explorer-file-icon--config {
+  color: #8a8a8a;
+}
+
+.explorer-file-icon--vite {
+  color: #f0c674;
+}
 
 .explorer-file-name {
   overflow: hidden;
@@ -1979,10 +2055,12 @@ body {
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
+
 .explorer-folder:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
+
 .explorer-folder-chevron {
   width: 16px;
   height: 16px;
@@ -1992,10 +2070,12 @@ body {
   justify-content: center;
   color: var(--text-muted);
 }
+
 .explorer-folder-chevron svg {
   width: 10px;
   height: 10px;
 }
+
 .explorer-folder-icon {
   width: 16px;
   height: 16px;
@@ -2005,20 +2085,24 @@ body {
   justify-content: center;
   color: var(--text-secondary);
 }
+
 .explorer-folder-icon svg {
   width: 16px;
   height: 16px;
 }
+
 .explorer-folder-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .explorer-folder-children {
   padding-left: 12px;
   border-left: 1px solid var(--border);
   margin-left: 11px;
 }
+
 .explorer-folder-children .explorer-file,
 .explorer-folder-children .explorer-folder {
   padding-left: 8px;
@@ -2420,7 +2504,9 @@ body {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .github-error {
@@ -2601,7 +2687,7 @@ body {
   margin-top: 6px;
 }
 
-.github-files-list > div {
+.github-files-list>div {
   padding: 2px 0;
 }
 

@@ -847,6 +847,11 @@ const variantValues = ${JSON.stringify(variantValues)};
 const sizeValues = ${JSON.stringify(sizeValues)};
 const stateValues = ${JSON.stringify(stateValues)};
 
+// Normalize variant names: "Primary (Action Violet)" → "primary", "Filled in - Hover" → "filled-in-hover"
+function normalizeName(name) {
+  return name.trim().replace(/\\s*\\([^)]*\\)\\s*/g, '').toLowerCase().replace(/\\s*-\\s*/g, '-').replace(/\\s+/g, '-');
+}
+
 function App() {
   return (
     <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
@@ -871,9 +876,9 @@ function App() {
                   {sizeValues.map((size) => (
                     <div key={size} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
                       <${componentName}
-                        variant={variant.toLowerCase()}
-                        size={size.toLowerCase()}
-                        state={state.toLowerCase()}
+                        variant={normalizeName(variant)}
+                        size={normalizeName(size)}
+                        state={normalizeName(state)}
                       />
                       <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{size}</div>
                     </div>

@@ -14,7 +14,7 @@ import {
   cpSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { normalizeStateName } from '../shadcn/style-extractor.js';
+import { normalizeStateName, normalizeVariantName } from '../shadcn/style-extractor.js';
 
 // Local copy of preview's toCamelCase for prop names
 function toCamelCase(str: string): string {
@@ -265,7 +265,7 @@ export function ComponentPreviewPage() {
               const value = currentAxisValues[m.axis.camel] ?? m.axis.values[0];
               const defaultVal = m.axis.values[0];
               if (String(value).toLowerCase() !== String(defaultVal).toLowerCase()) {
-                props[m.propName] = String(value).toLowerCase();
+                props[m.propName] = isShadcn ? normalizeVariantName(String(value)) : String(value).toLowerCase();
               }
             });
             Object.assign(props, state.props);

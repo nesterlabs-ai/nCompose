@@ -310,6 +310,21 @@ export function normalizeStateName(name: string): string {
     .replace(/\s+/g, '-');      // "filled in-hover" → "filled-in-hover"
 }
 
+/**
+ * Normalize a Figma variant/style name to a CSS-friendly kebab-case string.
+ * Strips parenthetical suffixes: "Primary (Action Violet)" → "primary"
+ * "Secondary (Brand Purple)" → "secondary"
+ * "Subtle" → "subtle"
+ */
+export function normalizeVariantName(name: string): string {
+  return name
+    .trim()
+    .replace(/\s*\([^)]*\)\s*/g, '')  // strip "(Action Violet)", "(Brand Purple)", etc.
+    .toLowerCase()
+    .replace(/\s*-\s*/g, '-')
+    .replace(/\s+/g, '-');
+}
+
 const DEFAULT_STATE_VALUES = new Set([
   'default', 'rest', 'resting', 'normal', 'idle', 'enabled', 'base',
 ]);
@@ -359,7 +374,7 @@ export function extractVariantStyles(rootNode: any): VariantStyles {
 
     const rawStateValue = stateAxis ? (props[stateAxis] ?? 'Default') : 'Default';
     const isDefault = DEFAULT_STATE_VALUES.has(rawStateValue.toLowerCase().split(/[\s-]+/)[0]);
-    const variantKey = variantAxes.map(ax => props[ax] ?? '').filter(Boolean).join('|') || 'Default';
+    const variantKey = variantAxes.map(ax => normalizeVariantName(props[ax] ?? '')).filter(Boolean).join('|') || 'default';
     const sizeValue = sizeAxis ? (props[sizeAxis] ?? '') : '';
 
     if (isDefault && !byVariant[variantKey]) byVariant[variantKey] = style;

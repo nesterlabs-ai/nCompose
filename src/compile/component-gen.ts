@@ -145,7 +145,6 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param onAttempt - Progress callback
  * @param bemSuffix - Optional variant suffix to produce unique class names (e.g., "-v2")
  * @param templateMode - When true, use Tailwind + CSS variables for the starter
- * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateSingleComponent(
   node: any,
@@ -156,7 +155,6 @@ export async function generateSingleComponent(
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   bemSuffix?: string,
   templateMode?: boolean,
-  assetHints?: string,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -211,12 +209,12 @@ export async function generateSingleComponent(
     'Copy text VERBATIM from the YAML `text` or `characters` field.\n';
 
   const systemPrompt = assembleSystemPrompt(templateMode);
+  // Asset info is already embedded in the YAML as type: ICON nodes
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
     staticContentRule + semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
     templateMode,
-    assetHints,
   );
 
   // Collect expected text for fidelity validation
@@ -281,7 +279,6 @@ export async function generateSingleComponent(
  * @param onStep - Progress callback
  * @param onAttempt - Retry attempt callback
  * @param templateMode - When true, prompts use Tailwind + CSS variables for the starter
- * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateCompoundSection(
   sectionNode: any,
@@ -296,7 +293,6 @@ export async function generateCompoundSection(
   templateMode?: boolean,
   rawSectionNode?: any,
   existingChartNames?: Set<string>,
-  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -308,7 +304,7 @@ export async function generateCompoundSection(
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode, assetHints,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode,
     );
   }
 
@@ -409,7 +405,6 @@ export async function generateCompoundSection(
       onAttempt,
       suffix || undefined,
       templateMode,
-      assetHints,
     );
     componentCache.set(comp.variantKey, generated);
     onStep?.(
@@ -473,16 +468,9 @@ export async function generateCompoundSection(
     templateMode,
   );
 
-  // Insert component references and asset hints before the YAML block
-  let userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
-  if (assetHints) {
-    const yamlIdx = userPrompt.indexOf('```yaml');
-    if (yamlIdx !== -1) {
-      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
-    } else {
-      userPrompt += '\n\n' + assetHints;
-    }
-  }
+  // Insert component references before the YAML block
+  // Asset info is already embedded in the YAML as type: ICON nodes
+  const userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
 
   onStep?.(`  [PATH 2] Generating section layout with ${successCount} pre-built components...`);
 
@@ -531,7 +519,9 @@ function substituteComponents(
   path: number[] = [],
 ): any {
   if (!node || node.visible === false) return null;
-  if (node.name?.startsWith('_')) return null;
+  // Only skip truly empty utility/meta nodes with `_` prefix.
+  // Visible `_` prefixed nodes with children or text content must be preserved.
+  if (node.name?.startsWith('_') && !node.children?.length && !node.characters) return null;
 
   // Check if this node matches a chart component (identified by tree path)
   const chartPathKey = path.join('-');
@@ -838,6 +828,11 @@ function buildComponentReferenceBlock(
     'customized for each specific instance (labels, values, placeholders are correct). ' +
     'Do NOT change the text, class names, or HTML structure. ' +
     'Do NOT regenerate these as `<div>` — use the semantic HTML provided.\n\n' +
+    '**CRITICAL: COMPONENT_REF nodes are COMPLETE and SELF-CONTAINED.** ' +
+    'They have NO children to expand. ALL content (text, icons, structure) is ' +
+    'already inside `generatedHTML`. Do NOT render any children, text, or icons ' +
+    'separately for COMPONENT_REF nodes — only output the `generatedHTML` wrapped ' +
+    'in a sized container div.\n\n' +
     '**Sizing COMPONENT_REF wrappers:** When a COMPONENT_REF has `widthMode: fill`, ' +
     'its wrapper must use `width: 100%` (NOT a fixed pixel width). ' +
     'When it has a `width` in pixels, use that exact width on the wrapper. ' +
@@ -1001,26 +996,17 @@ async function fallbackMonolithicGeneration(
   discovery: ComponentDiscoveryResult,
   templateMode?: boolean,
   rawSectionNode?: any,
-  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
   fixStretchDimensions(serialized);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
   const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
-  let userPrompt = assemblePageSectionUserPrompt(
+  const userPrompt = assemblePageSectionUserPrompt(
     yaml, sectionName, sectionIndex, totalSections, ctx, templateMode,
   );
 
-  // Inject asset hints so the LLM knows about available SVG files
-  if (assetHints) {
-    const yamlIdx = userPrompt.indexOf('```yaml');
-    if (yamlIdx !== -1) {
-      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
-    } else {
-      userPrompt += '\n\n' + assetHints;
-    }
-  }
+  // Asset info is already embedded in the YAML as type: ICON nodes
 
   try {
     const result = await generateWithRetry(

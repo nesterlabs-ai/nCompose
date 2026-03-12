@@ -2347,6 +2347,28 @@ body {
   flex: 1;
 }
 
+/* Duplicate dialog */
+.modal-dialog--duplicate {
+  max-width: 420px;
+}
+
+.duplicate-dialog-info {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.duplicate-dialog-info strong {
+  color: var(--text);
+}
+
+.duplicate-dialog-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+  justify-content: flex-end;
+}
+
 /* GitHub dialog specific */
 .github-label {
   display: block;

@@ -112,6 +112,14 @@ const previewLoading = document.getElementById('preview-loading');
 const previewLoadingText = document.getElementById('preview-loading-text');
 const previewReload = document.getElementById('preview-reload');
 
+// Duplicate dialog
+const duplicateOverlay = document.getElementById('duplicate-dialog-overlay');
+const duplicateMessage = document.getElementById('duplicate-dialog-message');
+const duplicateCloseBtn = document.getElementById('duplicate-dialog-close');
+const duplicateConvertAgain = document.getElementById('duplicate-convert-again');
+const duplicateOpenExisting = document.getElementById('duplicate-open-existing');
+let pendingDuplicateProject = null;
+
 // ── State ──
 let currentSessionId = null;
 let currentProjectId = null;
@@ -268,6 +276,53 @@ function formatTimeAgo(ts) {
   if (days < 30) return `${days}d ago`;
   return new Date(ts).toLocaleDateString();
 }
+
+function normalizeFigmaUrl(url) {
+  if (!url) return '';
+  const fileMatch = url.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/);
+  if (!fileMatch) return url.trim().toLowerCase();
+  const fileKey = fileMatch[1];
+  const nodeMatch = url.match(/node-id=([^&]+)/);
+  let nodeId = '';
+  if (nodeMatch) {
+    nodeId = decodeURIComponent(nodeMatch[1]).replace(/-/, ':');
+  }
+  return nodeId ? `${fileKey}::${nodeId}` : fileKey;
+}
+
+function findExistingProject(url) {
+  const projects = loadProjects();
+  const normalized = normalizeFigmaUrl(url);
+  if (!normalized) return null;
+  return projects.find(p => normalizeFigmaUrl(p.figmaUrl) === normalized) || null;
+}
+
+function showDuplicateDialog(project) {
+  pendingDuplicateProject = project;
+  const name = project.name || 'Untitled';
+  const timeAgo = formatTimeAgo(project.updatedAt || project.createdAt);
+  duplicateMessage.innerHTML = `<strong>${name}</strong> was already converted <strong>${timeAgo}</strong>. Would you like to open the existing project or convert again?`;
+  duplicateOverlay.setAttribute('aria-hidden', 'false');
+}
+
+function hideDuplicateDialog() {
+  duplicateOverlay.setAttribute('aria-hidden', 'true');
+  pendingDuplicateProject = null;
+}
+
+if (duplicateCloseBtn) duplicateCloseBtn.addEventListener('click', hideDuplicateDialog);
+if (duplicateOverlay) duplicateOverlay.addEventListener('click', (e) => {
+  if (e.target === duplicateOverlay) hideDuplicateDialog();
+});
+if (duplicateOpenExisting) duplicateOpenExisting.addEventListener('click', () => {
+  const project = pendingDuplicateProject;
+  hideDuplicateDialog();
+  if (project) restoreProject(project.id);
+});
+if (duplicateConvertAgain) duplicateConvertAgain.addEventListener('click', () => {
+  hideDuplicateDialog();
+  startConversion(true);
+});
 
 function generatePlaceholderThumbnail(name) {
   const canvas = document.createElement('canvas');
@@ -750,7 +805,7 @@ function getSelectedFrameworks() {
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 
-function startConversion() {
+function startConversion(skipDuplicateCheck) {
   const urlInput = getActiveUrlInput();
   const figmaUrl = urlInput.value.trim();
   const figmaToken = figmaTokenInput.value.trim();
@@ -767,6 +822,15 @@ function startConversion() {
     figmaTokenInput.focus();
     showError('Please enter your Figma Access Token in the sidebar.');
     return;
+  }
+
+  // Check for duplicate URL before starting conversion
+  if (!skipDuplicateCheck) {
+    const existing = findExistingProject(figmaUrl);
+    if (existing) {
+      showDuplicateDialog(existing);
+      return;
+    }
   }
 
   // Switch from hero to split view (animated)

@@ -256,7 +256,7 @@ ${variantBuildJS}
               <div key={i} style={{ width: '100%' }}>
                 <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
                 <div style={{ width: '100%' }}>
-                  <${componentName} {...v.props}>Button</${componentName}>
+                  <${componentName} {...v.props} />
                 </div>
               </div>
             ))}

@@ -585,6 +585,30 @@
     </div>
   </div>
 
+  <!-- Duplicate URL Detection Dialog -->
+  <div class="modal-overlay" id="duplicate-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="duplicate-dialog-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog--duplicate" id="duplicate-dialog">
+      <div class="modal-header">
+        <h2 class="modal-title" id="duplicate-dialog-title">
+          <svg class="modal-title-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          Design Already Converted
+        </h2>
+        <button type="button" class="modal-close" id="duplicate-dialog-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="duplicate-dialog-info" id="duplicate-dialog-message"></p>
+        <div class="duplicate-dialog-actions">
+          <button type="button" class="btn btn--outline btn--sm" id="duplicate-convert-again">Convert Again</button>
+          <button type="button" class="btn btn--primary btn--sm" id="duplicate-open-existing">Open Existing Project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.min.js"></script>
   <script src="/app.js"></script>
 </body>

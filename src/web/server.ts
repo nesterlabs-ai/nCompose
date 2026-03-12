@@ -170,6 +170,8 @@ app.post('/api/convert', (req: any, res: any) => {
           variantMetadata: result.variantMetadata,
           fidelityReport: result.fidelityReport,
           chartComponents: result.chartComponents,
+          updatedShadcnSource: result.updatedShadcnSource,
+          shadcnComponentName: result.shadcnComponentName,
         });
         sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
       } catch (writeErr) {
@@ -189,6 +191,8 @@ app.post('/api/convert', (req: any, res: any) => {
               componentName: result.componentName,
               starterDir,
               componentPropertyDefinitions: result.componentPropertyDefinitions,
+              updatedShadcnSource: result.updatedShadcnSource,
+              shadcnComponentName: result.shadcnComponentName,
             });
             templateWired = true;
             sendEvent('step', {
@@ -223,6 +227,9 @@ app.post('/api/convert', (req: any, res: any) => {
             ),
           }
           : undefined,
+        updatedShadcnSource: result.updatedShadcnSource ?? undefined,
+        shadcnComponentName: result.shadcnComponentName ?? undefined,
+        componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
       });
 
       res.end();

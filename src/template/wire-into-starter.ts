@@ -14,6 +14,7 @@ import {
   cpSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { normalizeStateName } from '../shadcn/style-extractor.js';
 
 // Local copy of preview's toCamelCase for prop names
 function toCamelCase(str: string): string {
@@ -32,6 +33,10 @@ export interface WireIntoStarterOptions {
   starterDir: string;
   /** Optional component property definitions (for variant grid) */
   componentPropertyDefinitions?: Record<string, any>;
+  /** LLM-customized shadcn component source (.tsx) */
+  updatedShadcnSource?: string;
+  /** shadcn component name (e.g. "button") */
+  shadcnComponentName?: string;
 }
 
 /**
@@ -69,7 +74,7 @@ function copyDirRecursive(src: string, dest: string): void {
  * @returns Path to the app directory (e.g. componentOutputDir/app)
  */
 export function wireIntoStarter(options: WireIntoStarterOptions): string {
-  const { componentOutputDir, componentName, starterDir, componentPropertyDefinitions } = options;
+  const { componentOutputDir, componentName, starterDir, componentPropertyDefinitions, updatedShadcnSource, shadcnComponentName } = options;
 
   if (!existsSync(starterDir)) {
     throw new Error(`Starter template not found at ${starterDir}`);
@@ -121,6 +126,13 @@ export function wireIntoStarter(options: WireIntoStarterOptions): string {
     for (const file of files) {
       copyFileSync(join(assetsDir, file), join(publicAssetsDir, file));
     }
+  }
+
+  // 3b. Copy LLM-customized shadcn component source to ui/ directory
+  if (updatedShadcnSource && shadcnComponentName) {
+    const uiDir = join(appDir, 'src', 'components', 'ui');
+    mkdirSync(uiDir, { recursive: true });
+    writeFileSync(join(uiDir, `${shadcnComponentName}.tsx`), updatedShadcnSource, 'utf-8');
   }
 
   // 4. Create a page that renders the component (single or variant grid)
@@ -183,13 +195,19 @@ export function ComponentPreviewPage() {
     const propAxes = variantAxes;
 
     // Build state entries
-    type StateEntry = { label: string; props: Record<string, boolean> };
+    // When shadcn is active, pass state as string prop; otherwise use boolean flags
+    const isShadcn = !!(updatedShadcnSource && shadcnComponentName);
+    type StateEntry = { label: string; props: Record<string, any> };
     let stateEntries: StateEntry[] = [{ label: 'Default', props: {} }];
     if (stateAxis) {
       stateEntries = stateAxis.values.map((val) => {
         const lower = val.toLowerCase();
         if (lower === 'default') {
-          return { label: val, props: {} };
+          return { label: val, props: isShadcn ? { state: 'default' } : {} };
+        }
+        if (isShadcn) {
+          // Use normalized kebab-case to match CVA state keys: "Filled in" → "filled-in"
+          return { label: val, props: { state: normalizeStateName(val) } };
         }
         const parts = val.split(/[-\s]+/).filter(Boolean);
         const props: Record<string, boolean> = {};
@@ -276,8 +294,8 @@ const allVariants = ${allVariantsLiteral} as const;
 
 export function ComponentPreviewPage() {
   return (
-    <div className="min-h-dvh bg-[var(--color-background)] p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="min-h-dvh bg-[var(--color-background)] p-4">
+      <div className="mx-auto space-y-6">
         <header className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">
             ${componentName}
@@ -286,11 +304,11 @@ export function ComponentPreviewPage() {
             {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}.
           </p>
         </header>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 grid-cols-2">
           {allVariants.map((v, idx) => (
             <div
               key={idx}
-              className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4"
+              className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 overflow-hidden"
             >
               <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]">
                 {v.label}

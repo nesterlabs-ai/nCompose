@@ -39,6 +39,10 @@ export interface ExtractedStyle {
   placeholderColor?: string;
   /** Error text color */
   errorColor?: string;
+  /** Icon stroke/fill color */
+  iconColor?: string;
+  /** Component structure tree extracted from Figma (e.g. "Input[border,bg,rounded] > {MagnifyingGlass(icon), Value(text)}") */
+  structure?: string;
 }
 
 export interface VariantStyles {
@@ -213,6 +217,121 @@ function findMainElement(node: any): any {
   return node;
 }
 
+// ── Icon color extraction ─────────────────────────────────────────────
+
+/**
+ * Find the first icon-like node (INSTANCE with VECTOR children, or small FRAME)
+ * and extract its stroke/fill color. This gives us the actual Figma icon color.
+ */
+function extractIconColor(node: any): string | undefined {
+  if (!node || !Array.isArray(node.children)) return undefined;
+
+  for (const child of node.children) {
+    // Check INSTANCE nodes (icon components)
+    if (child.type === 'INSTANCE') {
+      const color = getDeepVectorColor(child);
+      if (color) return color;
+    }
+    // Check small FRAMEs that might be icons
+    const dim = getNodeDimensions(child);
+    if (child.type === 'FRAME' && dim.width && dim.width <= 32 && dim.height && dim.height <= 32) {
+      const color = getDeepVectorColor(child);
+      if (color) return color;
+    }
+    // Recurse into container children (e.g. Input frame contains icon)
+    if (child.type === 'FRAME' && Array.isArray(child.children)) {
+      const nested = extractIconColor(child);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+/** Walk into a node tree to find the first VECTOR with a stroke or fill color */
+function getDeepVectorColor(node: any): string | undefined {
+  if (!node) return undefined;
+  if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') {
+    // Try stroke first (most icons use strokes)
+    const strokeColor = extractSolidColor(node.strokes);
+    if (strokeColor) return strokeColor;
+    // Fall back to fill
+    const fillColor = extractSolidColor(node.fills);
+    if (fillColor) return fillColor;
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const color = getDeepVectorColor(child);
+      if (color) return color;
+    }
+  }
+  return undefined;
+}
+
+// ── Structure extraction ──────────────────────────────────────────────
+
+/**
+ * Extract a human-readable component structure tree from a Figma variant node.
+ * This tells the LLM how the component is laid out (what's inside what).
+ */
+function extractStructureTree(node: any, depth: number = 0): string {
+  if (!node || depth > 4) return '';
+
+  const children = node.children;
+  if (!Array.isArray(children) || children.length === 0) return '';
+
+  const parts: string[] = [];
+  for (const child of children) {
+    if ((child.name ?? '').startsWith('_')) continue; // skip hidden
+    const type = classifyChildType(child);
+    const traits = getNodeTraits(child);
+    const traitsStr = traits.length > 0 ? `[${traits.join(', ')}]` : '';
+    const childStructure = extractStructureTree(child, depth + 1);
+
+    if (childStructure) {
+      parts.push(`${child.name}(${type})${traitsStr} > {${childStructure}}`);
+    } else {
+      parts.push(`${child.name}(${type})${traitsStr}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+function classifyChildType(node: any): string {
+  if (node.type === 'TEXT') return 'text';
+  if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') return 'vector';
+  if (node.type === 'INSTANCE') {
+    // Check if it's an icon-like instance (small, has vectors)
+    const dim = getNodeDimensions(node);
+    if (dim.width && dim.width <= 32 && dim.height && dim.height <= 32) return 'icon';
+    return 'instance';
+  }
+  if (node.type === 'FRAME' || node.type === 'COMPONENT') return 'frame';
+  return node.type?.toLowerCase() ?? 'unknown';
+}
+
+function getNodeTraits(node: any): string[] {
+  const traits: string[] = [];
+  // Has visible border?
+  if (Array.isArray(node.strokes) && node.strokes.some((s: any) => s.visible !== false && s.type === 'SOLID')) {
+    traits.push('border');
+  }
+  // Has visible fill/background?
+  const fills = node.fills ?? node.background;
+  if (Array.isArray(fills) && fills.some((f: any) => f.visible !== false && f.type === 'SOLID')) {
+    traits.push('bg');
+  }
+  // Has corner radius?
+  if (node.cornerRadius && node.cornerRadius > 0) traits.push('rounded');
+  // Has padding?
+  if (node.paddingTop || node.paddingLeft || (node.padding && (node.padding.top || node.padding.left))) {
+    traits.push('padding');
+  }
+  // Layout direction
+  if (node.layoutMode === 'HORIZONTAL') traits.push('flex-row');
+  else if (node.layoutMode === 'VERTICAL') traits.push('flex-col');
+  return traits;
+}
+
 // ── Main extraction ───────────────────────────────────────────────────
 
 /**
@@ -282,6 +401,13 @@ export function extractNodeStyle(node: any): ExtractedStyle {
 
   const errorNode = findTextByNameHint(node, /\berror\b/);
   if (errorNode) result.errorColor = extractSolidColor(errorNode.fills);
+
+  // Extract icon color from INSTANCE/VECTOR children
+  result.iconColor = extractIconColor(node);
+
+  // Extract component structure tree
+  const structure = extractStructureTree(node);
+  if (structure) result.structure = structure;
 
   // Remove undefined values
   return Object.fromEntries(Object.entries(result).filter(([_, v]) => v !== undefined)) as ExtractedStyle;
@@ -450,5 +576,7 @@ function fmtStyle(s: ExtractedStyle): string {
   if (s.labelColor) p.push(`  label-color: ${s.labelColor}`);
   if (s.placeholderColor) p.push(`  placeholder-color: ${s.placeholderColor}`);
   if (s.errorColor) p.push(`  error-color: ${s.errorColor}`);
+  if (s.iconColor) p.push(`  icon-color: ${s.iconColor}`);
+  if (s.structure) p.push(`  structure: ${s.structure}`);
   return p.join('\n');
 }

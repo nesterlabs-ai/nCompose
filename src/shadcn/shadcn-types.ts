@@ -9,6 +9,8 @@
 const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   button: 'button',
   textInput: 'input',
+  textarea: 'textarea',
+  search: 'input',
 };
 
 /** Also map ComponentCategory values that differ from formRole */
@@ -16,7 +18,8 @@ const CATEGORY_TO_SHADCN: Record<string, string> = {
   button: 'button',
   'icon-button': 'button',
   input: 'input',
-  textarea: 'input',
+  textarea: 'textarea',
+  search: 'input',
 };
 
 const SUPPORTED = new Set([

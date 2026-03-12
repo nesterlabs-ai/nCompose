@@ -26,6 +26,8 @@ function transformReactCode(
   let css = '';
 
   for (const line of lines) {
+    // Skip "use client" directive (not needed in browser context)
+    if (/^\s*["']use client["'];?\s*$/.test(line)) continue;
     // Skip all import lines (including CSS imports and chart component imports)
     if (/^\s*import\s+/.test(line)) continue;
     // "export default function Foo() {" → keep as "function Foo() {" so the function is defined
@@ -293,6 +295,15 @@ export function generatePreviewHTML(
   const fontFamilies = collectFontFamilies(css);
   const fontLink = buildGoogleFontsLink(fontFamilies);
 
+  // Escape code for embedding inside a JS string literal (used in manual transpile approach)
+  // We manually call Babel.transform instead of using type="text/babel" to get error handling.
+  const escapedJSX = (
+    `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    code + '\n' +
+    appCode + '\n' +
+    `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`
+  ).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -307,6 +318,8 @@ export function generatePreviewHTML(
       background: #f8f9fa;
       min-height: 100vh;
     }
+    .preview-error { padding: 1rem; color: #dc2626; font-family: monospace; white-space: pre-wrap; font-size: 13px; }
+    .preview-error h3 { margin-bottom: 0.5rem; font-size: 14px; }
     ${css}
   </style>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -316,14 +329,22 @@ export function generatePreviewHTML(
 <body>
   <div id="root"></div>
 
-  <script type="text/babel" data-type="module">
-    const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}
-    ${code}
-
-    ${appCode}
-
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      var el = document.getElementById('root');
+      if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + (line ? ' (line ' + line + ')' : '') + '</div>';
+    };
+    try {
+      var jsxCode = \`${escapedJSX}\`;
+      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+      var script = document.createElement('script');
+      script.textContent = result.code;
+      document.body.appendChild(script);
+    } catch (e) {
+      var el = document.getElementById('root');
+      if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
+      console.error('Babel transpile error:', e);
+    }
   </script>
 </body>
 </html>`;

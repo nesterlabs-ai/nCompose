@@ -48,6 +48,10 @@ const tokenStatus = document.getElementById('token-status');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 
+// Project list
+const projectListEl = document.getElementById('sidebar-project-list');
+const allProjectsBtn = document.getElementById('all-projects-btn');
+
 // Hero
 const mainHero = document.getElementById('main-hero');
 const mainSplit = document.getElementById('main-split');
@@ -68,7 +72,13 @@ const sendIcon = document.getElementById('send-icon');
 const panelBody = document.getElementById('panel-body');
 const emptyState = document.getElementById('empty-state');
 const progressList = document.getElementById('progress-list');
+const progressCollapsible = document.getElementById('progress-collapsible');
+const progressToggle = document.getElementById('progress-toggle');
+const progressToggleTitle = document.getElementById('progress-toggle-title');
+const progressBadge = document.getElementById('progress-badge');
+const progressCollapsibleBody = document.getElementById('progress-collapsible-body');
 const errorBanner = document.getElementById('error-banner');
+let progressStepCount = 0;
 
 // Right panel
 const modePreviewBtn = document.getElementById('mode-preview');
@@ -104,6 +114,7 @@ const previewReload = document.getElementById('preview-reload');
 
 // ── State ──
 let currentSessionId = null;
+let currentProjectId = null;
 let currentFrameworkOutputs = {};
 let currentComponentName = '';
 let monacoEditor = null;
@@ -195,6 +206,333 @@ function loadSavedToken() {
 
 function saveToken(token) {
   localStorage.setItem(STORAGE_KEY, token);
+}
+
+// ── Project History Store ──
+const PROJECTS_KEY = 'figma-to-code-projects';
+const MAX_PROJECTS = 20;
+
+function loadProjects() {
+  try {
+    return JSON.parse(localStorage.getItem(PROJECTS_KEY)) || [];
+  } catch { return []; }
+}
+
+function saveProjects(projects) {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+}
+
+function saveProject(project) {
+  const projects = loadProjects();
+  const idx = projects.findIndex(p => p.id === project.id);
+  if (idx >= 0) {
+    projects[idx] = { ...projects[idx], ...project, updatedAt: Date.now() };
+  } else {
+    projects.unshift({ ...project, createdAt: Date.now(), updatedAt: Date.now() });
+  }
+  // Prune oldest beyond max
+  while (projects.length > MAX_PROJECTS) projects.pop();
+  saveProjects(projects);
+  renderProjectList();
+}
+
+function deleteProject(id) {
+  const projects = loadProjects().filter(p => p.id !== id);
+  saveProjects(projects);
+  if (currentProjectId === id) currentProjectId = null;
+  renderProjectList();
+}
+
+function getProject(id) {
+  return loadProjects().find(p => p.id === id) || null;
+}
+
+function updateProjectField(id, updates) {
+  const projects = loadProjects();
+  const p = projects.find(pp => pp.id === id);
+  if (p) {
+    Object.assign(p, updates, { updatedAt: Date.now() });
+    saveProjects(projects);
+  }
+}
+
+function formatTimeAgo(ts) {
+  const diff = Date.now() - ts;
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return 'Just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function generatePlaceholderThumbnail(name) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 56; canvas.height = 56;
+  const ctx = canvas.getContext('2d');
+  // Deterministic hue from name hash
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash) + name.charCodeAt(i);
+  const hue = Math.abs(hash) % 360;
+  ctx.fillStyle = `hsl(${hue}, 55%, 45%)`;
+  ctx.fillRect(0, 0, 56, 56);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText((name[0] || '?').toUpperCase(), 28, 30);
+  return canvas.toDataURL('image/png');
+}
+
+function renderProjectList() {
+  if (!projectListEl) return;
+  const projects = loadProjects();
+  if (projects.length === 0) {
+    projectListEl.innerHTML = '';
+    return;
+  }
+  const items = projects.slice(0, 8);
+  let html = '';
+  for (const p of items) {
+    const isActive = currentProjectId === p.id;
+    const thumbStyle = p.thumbnail
+      ? `background-image: url(${p.thumbnail}); background-size: cover;`
+      : `background: hsl(200, 55%, 45%);`;
+    const letter = (p.name || '?')[0].toUpperCase();
+    html += `<div class="sidebar__project-item${isActive ? ' active' : ''}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
+      <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
+      <div class="sidebar__project-info">
+        <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
+        <div class="sidebar__project-date">${formatTimeAgo(p.updatedAt || p.createdAt)}</div>
+      </div>
+      <button class="sidebar__project-delete" data-delete-id="${escapeHtml(p.id)}" title="Delete project" aria-label="Delete project">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>`;
+  }
+  html += `<button class="sidebar__new-project-btn" id="new-project-btn" type="button">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+    <span>New conversion</span>
+  </button>`;
+  projectListEl.innerHTML = html;
+
+  // Bind click events
+  projectListEl.querySelectorAll('.sidebar__project-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.sidebar__project-delete')) return;
+      restoreProject(el.dataset.projectId);
+    });
+  });
+  projectListEl.querySelectorAll('.sidebar__project-delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.deleteId;
+      const p = getProject(id);
+      if (p && confirm(`Delete "${p.name}"?`)) deleteProject(id);
+    });
+  });
+  const newBtn = projectListEl.querySelector('#new-project-btn');
+  if (newBtn) newBtn.addEventListener('click', resetToHero);
+}
+
+function restoreProject(projectId) {
+  const project = getProject(projectId);
+  if (!project) return;
+
+  currentProjectId = project.id;
+  currentSessionId = project.sessionId || project.id;
+  currentComponentName = project.name || '';
+  currentFrameworkOutputs = project.frameworkOutputs || {};
+
+  // Switch to split view
+  mainHero.classList.add('hidden');
+  mainSplit.classList.add('visible');
+  mainHero.closest('.main')?.classList.add('split-visible');
+
+  // Set URL input
+  figmaUrlInput.value = project.figmaUrl || '';
+
+  // Sync framework checkboxes
+  const frameworks = project.frameworks || [];
+  mainSplit.querySelectorAll('input[name="framework"]').forEach(cb => {
+    cb.checked = frameworks.includes(cb.value);
+  });
+
+  // Hide progress, clear empty state
+  if (progressCollapsible) progressCollapsible.style.display = 'none';
+  if (emptyState) emptyState.style.display = 'none';
+
+  // Switch to preview mode
+  switchMode('preview');
+
+  // Build code tabs from stored data
+  const fakeData = {
+    frameworks,
+    mitosisSource: project.mitosisSource || '',
+    componentName: project.name,
+  };
+  buildTabs(fakeData);
+  generatedTabsData = tabsData.map(t => ({ ...t }));
+
+  // Restore download button
+  downloadBtn.style.display = 'inline-flex';
+  const pushGithubBtn = document.getElementById('push-github-btn');
+  if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
+
+  // Preview: show loading state, then try server session first, fall back to inline
+  previewEmpty.style.display = 'none';
+  setPreviewLoading(true, 'Loading preview...');
+  fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
+    .then(r => {
+      if (r.ok) {
+        setPreviewReady(`/api/preview/${currentSessionId}`, false, 'Static preview');
+      } else {
+        showInlinePreview(project);
+      }
+    })
+    .catch(() => showInlinePreview(project));
+
+  // Restore chat history
+  if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+  if (project.chatHistory && project.chatHistory.length > 0) {
+    if (chatMessages) chatMessages.classList.add('visible');
+    for (const msg of project.chatHistory) {
+      addChatMessage(msg.role, msg.content, true);
+    }
+  }
+
+  // Switch to chat input mode
+  if (urlInputGroup) urlInputGroup.style.display = 'none';
+  if (chatInputGroup) chatInputGroup.style.display = 'block';
+
+  setStatus('done', 'Conversion complete');
+  renderProjectList();
+}
+
+function transformForBrowser(reactCode, componentName) {
+  const lines = reactCode.split('\n');
+  const out = [];
+  for (const line of lines) {
+    // Strip "use client" directive
+    if (/^\s*["']use client["'];?\s*$/.test(line)) continue;
+    // Strip import lines
+    if (/^\s*import\s+/.test(line)) continue;
+    // export default function Foo() → function Foo()
+    if (/^\s*export\s+default\s+function\s+/.test(line)) {
+      out.push(line.replace(/export\s+default\s+/, ''));
+      continue;
+    }
+    // Skip standalone export default
+    if (/^\s*export\s+default\s+/.test(line)) continue;
+    out.push(line);
+  }
+  let code = out.join('\n');
+  // Extract and remove <style> blocks
+  let css = '';
+  const styleRegex = /<style>\{`([\s\S]*?)`\}<\/style>/g;
+  let m;
+  while ((m = styleRegex.exec(code)) !== null) css += m[1] + '\n';
+  code = code.replace(styleRegex, '');
+  return { code, css };
+}
+
+function showInlinePreview(project) {
+  const reactCode = (project.frameworkOutputs || {}).react;
+  if (!reactCode) {
+    previewEmpty.style.display = 'flex';
+    previewFrame.style.display = 'none';
+    return;
+  }
+  const componentName = project.name || 'Component';
+  const { code, css } = transformForBrowser(reactCode, componentName);
+  // Build JSX source for manual Babel.transform (with error handling)
+  const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;\n` +
+    code + '\n' +
+    `function App() {\n  return React.createElement("div", { style: { padding: "1rem" } },\n    React.createElement(${componentName}, null)\n  );\n}\n` +
+    `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`;
+  const escapedJSX = jsxSource.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  const escapedCss = css.replace(/<\//g, '<\\/');
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fa;min-height:100vh;}
+.preview-error{padding:1rem;color:#dc2626;font-family:monospace;white-space:pre-wrap;font-size:13px;}
+.preview-error h3{margin-bottom:0.5rem;font-size:14px;}
+${escapedCss}</style>
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin><\/script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin><\/script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+</head><body>
+<div id="root"></div>
+<script>
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('root');
+  if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + '</div>';
+};
+try {
+  var jsxCode = \`${escapedJSX}\`;
+  var result = Babel.transform(jsxCode, { presets: ['react'] });
+  var script = document.createElement('script');
+  script.textContent = result.code;
+  document.body.appendChild(script);
+} catch (e) {
+  var el = document.getElementById('root');
+  if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
+}
+<\/script>
+</body></html>`;
+  const blob = new Blob([htmlContent], { type: 'text/html' });
+  const blobUrl = URL.createObjectURL(blob);
+  setPreviewReady(blobUrl, false, 'Offline preview');
+}
+
+function resetToHero() {
+  currentProjectId = null;
+  currentSessionId = null;
+  currentComponentName = '';
+  currentFrameworkOutputs = {};
+  chatRefining = false;
+
+  // Switch to hero view
+  mainHero.classList.remove('hidden');
+  mainSplit.classList.remove('visible');
+  mainHero.closest('.main')?.classList.remove('split-visible');
+
+  // Reset inputs
+  heroFigmaUrlInput.value = '';
+  figmaUrlInput.value = '';
+  autoResizeTextarea(heroFigmaUrlInput);
+
+  // Reset panels
+  if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+  if (chatInputGroup) chatInputGroup.style.display = 'none';
+  if (urlInputGroup) urlInputGroup.style.display = 'block';
+  if (emptyState) emptyState.style.display = 'flex';
+  if (progressCollapsible) progressCollapsible.style.display = 'none';
+  switchMode('preview');
+  previewEmpty.style.display = 'flex';
+  previewFrame.style.display = 'none';
+  previewFrame.src = 'about:blank';
+  if (previewHeader) previewHeader.style.display = 'none';
+  if (previewLoading) previewLoading.style.display = 'none';
+  downloadBtn.style.display = 'none';
+  const pushGithubBtn = document.getElementById('push-github-btn');
+  if (pushGithubBtn) pushGithubBtn.style.display = 'none';
+  explorerFiles.innerHTML = '';
+  editorTabs.innerHTML = '';
+  activeFile = null;
+  openFiles = [];
+  tabsData = [];
+
+  setStatus('ready', 'Ready to convert');
+  renderProjectList();
 }
 
 // ── Framework Extensions Map ──
@@ -457,7 +795,8 @@ function startConversion() {
   showProgress();
   clearProgress();
 
-  // Hide previous results in right panel
+  // Reset right panel to preview mode and hide previous results
+  switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
   previewFrame.src = 'about:blank';
@@ -479,7 +818,8 @@ function startConversion() {
   if (codeViewModeEl) codeViewModeEl.style.display = 'none';
   updateCodeActionsState();
 
-  // Reset chat state
+  // Reset chat state and project tracking
+  currentProjectId = null;
   if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
   if (chatInputGroup) chatInputGroup.style.display = 'none';
   if (urlInputGroup) urlInputGroup.style.display = 'block';
@@ -590,10 +930,49 @@ function setStatus(state, text) {
 function showProgress() {
   emptyState.style.display = 'none';
   progressList.classList.add('visible');
+  if (progressCollapsible) {
+    progressCollapsible.style.display = '';
+    progressCollapsible.classList.add('visible');
+    progressCollapsible.classList.remove('collapsed');
+  }
+  progressStepCount = 0;
+  updateProgressBadge('active');
 }
 
 function clearProgress() {
   progressList.innerHTML = '';
+  progressStepCount = 0;
+  if (progressToggleTitle) progressToggleTitle.textContent = 'Processing steps';
+  if (progressBadge) { progressBadge.classList.remove('visible'); progressBadge.className = 'progress-collapsible__badge'; }
+  if (progressCollapsible) progressCollapsible.classList.remove('collapsed');
+}
+
+function collapseProgress() {
+  if (progressCollapsible) progressCollapsible.classList.add('collapsed');
+}
+
+function expandProgress() {
+  if (progressCollapsible) progressCollapsible.classList.remove('collapsed');
+}
+
+function toggleProgress() {
+  if (progressCollapsible) progressCollapsible.classList.toggle('collapsed');
+}
+
+function updateProgressBadge(state) {
+  if (!progressBadge) return;
+  progressBadge.className = 'progress-collapsible__badge visible progress-collapsible__badge--' + state;
+  if (state === 'done') {
+    progressBadge.textContent = progressStepCount + ' steps';
+  } else if (state === 'error') {
+    progressBadge.textContent = 'Error';
+  } else {
+    progressBadge.textContent = progressStepCount + ' steps';
+  }
+}
+
+if (progressToggle) {
+  progressToggle.addEventListener('click', toggleProgress);
 }
 
 function addProgressStep(message) {
@@ -612,6 +991,9 @@ function addProgressStep(message) {
     <span>${escapeHtml(message)}</span>
   `;
   progressList.appendChild(li);
+  progressStepCount++;
+  updateProgressBadge('active');
+  if (progressToggleTitle) progressToggleTitle.textContent = message;
   panelBody.scrollTop = panelBody.scrollHeight;
 }
 
@@ -631,6 +1013,8 @@ function markLastStepError() {
     activeItem.classList.add('progress-icon--error');
     activeItem.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M12 4L4 12M4 4L12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
   }
+  if (progressToggleTitle) progressToggleTitle.textContent = 'Error occurred';
+  updateProgressBadge('error');
 }
 
 // ── WebContainer ──
@@ -858,6 +1242,13 @@ function handleComplete(data) {
     <span style="color: var(--success); font-weight: 500;">Done! Generated ${escapeHtml(data.componentName)}</span>
   `;
   progressList.appendChild(li);
+  progressStepCount++;
+
+  // Update collapsible header to done state and auto-collapse
+  if (progressToggleTitle) progressToggleTitle.textContent = 'Generated ' + data.componentName;
+  updateProgressBadge('done');
+  collapseProgress();
+
   panelBody.scrollTop = panelBody.scrollHeight;
 
   // Store state
@@ -928,6 +1319,21 @@ function handleComplete(data) {
     setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
   }
 
+  // Save project to history
+  const figmaUrl = figmaUrlInput.value.trim() || heroFigmaUrlInput.value.trim();
+  currentProjectId = data.sessionId;
+  saveProject({
+    id: data.sessionId,
+    sessionId: data.sessionId,
+    name: data.componentName,
+    figmaUrl,
+    frameworks,
+    frameworkOutputs: currentFrameworkOutputs,
+    mitosisSource: data.mitosisSource || '',
+    thumbnail: generatePlaceholderThumbnail(data.componentName),
+    chatHistory: [],
+  });
+
   // Initialize chat for iterative refinement
   initChat();
 }
@@ -953,7 +1359,7 @@ function initChat() {
   addChatMessage('system', 'Conversion complete. Describe changes to refine the component.');
 }
 
-function addChatMessage(role, content) {
+function addChatMessage(role, content, skipPersist) {
   if (!chatMessages) return;
   const div = document.createElement('div');
   div.className = `chat-message chat-message--${role}`;
@@ -963,6 +1369,15 @@ function addChatMessage(role, content) {
     div.textContent = content;
   }
   chatMessages.appendChild(div);
+  // Persist to project history
+  if (!skipPersist && currentProjectId && (role === 'user' || role === 'assistant')) {
+    const p = getProject(currentProjectId);
+    if (p) {
+      const history = p.chatHistory || [];
+      history.push({ role, content });
+      updateProjectField(currentProjectId, { chatHistory: history });
+    }
+  }
   // Scroll to bottom
   const panelBodyEl = document.getElementById('panel-body');
   if (panelBodyEl) panelBodyEl.scrollTop = panelBodyEl.scrollHeight;
@@ -1100,6 +1515,11 @@ function handleRefineComplete(data) {
   // Keep generatedTabsData in sync (for Generated/Wired toggle)
   generatedTabsData = tabsData.map(t => ({ ...t }));
 
+  // Persist updated outputs to project history
+  if (currentProjectId) {
+    updateProjectField(currentProjectId, { frameworkOutputs: currentFrameworkOutputs });
+  }
+
   // Refresh Monaco if a tab is open
   if (activeFile && monacoEditor) {
     const currentTab = tabsData.find(t => t.key === activeFile);
@@ -1121,38 +1541,36 @@ function handleRefineComplete(data) {
   });
 
   if (currentSessionId && previewFrame) {
+    const staticUrl = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+
     if (webContainerSyncEnabled && webContainerInstance && currentComponentName && reactCode) {
-      // WebContainer path: write React code + CSS directly for Vite HMR
+      // WebContainer path: write updated files for Vite HMR
       const { code, css } = extractReactCodeAndCss(reactCode);
       const componentCode = code.replace(/\.\/assets\//g, '/assets/');
       const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
       const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
       const wcPath = `src/components/${currentComponentName}.jsx`;
       const cssPath = `src/components/${currentComponentName}.css`;
-      console.log('[refine] writing to WebContainer:', { wcPath, cssPath, codeLen: finalCode.length, cssLen: css.length });
-      // Clear the cache so writeWebContainerFiles doesn't skip
       delete webContainerLastWritten[wcPath];
       delete webContainerLastWritten[cssPath];
       writeWebContainerFiles({
         [wcPath]: finalCode,
         [cssPath]: css || `/* ${currentComponentName} */`,
       }).then(() => {
-        console.log('[refine] WebContainer files written, waiting for HMR...');
-        // Force reload the Vite preview after a short delay if HMR doesn't trigger
+        // Force reload: blank then restore to bypass same-URL no-reload
         setTimeout(() => {
           if (previewFrame && webContainerPreviewUrl) {
-            console.log('[refine] Force-reloading Vite preview');
-            previewFrame.src = webContainerPreviewUrl;
+            const url = webContainerPreviewUrl;
+            previewFrame.src = 'about:blank';
+            setTimeout(() => { previewFrame.src = url; }, 100);
           }
         }, 1500);
-      }).catch((err) => {
-        console.warn('[refine] WebContainer write failed, using static preview:', err);
-        previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+      }).catch(() => {
+        previewFrame.src = staticUrl;
       });
     } else {
-      // Static preview path: reload iframe with cache bust
-      console.log('[refine] using static preview reload');
-      previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+      // Static preview path: reload iframe
+      previewFrame.src = staticUrl;
     }
   }
 }
@@ -2164,10 +2582,24 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// ── All Projects Button ──
+if (allProjectsBtn) {
+  allProjectsBtn.addEventListener('click', () => {
+    // Expand sidebar if collapsed
+    if (sidebar.classList.contains('collapsed')) {
+      sidebar.classList.remove('collapsed');
+      updateSidebarToggleTitle();
+    }
+    // Scroll project list into view
+    if (projectListEl) projectListEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
 // ── Init ──
 loadSavedToken();
 loadExplorerIconConfig();
 updateCodeActionsState();
+renderProjectList();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');

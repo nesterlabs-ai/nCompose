@@ -257,19 +257,192 @@ const MIN_PIE_ELLIPSE_DIAMETER = 20;
  */
 const MIN_SERIES_VECTOR_HEIGHT = 3;
 
+// ── Semantic Name Analysis ──────────────────────────────────────────────────
+//
+// Before running expensive geometric heuristics, analyse the Figma node names
+// in the subtree to determine whether the section is semantically a chart/graph
+// or a known UI pattern (form, navigation, table, etc.).
+//
+// The approach is data-driven:
+//  1. Tokenize every node name in the subtree into lowercase words.
+//  2. Score each token against two weighted maps (chart-positive, UI-negative).
+//  3. If the aggregate score crosses a threshold → early accept/reject.
+//  4. If ambiguous (generic names like "Frame 1") → fall through to geometry.
+//
+// The maps are intentionally broad categories, NOT exact component names.
+// Designers can name things anything — we match *semantic categories* not
+// specific strings.
+
+/** Tokens whose presence strongly suggests the node IS a chart/graph. */
+const CHART_POSITIVE_TOKENS: ReadonlyMap<string, number> = new Map([
+  // data-visualisation vocabulary
+  ['chart',       3], ['graph',       3], ['plot',        3],
+  ['histogram',   3], ['sparkline',   3], ['visualisation', 2], ['visualization', 2],
+  // chart types
+  ['pie',         2], ['donut',       2], ['doughnut',    2],
+  ['bar',         1], ['column',      1], ['line',        1],
+  ['area',        1], ['scatter',     1], ['radar',       1],
+  ['funnel',      1], ['treemap',     1], ['heatmap',     1],
+  ['candlestick', 2], ['waterfall',   2], ['gauge',       2],
+  // chart parts
+  ['axis',        2], ['legend',      1], ['tooltip',     1],
+  ['gridline',    2], ['tick',        1], ['datapoint',   2],
+  ['series',      2], ['dataset',     2],
+]);
+
+/** Tokens whose presence strongly suggests the node is NOT a chart. */
+const UI_NEGATIVE_TOKENS: ReadonlyMap<string, number> = new Map([
+  // navigation & layout
+  ['nav',         3], ['navbar',      3], ['sidebar',     3],
+  ['header',      2], ['footer',      2], ['toolbar',     2],
+  ['menu',        2], ['breadcrumb',  2], ['pagination',  2],
+  ['tab',         1], ['drawer',      2], ['appbar',      2],
+  // form elements
+  ['form',        3], ['input',       2], ['textarea',    2],
+  ['select',      2], ['dropdown',    2], ['checkbox',    3],
+  ['radio',       3], ['toggle',      3], ['switch',      3],
+  ['slider',      1], ['picker',      2], ['datepicker',  2],
+  ['timepicker',  2], ['upload',      2], ['file',        1],
+  // interactive components
+  ['button',      2], ['btn',         2], ['cta',         1],
+  ['modal',       2], ['dialog',      2], ['popover',     2],
+  ['toast',       2], ['snackbar',    2], ['alert',       2],
+  // content containers
+  ['card',        1], ['list',        1], ['table',       2],
+  ['row',         1], ['cell',        1], ['grid',        1],
+  ['avatar',      2], ['badge',       2], ['chip',        2],
+  ['tag',         1], ['icon',        1], ['logo',        2],
+  // status & indicators
+  ['spinner',     2], ['loader',      2], ['skeleton',    2],
+  ['progress',    1], ['stepper',     2],
+]);
+
+/**
+ * Tokenize a Figma node name into lowercase words.
+ *
+ * Handles camelCase, PascalCase, kebab-case, snake_case, and spaces.
+ * E.g. "SidebarNavigation" → ["sidebar", "navigation"]
+ *      "bar-chart-section" → ["bar", "chart", "section"]
+ *      "_Application nav menu button" → ["application", "nav", "menu", "button"]
+ */
+function tokenizeName(name: string): string[] {
+  if (!name) return [];
+  // Insert space before uppercase letters (camelCase/PascalCase split)
+  const spaced = name.replace(/([a-z])([A-Z])/g, '$1 $2')
+                      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  // Split on non-alphanumeric characters and lowercase
+  return spaced
+    .split(/[^a-zA-Z0-9]+/)
+    .map(t => t.toLowerCase())
+    .filter(t => t.length > 0);
+}
+
+/**
+ * Semantic pre-filter: analyse the names of a node and its descendants to
+ * decide whether the subtree looks like a chart or a UI component.
+ *
+ * Returns:
+ *   'chart'     → high confidence this IS a chart (skip geometry, accept)
+ *   'ui'        → high confidence this is NOT a chart (skip geometry, reject)
+ *   'ambiguous' → names are generic, fall through to geometric analysis
+ */
+function semanticNameSignal(node: any): 'chart' | 'ui' | 'ambiguous' {
+  let chartScore = 0;
+  let uiScore = 0;
+
+  // Collect names: the node itself + all descendants (limit depth to avoid
+  // pathologically deep trees in big pages)
+  const names: string[] = [];
+  (function collect(n: any, depth: number) {
+    if (!n || depth > 6) return;
+    if (n.name) names.push(n.name);
+    for (const child of n.children ?? []) {
+      collect(child, depth + 1);
+    }
+  })(node, 0);
+
+  // Also check the node's own name with extra weight (×2) since the top-level
+  // name is the most intentional label a designer assigns.
+  const rootTokens = tokenizeName(node.name ?? '');
+
+  // Score root tokens with double weight
+  for (const token of rootTokens) {
+    const cw = CHART_POSITIVE_TOKENS.get(token);
+    if (cw) chartScore += cw * 2;
+    const uw = UI_NEGATIVE_TOKENS.get(token);
+    if (uw) uiScore += uw * 2;
+  }
+
+  // Score all descendant names
+  for (const name of names) {
+    const tokens = tokenizeName(name);
+    for (const token of tokens) {
+      const cw = CHART_POSITIVE_TOKENS.get(token);
+      if (cw) chartScore += cw;
+      const uw = UI_NEGATIVE_TOKENS.get(token);
+      if (uw) uiScore += uw;
+    }
+  }
+
+  const _dbg = process.env.CHART_DEBUG
+    ? (msg: string) => console.log(`[semanticName "${node.name ?? '?'}"] ${msg}`)
+    : () => {};
+  _dbg(`chartScore=${chartScore} uiScore=${uiScore} names=${names.length}`);
+
+  // Decision thresholds — these determine how confident we need to be.
+  // A chart-positive name like "Bar Chart" scores 3+3 = 6 on root alone (×2 = 12).
+  // A UI name like "Sidebar navigation" scores 3+0 = 3 for sidebar (×2 = 6).
+  //
+  // We only override geometry when the signal is clear.
+  // If both scores are low or close → ambiguous → let geometry decide.
+
+  // Strong chart signal and no meaningful UI signal
+  if (chartScore >= 4 && chartScore > uiScore * 2) {
+    _dbg(`→ CHART (chartScore dominates)`);
+    return 'chart';
+  }
+
+  // Strong UI signal and no meaningful chart signal
+  if (uiScore >= 4 && uiScore > chartScore * 2) {
+    _dbg(`→ UI (uiScore dominates)`);
+    return 'ui';
+  }
+
+  _dbg(`→ AMBIGUOUS`);
+  return 'ambiguous';
+}
+
 // ── Detection ───────────────────────────────────────────────────────────────
 
 /**
  * Returns true if a node looks like a chart/graph section.
  *
- * Uses three independent structural signals — requires at least 2 of 3.
- * For high-confidence single signals (e.g. >= 5 concentric pie ellipses),
- * a single signal suffices.
+ * Two-phase detection:
+ *   Phase 1 — Semantic name analysis (fast, uses Figma node names)
+ *   Phase 2 — Geometric heuristics (3-signal system, more expensive)
  *
- * No name-based or keyword-based matching.
+ * Phase 1 can early-accept or early-reject with high confidence,
+ * avoiding false positives from geometric analysis on UI elements
+ * (navbars, checkboxes, sliders, etc.).
  */
 export function isChartSection(node: any): boolean {
   if (!node) return false;
+  const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSection "${node.name ?? '?'}"] ${msg}`) : () => {};
+
+  // ── Phase 1: Semantic name analysis ──
+  // Check Figma node names in the subtree for chart vs UI signals.
+  // This catches cases where geometric heuristics would fail
+  // (e.g. checkboxes mistaken for bars, nav icons mistaken for chart shapes).
+  const nameSignal = semanticNameSignal(node);
+  if (nameSignal === 'ui') {
+    _dbg(`→ REJECT: semantic name analysis says UI component`);
+    return false;
+  }
+  // Note: nameSignal === 'chart' doesn't auto-accept — we still require at
+  // least one geometric signal to confirm. This prevents a frame that just
+  // happens to be named "chart" from passing without any actual chart shapes.
+
+  // ── Phase 2: Geometric heuristics ──
 
   // If the node has multiple children that are each independently chart sections,
   // it's a multi-chart container (e.g. a row of 3 pie charts), not a single chart.
@@ -305,6 +478,40 @@ export function isChartSection(node: any): boolean {
     return chars > 20;
   }).length;
 
+  _dbg(`nameSignal=${nameSignal} signalA=${JSON.stringify(signalA)} signalB=${signalB} signalC=${signalC} signals=${signalCount} texts=${totalTextCount} longTexts=${longTextCount}`);
+  if (process.env.CHART_DEBUG && signalA.detected) {
+    // Dump what shapes were found
+    const pieE = findAllNodes(node, (n: any) => (n.type === 'ELLIPSE' || n.type === 'ARC') && (n.absoluteBoundingBox ? Math.max(n.absoluteBoundingBox.width, n.absoluteBoundingBox.height) >= 20 : false));
+    const barS = findAllNodes(node, (n: any) => {
+      const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
+      if (!BAR_TYPES.includes(n.type)) return false;
+      const bb = n.absoluteBoundingBox;
+      if (!bb || bb.width < 3 || bb.height < 3) return false;
+      return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
+    });
+    _dbg(`  pieEllipses=${pieE.length} barShapes=${barS.length}`);
+    for (const b of barS.slice(0, 15)) {
+      const bb = b.absoluteBoundingBox;
+      const fill = (b.fills ?? []).find((f: any) => f.type === 'SOLID');
+      const c = fill?.color;
+      const rgb = c ? `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})` : '?';
+      _dbg(`    bar: "${b.name}" type=${b.type} ${bb?.width}x${bb?.height} @(${bb?.x},${bb?.y}) fill=${rgb}`);
+    }
+    if (barS.length > 15) _dbg(`    ... and ${barS.length - 15} more`);
+    // Dump text nodes
+    for (const t of allTextNodes) {
+      _dbg(`    text: "${(t.characters ?? '').slice(0, 40)}" (${(t.characters ?? '').length} chars)`);
+    }
+  }
+
+  // Semantic chart name + any geometric signal → accept with relaxed thresholds.
+  // When the designer explicitly named something "chart"/"graph" and geometry
+  // confirms at least one structural signal, trust the name.
+  if (nameSignal === 'chart' && signalCount >= 1) {
+    _dbg(`→ ACCEPT: semantic name says chart + ${signalCount} geometric signal(s)`);
+    return true;
+  }
+
   // High-confidence single signal: strong pie/donut or bar cluster
   if (signalA.detected && signalA.highConfidence) {
     // But reject if text-heavy (nav/form sections have many TEXT nodes)
@@ -314,24 +521,34 @@ export function isChartSection(node: any): boolean {
     // With 2+ signals: allow up to shapeCount * 5 texts (bars have 2–3 labels each + title).
     // With 1 signal: use stricter shapeCount * 3 threshold.
     const textMultiplier = signalCount >= 2 ? 5 : 3;
-    if (totalTextCount > shapeCount * textMultiplier) return false;
+    if (totalTextCount > shapeCount * textMultiplier) {
+      _dbg(`→ REJECT: highConf signalA but text-heavy (${totalTextCount} > ${shapeCount}*${textMultiplier}=${shapeCount*textMultiplier})`);
+      return false;
+    }
+    _dbg(`→ ACCEPT: highConf signalA`);
     return true;
   }
 
   // Two or more signals
   if (signalCount >= 2) {
     // Reject if section has many long text strings (paragraphs, descriptions)
-    if (longTextCount >= 4) return false;
+    if (longTextCount >= 4) {
+      _dbg(`→ REJECT: 2+ signals but longText≥4`);
+      return false;
+    }
+    _dbg(`→ ACCEPT: 2+ signals`);
     return true;
   }
 
   // Single signal — be conservative
   if (signalCount === 1) {
-    if (longTextCount >= 2) return false;
-    if (totalTextCount > 10) return false;
+    if (longTextCount >= 2) { _dbg(`→ REJECT: 1 signal, longText≥2`); return false; }
+    if (totalTextCount > 10) { _dbg(`→ REJECT: 1 signal, texts>10`); return false; }
+    _dbg(`→ ACCEPT: 1 signal`);
     return true;
   }
 
+  _dbg(`→ REJECT: 0 signals`);
   return false;
 }
 
@@ -3194,6 +3411,7 @@ function groupByProperty(nodes: any[], propFn: (n: any) => number, tolerance: nu
  */
 function findStructuralBarGroups(root: any): ShapeClusterResult {
   const none: ShapeClusterResult = { detected: false, highConfidence: false };
+  const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[structuralBars "${root.name ?? '?'}"] ${msg}`) : () => {};
 
   // ── Strategy 1: Sibling-based ──
   const candidates: any[][] = [];
@@ -3247,8 +3465,17 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
     return withText < group.length * 0.5;
   });
 
+  _dbg(`Strategy1: ${candidates.length} candidate groups, ${validCandidates.length} after text-filter`);
+  for (const group of validCandidates) {
+    for (const n of group) {
+      const bb = n.absoluteBoundingBox;
+      _dbg(`  S1 bar: "${n.name}" type=${n.type} ${bb?.width}x${bb?.height}`);
+    }
+  }
+
   if (validCandidates.length > 0) {
     const best = validCandidates.reduce((a, b) => (a.length >= b.length ? a : b));
+    _dbg(`Strategy1 → detected, count=${best.length}, highConf=${best.length >= 5}`);
     return { detected: true, highConfidence: best.length >= 5, count: best.length };
   }
 
@@ -3282,7 +3509,25 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
     }
   })(root);
 
-  if (barLeaves.length >= MIN_BAR_RECTS) {
+  // Dedup overlapping leaves: if multiple nodes share nearly the same bounding box
+  // (stacked layers of one icon), keep only one representative per position.
+  const dedupedLeaves: any[] = [];
+  for (const leaf of barLeaves) {
+    const bb = leaf.absoluteBoundingBox;
+    if (!bb) continue;
+    const isDuplicate = dedupedLeaves.some((existing: any) => {
+      const ebb = existing.absoluteBoundingBox;
+      return ebb &&
+        Math.abs(bb.x - ebb.x) < POS_TOLERANCE &&
+        Math.abs(bb.y - ebb.y) < POS_TOLERANCE &&
+        Math.abs(bb.width - ebb.width) < SIZE_TOLERANCE &&
+        Math.abs(bb.height - ebb.height) < SIZE_TOLERANCE;
+    });
+    if (!isDuplicate) dedupedLeaves.push(leaf);
+  }
+  _dbg(`Strategy2: deduped ${barLeaves.length} → ${dedupedLeaves.length} leaves`);
+
+  if (dedupedLeaves.length >= MIN_BAR_RECTS) {
     // Helper: check that bar candidates share a common edge (like real chart bars).
     // Vertical bars share a bottom-edge y; horizontal bars share a left-edge x.
     // Scattered UI elements (amounts, buttons) at different positions don't qualify.
@@ -3323,8 +3568,15 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
       }
     };
 
+    _dbg(`Strategy2: ${barLeaves.length} leaf candidates → ${dedupedLeaves.length} after dedup (minBarDim=${minBarDim.toFixed(1)})`);
+    for (const n of dedupedLeaves.slice(0, 20)) {
+      const bb = n.absoluteBoundingBox;
+      _dbg(`  S2 leaf: "${n.name}" type=${n.type} ${bb?.width?.toFixed(1)}x${bb?.height?.toFixed(1)} children=${(n.children ?? []).length}`);
+    }
+    if (dedupedLeaves.length > 20) _dbg(`  ... and ${dedupedLeaves.length - 20} more`);
+
     // Group by similar width (vertical bars)
-    const widthGroups = groupByProperty(barLeaves,
+    const widthGroups = groupByProperty(dedupedLeaves,
       (n: any) => n.absoluteBoundingBox?.width ?? 0, SIZE_TOLERANCE);
     for (const group of widthGroups) {
       if (group.length >= MIN_BAR_RECTS) {
@@ -3333,13 +3585,25 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
         // Filter: if >= 50% of bars contain text, it's UI not chart bars
         const textBarCount = group.filter((n: any) =>
           findAllNodes(n, (c: any) => c.type === 'TEXT').length > 0).length;
-        if (heightRange > 10 && groupIsAligned(group, 'vertical') && textBarCount < group.length * 0.5) {
+        const aligned = groupIsAligned(group, 'vertical');
+        _dbg(`  S2 widthGroup: count=${group.length} heightRange=${heightRange.toFixed(1)} aligned=${aligned} textBars=${textBarCount}/${group.length}`);
+        for (const n of group) {
+          const bb = n.absoluteBoundingBox;
+          _dbg(`    "${n.name}" type=${n.type} ${bb?.width?.toFixed(1)}x${bb?.height?.toFixed(1)} @(${bb?.x?.toFixed(0)},${bb?.y?.toFixed(0)})`);
+        }
+        // Bars must be spatially spread along the x-axis (not overlapping at same position)
+        const xPositions = group.map((n: any) => n.absoluteBoundingBox?.x ?? 0);
+        const xSpread = Math.max(...xPositions) - Math.min(...xPositions);
+        const spreadEnough = xSpread > (rootW > 0 ? rootW * 0.1 : 20);
+        _dbg(`    xSpread=${xSpread.toFixed(1)} spreadEnough=${spreadEnough}`);
+        if (heightRange > 10 && aligned && spreadEnough && textBarCount < group.length * 0.5) {
+          _dbg(`  Strategy2 widthGroup → detected, count=${group.length}`);
           return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }
     }
     // Group by similar height (horizontal bars)
-    const heightGroups = groupByProperty(barLeaves,
+    const heightGroups = groupByProperty(dedupedLeaves,
       (n: any) => n.absoluteBoundingBox?.height ?? 0, SIZE_TOLERANCE);
     for (const group of heightGroups) {
       if (group.length >= MIN_BAR_RECTS) {
@@ -3347,7 +3611,19 @@ function findStructuralBarGroups(root: any): ShapeClusterResult {
         const widthRange = Math.max(...widths) - Math.min(...widths);
         const textBarCount2 = group.filter((n: any) =>
           findAllNodes(n, (c: any) => c.type === 'TEXT').length > 0).length;
-        if (widthRange > 10 && groupIsAligned(group, 'horizontal') && textBarCount2 < group.length * 0.5) {
+        const aligned2 = groupIsAligned(group, 'horizontal');
+        _dbg(`  S2 heightGroup: count=${group.length} widthRange=${widthRange.toFixed(1)} aligned=${aligned2} textBars=${textBarCount2}/${group.length}`);
+        for (const n of group) {
+          const bb = n.absoluteBoundingBox;
+          _dbg(`    "${n.name}" type=${n.type} ${bb?.width?.toFixed(1)}x${bb?.height?.toFixed(1)} @(${bb?.x?.toFixed(0)},${bb?.y?.toFixed(0)})`);
+        }
+        // Bars must be spatially spread along the y-axis (not overlapping at same position)
+        const yPositions = group.map((n: any) => n.absoluteBoundingBox?.y ?? 0);
+        const ySpread = Math.max(...yPositions) - Math.min(...yPositions);
+        const spreadEnough2 = ySpread > (rootH > 0 ? rootH * 0.1 : 20);
+        _dbg(`    ySpread=${ySpread.toFixed(1)} spreadEnough=${spreadEnough2}`);
+        if (widthRange > 10 && aligned2 && spreadEnough2 && textBarCount2 < group.length * 0.5) {
+          _dbg(`  Strategy2 heightGroup → detected, count=${group.length}`);
           return { detected: true, highConfidence: group.length >= 5, count: group.length };
         }
       }

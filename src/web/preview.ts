@@ -320,6 +320,8 @@ export function generatePreviewHTML(
     }
     .preview-error { padding: 1rem; color: #dc2626; font-family: monospace; white-space: pre-wrap; font-size: 13px; }
     .preview-error h3 { margin-bottom: 0.5rem; font-size: 14px; }
+    .ve-hover-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; cursor: pointer !important; }
+    .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
     ${css}
   </style>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -345,6 +347,88 @@ export function generatePreviewHTML(
       if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
       console.error('Babel transpile error:', e);
     }
+  </script>
+  <script>
+    (function() {
+      let lastHovered = null;
+      let selectedEl = null;
+
+      document.addEventListener('mouseover', (e) => {
+        if (!window.parentVisualEditActive) return;
+        if (lastHovered && lastHovered !== selectedEl) {
+          lastHovered.classList.remove('ve-hover-outline');
+        }
+        lastHovered = e.target;
+        if (lastHovered && lastHovered !== selectedEl && lastHovered !== document.body && lastHovered !== document.documentElement) {
+          lastHovered.classList.add('ve-hover-outline');
+        }
+      }, true);
+
+      document.addEventListener('click', (e) => {
+        if (!window.parentVisualEditActive) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (selectedEl) {
+          selectedEl.classList.remove('ve-selected-outline');
+        }
+        selectedEl = e.target;
+        if (!selectedEl || selectedEl === document.body || selectedEl === document.documentElement) return;
+
+        selectedEl.classList.remove('ve-hover-outline');
+        selectedEl.classList.add('ve-selected-outline');
+
+        const style = window.getComputedStyle(selectedEl);
+        const rect = selectedEl.getBoundingClientRect();
+
+        window.parent.postMessage({
+          type: 'elementSelected',
+          tagName: selectedEl.tagName.toLowerCase(),
+          textContent: selectedEl.textContent.trim(),
+          computedStyle: {
+            color: style.color,
+            backgroundColor: style.backgroundColor,
+            fontSize: style.fontSize,
+            fontWeight: style.fontWeight,
+            margin: style.margin,
+            padding: style.padding,
+            textAlign: style.textAlign
+          },
+          rect: {
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height
+          }
+        }, '*');
+      }, true);
+
+      window.addEventListener('message', (e) => {
+        console.log('Iframe received message:', e.data.type, e.data.active);
+        if (e.data.type === 'updateElement') {
+          if (selectedEl) {
+            if (e.data.prop === 'textContent') {
+              selectedEl.textContent = e.data.value;
+            } else {
+              selectedEl.style[e.data.prop] = e.data.value;
+            }
+            const rect = selectedEl.getBoundingClientRect();
+            window.parent.postMessage({ type: 'rectUpdated', rect }, '*');
+          }
+        } else if (e.data.type === 'setVisualEditActive') {
+          window.parentVisualEditActive = e.data.active;
+          console.log('Iframe Visual Edit Active:', window.parentVisualEditActive);
+          if (!e.data.active) {
+            if (lastHovered) lastHovered.classList.remove('ve-hover-outline');
+            if (selectedEl) selectedEl.classList.remove('ve-selected-outline');
+            selectedEl = null;
+          }
+        }
+      });
+
+      // Report ready to parent
+      window.parent.postMessage({ type: 'iframeReady' }, '*');
+    })();
   </script>
 </body>
 </html>`;

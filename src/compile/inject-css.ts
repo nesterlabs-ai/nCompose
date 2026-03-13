@@ -12,23 +12,31 @@ import type { Framework } from '../types/index.js';
 
 /**
  * Inject variant CSS into a compiled framework component.
+ * Prepends a universal box-sizing reset if not already present.
  */
 export function injectCSS(
   frameworkCode: string,
   css: string,
   framework: Framework,
 ): string {
+  // Ensure box-sizing: border-box reset is present — prevents padding
+  // overflow on elements with explicit width + padding.
+  let cssWithReset = css;
+  if (!css.includes('box-sizing')) {
+    cssWithReset = '*, *::before, *::after { box-sizing: border-box; }\n' + css;
+  }
+
   switch (framework) {
     case 'react':
-      return injectReactCSS(frameworkCode, css);
+      return injectReactCSS(frameworkCode, cssWithReset);
     case 'vue':
-      return injectVueCSS(frameworkCode, css);
+      return injectVueCSS(frameworkCode, cssWithReset);
     case 'svelte':
-      return injectSvelteCSS(frameworkCode, css);
+      return injectSvelteCSS(frameworkCode, cssWithReset);
     case 'angular':
-      return injectAngularCSS(frameworkCode, css);
+      return injectAngularCSS(frameworkCode, cssWithReset);
     case 'solid':
-      return injectSolidCSS(frameworkCode, css);
+      return injectSolidCSS(frameworkCode, cssWithReset);
     default:
       return frameworkCode;
   }

@@ -19,13 +19,16 @@ import {
 import {
   collectAssetNodes,
   collectAssetNodesFromAllVariants,
+  collectImageFillNodes,
   exportAssets,
   exportAssetsFromAllVariants,
+  exportImageFills,
   buildAssetMap,
   buildDimensionMap,
 } from './figma/asset-export.js';
 import { extractPageLayoutCSS } from './figma/page-layout.js';
 import { injectCSS } from './compile/inject-css.js';
+import { replaceDesignWidthInCSS } from './compile/cleanup.js';
 import { prependFontImport } from './compile/font-resolver.js';
 import { stitchPageComponent } from './compile/stitch.js';
 import type { SectionOutput } from './compile/stitch.js';
@@ -175,7 +178,7 @@ export function isMultiSectionPage(enhanced: any): boolean {
     (c: any) => c.name && SECTION_PATTERNS.test(c.name),
   );
   // ── Signal 1: name-based ─────────────────────────────────────────────────
-  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template|main|dashboard|create|edit|settings|form/i;
+  const PAGE_NAME_PATTERNS = /page|landing|home|layout|screen|view|template|main|dashboard|create|edit|settings|form|desktop|mobile|tablet/i;
   if (PAGE_NAME_PATTERNS.test(root.name ?? '') && hasSectionLikeChild) {
     return true;
   }
@@ -292,7 +295,7 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
  */
 const MAX_SERIALIZE_DEPTH = 15;
 
-function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column'): any {
+function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column', imageFillMap?: Map<string, string>, parentWidth?: number): any {
   if (!node) return null;
   // Only skip `_` prefixed nodes that are truly meta/utility layers.
   // Many Figma UI kits use `_` prefix for internal component structures
@@ -403,8 +406,48 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
   // not the intended CSS dimension.
   const w = node.absoluteBoundingBox?.width ?? node.size?.x;
   const h = node.absoluteBoundingBox?.height ?? node.size?.y;
-  if (w && !result.widthMode) result.width = `${Math.round(w)}px`;
-  if (h && !result.heightMode) result.height = `${Math.round(h)}px`;
+
+  // TEXT nodes: suppress bounding-box dimensions based on textAutoResize mode.
+  // - WIDTH_AND_HEIGHT (or unset): text sizes itself in both axes → suppress both
+  // - HEIGHT: width is fixed (text wraps), height adjusts → suppress height only
+  // - NONE/TRUNCATE: both explicitly constrained → keep both
+  const isTextNode = node.type === 'TEXT';
+  const textResize = node.style?.textAutoResize;
+  const textSuppressWidth = isTextNode && (!textResize || textResize === 'WIDTH_AND_HEIGHT');
+  const textSuppressHeight = isTextNode && (!textResize || textResize === 'WIDTH_AND_HEIGHT' || textResize === 'HEIGHT');
+
+  // Auto-layout containers with children should not get fixed heights —
+  // their height is determined by content + padding + gap, not a fixed pixel value.
+  const isAutoLayoutContainer = (node.layoutMode && node.layoutMode !== 'NONE') ||
+                                 (node.layout?.mode && node.layout.mode !== 'NONE');
+  const hasChildren = node.children && node.children.length > 0;
+
+  // When flexGrow is set, the flex container determines the main-axis dimension.
+  // Emitting a fixed pixel value alongside flex-grow causes the fixed value to
+  // act as flex-basis, preventing proper flex layout behavior.
+  const flexGrowSuppressWidth = result.flexGrow && parentLayoutDirection === 'row';
+  const flexGrowSuppressHeight = result.flexGrow && parentLayoutDirection === 'column';
+
+  // Root element (depth=0): suppress fixed pixel width for auto-layout containers.
+  // The root should be full-width (100%) not fixed to a canvas width like 1440px.
+  const isRootAutoLayout = depth === 0 && isAutoLayoutContainer;
+
+  // When a child's width matches the parent's width (within 2px), the child is
+  // effectively filling the parent. Emitting the pixel value causes rigid layout.
+  // In column parents, the child stretches horizontally → suppress width.
+  const matchesParentWidth = parentWidth && w && Math.abs(w - parentWidth) < 2 && parentLayoutDirection === 'column';
+
+  if (w && !result.widthMode && !textSuppressWidth && !flexGrowSuppressWidth && !isRootAutoLayout && !matchesParentWidth) {
+    result.width = `${Math.round(w)}px`;
+  }
+
+  if (h && !result.heightMode && !textSuppressHeight && !flexGrowSuppressHeight) {
+    if (isAutoLayoutContainer && hasChildren) {
+      // Don't emit height — let flex layout determine it
+    } else {
+      result.height = `${Math.round(h)}px`;
+    }
+  }
 
   // ── Cross-axis self-alignment (layoutAlign) ──────────────────────────
   // Overrides the parent's counterAxisAlignItems for this specific child.
@@ -476,9 +519,11 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
         if (f.type === 'IMAGE') {
           // Signal to the LLM that this is a background image fill so it can
           // emit the correct CSS (background-image / object-fit rules).
+          const imgAsset = imageFillMap?.get(node.id);
           return {
             type: 'image',
             scaleMode: (f.scaleMode ?? 'FILL').toLowerCase(), // fill / fit / tile / stretch
+            ...(imgAsset ? { assetFile: `./assets/${imgAsset}` } : {}),
           };
         }
         return f.type; // EMOJI, VIDEO, etc.
@@ -669,7 +714,8 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
     : undefined;
 
   if (node.children && Array.isArray(node.children)) {
-    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap, thisLayoutDir)).filter(Boolean);
+    const thisWidth = node.absoluteBoundingBox?.width ?? node.size?.x;
+    const mapped = node.children.map((c: any) => serializeNodeForPrompt(c, depth + 1, assetMap, thisLayoutDir, imageFillMap, thisWidth)).filter(Boolean);
     if (mapped.length > 0) {
       // Deduplicate sibling names: same-named children with different visual
       // properties get unique suffixes so the LLM generates distinct CSS classes.
@@ -1300,7 +1346,8 @@ async function convertSingleComponent(
 
   // Export SVG assets for any icon nodes stripped by Framelink
   onStep?.('Exporting SVG assets...');
-  const iconNodes = collectAssetNodes(enhanced?.nodes?.[0]);
+  const rootNode = enhanced?.nodes?.[0];
+  const iconNodes = collectAssetNodes(rootNode);
   const assets = iconNodes.length > 0
     ? await exportAssets(iconNodes, fileKey, client).catch(() => [])
     : [];
@@ -1308,8 +1355,18 @@ async function convertSingleComponent(
     onStep?.(`Exported ${assets.length} SVG asset(s): ${assets.map((a) => a.filename).join(', ')}`);
   }
 
-  // Detect semantic category for better HTML output
-  const rootNode = enhanced?.nodes?.[0];
+  // Export rendered images for nodes with IMAGE fills (photos, avatars, backgrounds)
+  const imgFillNodes = collectImageFillNodes(rootNode);
+  let imageFillMap = new Map<string, string>();
+  if (imgFillNodes.length > 0) {
+    onStep?.(`Exporting ${imgFillNodes.length} image fill(s)...`);
+    const imgResult = await exportImageFills(imgFillNodes, fileKey, client).catch(() => ({ assets: [], imageFillMap: new Map<string, string>() }));
+    assets.push(...imgResult.assets);
+    imageFillMap = imgResult.imageFillMap;
+    if (imgResult.assets.length > 0) {
+      onStep?.(`Exported ${imgResult.assets.length} image fill(s): ${imgResult.assets.map((a) => a.filename).join(', ')}`);
+    }
+  }
   const semanticHint = rootNode ? buildSemanticHint(rootNode) : null;
   const hintedCategory = semanticHint
     ? (semanticHint.match(/category: \*\*(.+?)\*\*/)?.[1] as ComponentCategory | undefined)
@@ -1328,10 +1385,10 @@ async function convertSingleComponent(
   const pathBAssetMap = buildAssetMap(assets);
   // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
   // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
-  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : null;
+  const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap, undefined, imageFillMap) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
-    : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : enhanced, { lineWidth: 120, noRefs: true });
+    : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap, undefined, imageFillMap) : enhanced, { lineWidth: 120, noRefs: true });
   // Asset info is already embedded in the YAML as type: ICON nodes — no separate hints needed
   const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
 
@@ -1351,10 +1408,11 @@ async function convertSingleComponent(
     ? CATEGORY_HTML_TAGS[pathBCategory] : undefined;
   const expectedTextLiterals = rootNode ? collectExpectedTextsFromNode(rootNode) : [];
 
+  const rootNodeWidth = rootNode?.absoluteBoundingBox?.width ?? rootNode?.dimensions?.width ?? rootNode?.size?.x;
   const parseResult = await generateWithRetry(
     llm, systemPrompt, userPrompt, onAttempt, undefined,
     pathBExpectedTag, pathBCategory !== 'unknown' ? pathBCategory : undefined, expectedTextLiterals,
-    undefined, llmYaml,
+    undefined, llmYaml, rootNodeWidth,
   );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });
@@ -1669,16 +1727,33 @@ async function convertPage(
             })
           : [];
 
+        // Export rendered images for nodes with IMAGE fills (photos, avatars)
+        const sectionImgNodes = collectImageFillNodes(child);
+        let sectionImageFillMap = new Map<string, string>();
+        if (sectionImgNodes.length > 0) {
+          const imgResult = await exportImageFills(sectionImgNodes, fileKey, client).catch(() => ({ assets: [] as AssetEntry[], imageFillMap: new Map<string, string>() }));
+          sectionAssets.push(...imgResult.assets);
+          sectionImageFillMap = imgResult.imageFillMap;
+        }
+
         const hSizing = child.layoutSizing?.horizontal ?? child.layoutSizingHorizontal;
         const vSizing = child.layoutSizing?.vertical ?? child.layoutSizingVertical;
+        const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
+        const pageWidth = rootNode.absoluteBoundingBox?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x;
+        // When a section's width matches the page width, it's effectively "fill"
+        // even if Figma reports it as FIXED sizing.
+        const effectiveHSizing = hSizing === 'FILL' ? 'fill'
+          : hSizing === 'HUG' ? 'hug'
+          : (childWidth && pageWidth && Math.abs(childWidth - pageWidth) < 2) ? 'fill'
+          : 'fixed';
         const sectionCtx: PageSectionContext = {
           ...basePageCtx,
           prevSectionName: i > 0 ? (sections[i - 1]?.name ?? null) : null,
           nextSectionName: i < sections.length - 1 ? (sections[i + 1]?.name ?? null) : null,
-          sectionWidth: child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x ?? undefined,
+          sectionWidth: childWidth ?? undefined,
           sectionHeight: child.absoluteBoundingBox?.height ?? child.dimensions?.height ?? child.size?.y ?? undefined,
           sectionPositioning: child.layoutPositioning === 'ABSOLUTE' ? 'absolute' : 'flex',
-          sectionWidthMode: hSizing === 'FILL' ? 'fill' : hSizing === 'HUG' ? 'hug' : 'fixed',
+          sectionWidthMode: effectiveHSizing as 'fill' | 'hug' | 'fixed',
           sectionHeightMode: vSizing === 'FILL' ? 'fill' : vSizing === 'HUG' ? 'hug' : 'fixed',
           pageLayoutDirection: rootNode.layoutMode === 'HORIZONTAL' ? 'row'
             : rootNode.layoutMode === 'VERTICAL' ? 'column' : 'none',
@@ -1688,7 +1763,7 @@ async function convertPage(
         // Creates an asset-aware serializer that embeds `type: ICON, assetFile` directly
         // in the YAML, giving the LLM structural context to place <img> tags.
         const sectionAssetMap = buildAssetMap(sectionAssets);
-        const assetAwareSerializer = (node: any) => serializeNodeForPrompt(node, 0, sectionAssetMap);
+        const assetAwareSerializer = (node: any) => serializeNodeForPrompt(node, 0, sectionAssetMap, undefined, sectionImageFillMap);
 
         // Asset info is already embedded in the YAML as type: ICON nodes — no separate hints needed
 
@@ -1796,11 +1871,11 @@ async function convertPage(
         while (finalChartNames.has(`${oldName}${suffix}`)) suffix++;
         const newName = `${oldName}${suffix}`;
 
-        // Rename in chart's generated code and CSS
-        chart.reactCode = chart.reactCode.replace(new RegExp(oldName, 'g'), newName);
+        // Rename in chart's generated code and CSS (use word boundaries to avoid partial matches)
+        chart.reactCode = chart.reactCode.replace(new RegExp(`\\b${oldName}\\b`, 'g'), newName);
         const oldBem = oldName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
         const newBem = newName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
-        chart.css = chart.css.replace(new RegExp(oldBem, 'g'), newBem);
+        chart.css = chart.css.replace(new RegExp(`\\b${oldBem}\\b`, 'g'), newBem);
 
         // Update section's chartComponentName (for chart-only sections used by stitch.ts)
         if (section.chartComponentName === oldName) {
@@ -1833,6 +1908,10 @@ async function convertPage(
     layoutResult.css,
     sectionOutputs,
   );
+
+  // Replace hardcoded design-canvas widths (e.g. width: 1440px → width: 100%) in merged CSS
+  const rootNodeWidth = rootNode?.absoluteBoundingBox?.width ?? rootNode?.dimensions?.width ?? rootNode?.size?.x;
+  mergedCSS = replaceDesignWidthInCSS(mergedCSS, rootNodeWidth);
 
   // Step C4: Parse the stitched component through Mitosis
   onStep?.('Parsing stitched page component...');
@@ -1933,13 +2012,45 @@ async function convertPage(
     }
   }
 
-  // Deduplicate assets by nodeId
+  // Deduplicate assets:
+  //  1. By nodeId — same Figma node appearing in multiple sections
+  //  2. By SVG content — different nodes that export identical SVGs share one file
+  //  3. By filename collision — different content, same filename → suffix
   const seenNodeIds = new Set<string>();
-  const dedupedAssets = allAssets.filter((a) => {
-    if (seenNodeIds.has(a.nodeId)) return false;
+  const contentToFilename = new Map<string, string>(); // SVG content hash → filename
+  const seenFilenames = new Map<string, string>(); // filename → content hash
+  const dedupedAssets: typeof allAssets = [];
+
+  for (const a of allAssets) {
+    if (seenNodeIds.has(a.nodeId)) continue;
     seenNodeIds.add(a.nodeId);
-    return true;
-  });
+
+    // Content-based dedup: if identical SVG was already kept, reuse its filename
+    if (a.content) {
+      const existingFilename = contentToFilename.get(a.content);
+      if (existingFilename) {
+        // Reuse the existing file — just remap this node's filename
+        a.filename = existingFilename;
+        dedupedAssets.push(a);
+        continue;
+      }
+    }
+
+    // Filename collision: different content but same filename → suffix
+    if (seenFilenames.has(a.filename)) {
+      const existingContentHash = seenFilenames.get(a.filename)!;
+      if (a.content !== existingContentHash) {
+        const base = a.filename.replace('.svg', '');
+        let counter = 2;
+        while (seenFilenames.has(`${base}-${counter}.svg`)) counter++;
+        a.filename = `${base}-${counter}.svg`;
+      }
+    }
+
+    seenFilenames.set(a.filename, a.content ?? '');
+    if (a.content) contentToFilename.set(a.content, a.filename);
+    dedupedAssets.push(a);
+  }
 
   const fidelityReport = buildFidelityReport({
     rawCode: mitosisSource,

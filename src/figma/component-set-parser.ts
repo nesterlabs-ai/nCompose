@@ -2759,7 +2759,10 @@ function emitDiffRules(
 }
 
 function maybeEmit(lines: string[], selector: string, props: Record<string, string>, fps?: Set<string>): void {
-  const body = Object.entries(props).map(([p, v]) => `  ${p}: ${v};`).join('\n');
+  // Sort entries by key for deterministic fingerprints — same CSS properties
+  // in different insertion order should produce the same fingerprint.
+  const sorted = Object.entries(props).sort(([a], [b]) => a.localeCompare(b));
+  const body = sorted.map(([p, v]) => `  ${p}: ${v};`).join('\n');
   const fp   = `${selector}||${body}`;
   if (fps) { if (fps.has(fp)) return; fps.add(fp); }
   lines.push('', `${selector} {`, body, '}');

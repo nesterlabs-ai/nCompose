@@ -254,7 +254,8 @@ export async function generateSingleComponent(
       representativeProps: extractVisibleProps(node),
       representativeTexts: collectOrderedTexts(node),
     };
-  } catch {
+  } catch (err) {
+    console.error(`  [PATH 1] "${componentName}" error:`, err instanceof Error ? err.message : err);
     return { name: componentName, formRole, html: '', css: '', success: false };
   }
 }
@@ -389,31 +390,37 @@ export async function generateCompoundSection(
     }
   }
 
-  // Generate UI components via LLM (PATH 1 — parallel)
-  const generationPromises = uiComps.map(async (comp) => {
-    const suffix = bemSuffixes.get(comp.variantKey) ?? '';
-    const displayName = comp.variantKey !== comp.name
-      ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
-      : comp.name;
-    onStep?.(`  [PATH 1] Generating "${displayName}" (${comp.formRole})${suffix ? ` → BEM suffix "${suffix}"` : ''}...`);
-    const generated = await generateSingleComponent(
-      comp.representativeNode,
-      comp.formRole,
-      serializeNode,
-      llm,
-      slug,
-      onAttempt,
-      suffix || undefined,
-      templateMode,
-    );
-    componentCache.set(comp.variantKey, generated);
-    onStep?.(
-      `  [PATH 1] "${displayName}" → ${generated.success ? 'OK' : 'FAILED'}`,
-    );
-    return generated;
-  });
+  // Generate UI components via LLM (PATH 1 — concurrency-limited)
+  // Limit concurrency to avoid rate limiting from LLM providers (e.g. DeepSeek 429s).
+  const MAX_CONCURRENCY = 3;
+  const generatedComponents: GeneratedComponent[] = [];
 
-  const generatedComponents = await Promise.all(generationPromises);
+  for (let batch = 0; batch < uiComps.length; batch += MAX_CONCURRENCY) {
+    const batchComps = uiComps.slice(batch, batch + MAX_CONCURRENCY);
+    const batchResults = await Promise.all(batchComps.map(async (comp) => {
+      const suffix = bemSuffixes.get(comp.variantKey) ?? '';
+      const displayName = comp.variantKey !== comp.name
+        ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
+        : comp.name;
+      onStep?.(`  [PATH 1] Generating "${displayName}" (${comp.formRole})${suffix ? ` → BEM suffix "${suffix}"` : ''}...`);
+      const generated = await generateSingleComponent(
+        comp.representativeNode,
+        comp.formRole,
+        serializeNode,
+        llm,
+        slug,
+        onAttempt,
+        suffix || undefined,
+        templateMode,
+      );
+      componentCache.set(comp.variantKey, generated);
+      onStep?.(
+        `  [PATH 1] "${displayName}" → ${generated.success ? 'OK' : 'FAILED'}`,
+      );
+      return generated;
+    }));
+    generatedComponents.push(...batchResults);
+  }
 
   const successCount = generatedComponents.filter((g) => g.success).length;
   onStep?.(
@@ -492,7 +499,8 @@ export async function generateCompoundSection(
       discovery,
       chartComponents,
     };
-  } catch {
+  } catch (err) {
+    console.error(`  [PATH 2] Section "${sectionName}" error:`, err instanceof Error ? err.message : err);
     return {
       rawCode: '',
       css: '',
@@ -1191,6 +1199,9 @@ function estimateOriginalSize(node: any, serializeNode: (n: any) => any): number
 function computeVisualFingerprint(node: any): string {
   const parts: string[] = [];
 
+  // Node type (INSTANCE vs FRAME vs TEXT — affects rendering)
+  if (node.type) parts.push(`type:${node.type}`);
+
   // Dimensions & sizing mode
   if (node.width) parts.push(`w:${node.width}`);
   if (node.height) parts.push(`h:${node.height}`);
@@ -1214,11 +1225,25 @@ function computeVisualFingerprint(node: any): string {
   if (node.borderRadius) parts.push(`br:${node.borderRadius}`);
   if (node.opacity !== undefined) parts.push(`op:${node.opacity}`);
   if (node.effects) parts.push(`e:${JSON.stringify(node.effects)}`);
+  if (node.strokeWeight) parts.push(`sw:${node.strokeWeight}`);
 
   // Positioning
   if (node.position) parts.push(`pos:${node.position}`);
   if (node.left) parts.push(`l:${node.left}`);
   if (node.top) parts.push(`t:${node.top}`);
+
+  // Text content (two "Label" nodes with different text are different)
+  if (node.text) parts.push(`txt:${node.text}`);
+  if (node.characters) parts.push(`chars:${node.characters}`);
+
+  // Children count (a container with 1 child vs 3 children needs different CSS)
+  if (node.children?.length !== undefined) parts.push(`cc:${node.children.length}`);
+
+  // Rotation (rotated arrows are visually different)
+  if (node.rotation) parts.push(`rot:${node.rotation}`);
+
+  // Visibility (hidden elements should not share class with visible ones)
+  if (node.visible === false) parts.push(`vis:false`);
 
   return parts.join('|');
 }

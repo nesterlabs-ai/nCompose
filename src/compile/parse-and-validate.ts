@@ -13,9 +13,10 @@ import { cleanLLMOutput } from './cleanup.js';
  *
  * @param code - Raw LLM output
  * @param expectedRootTag - If provided, auto-fixes root <div> → expected tag during cleanup
+ * @param rootWidth - Optional root node width for max-width injection in CSS
  */
-export function parseMitosisCode(code: string, expectedRootTag?: string): ParseResult {
-  const { jsx: cleaned, css } = cleanLLMOutput(code, expectedRootTag);
+export function parseMitosisCode(code: string, expectedRootTag?: string, rootWidth?: number): ParseResult {
+  const { jsx: cleaned, css } = cleanLLMOutput(code, expectedRootTag, rootWidth);
 
   try {
     const component = parseJsx(cleaned, { typescript: true });

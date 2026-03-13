@@ -230,10 +230,10 @@ export function isAssetNode(node: any): boolean {
  */
 export function collectAssetNodes(
   node: any,
-  result: { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] = [],
+  result: { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] = [],
   parentDimensions?: { width: number; height: number },
   parentName?: string,
-): { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] {
+): { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] {
   if (!node) return result;
 
   // Extract dimensions from this node (could be in layout.dimensions or node.dimensions)
@@ -266,10 +266,12 @@ export function collectAssetNodes(
     if (node.strokes && node.strokes.length > 0) figmaStyles.strokes = node.strokes;
     if (node.strokeWeight !== undefined) figmaStyles.strokeWeight = node.strokeWeight;
     if (node.opacity !== undefined && node.opacity !== 1) figmaStyles.opacity = node.opacity;
+    if (node.effects && node.effects.length > 0) figmaStyles.effects = node.effects;
 
     result.push({
       id: node.id,
       name: iconName, // Use inner child name (Star, Spinner) instead of frame name (Left Icon)
+      type: node.type, // Preserve node type for dedup key
       dimensions: nodeDimensions,
       parentName: useParentName || (node.name ?? 'vector'), // Keep frame name as parent (Left Icon, Right Icon)
       figmaStyles: Object.keys(figmaStyles).length > 0 ? figmaStyles : undefined,
@@ -290,6 +292,42 @@ export function collectAssetNodes(
         const childParentName = node.name && !node.name.includes('=') ? node.name : parentName;
         collectAssetNodes(child, result, nodeDimensions, childParentName);
       }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Recursively collects nodes that have IMAGE fills (photos, avatars, backgrounds).
+ * These are NOT icons — they are raster images embedded via Figma's image fill.
+ * They need to be exported as rendered PNGs/SVGs and referenced via CSS background-image.
+ *
+ * Skips nodes that are already detected as asset/icon nodes (handled separately).
+ */
+export function collectImageFillNodes(
+  node: any,
+  result: { id: string; name: string; dimensions?: { width: number; height: number } }[] = [],
+): { id: string; name: string; dimensions?: { width: number; height: number } }[] {
+  if (!node || node.visible === false) return result;
+
+  // Check if this node has an IMAGE fill
+  const hasImgFill = Array.isArray(node.fills) &&
+    node.fills.some((f: any) => f.type === 'IMAGE' && f.visible !== false);
+
+  if (hasImgFill && node.id && !isAssetNode(node)) {
+    const dims = getNodeDimensions(node);
+    result.push({
+      id: node.id,
+      name: node.name ?? 'image',
+      dimensions: dims,
+    });
+  }
+
+  // Recurse into children
+  if (node.children) {
+    for (const child of node.children) {
+      collectImageFillNodes(child, result);
     }
   }
 
@@ -333,27 +371,53 @@ export function collectAssetNodesFromAllVariants(
  */
 function extractSVGPathSignature(svgContent: string): string {
   // Extract all path data, ignoring fill/stroke colors
-  const paths: string[] = [];
+  const parts: string[] = [];
 
   // Match <path d="..." />
-  const pathMatches = svgContent.matchAll(/<path[^>]+d="([^"]+)"/g);
-  for (const match of pathMatches) {
-    paths.push(match[1]);
+  for (const match of svgContent.matchAll(/<path[^>]+d="([^"]+)"/g)) {
+    parts.push(match[1]);
   }
 
-  // Match other shape elements (circle, rect, polygon, etc.)
-  const circleMatches = svgContent.matchAll(/<circle[^>]+cx="([^"]+)"[^>]+cy="([^"]+)"[^>]+r="([^"]+)"/g);
-  for (const match of circleMatches) {
-    paths.push(`circle:${match[1]},${match[2]},${match[3]}`);
+  // Helper: extract a named attribute from an element tag (order-independent)
+  const attr = (tag: string, name: string): string =>
+    tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? '';
+
+  // <circle cx cy r> — attribute-order independent
+  for (const match of svgContent.matchAll(/<circle\b([^>]*)\/?\s*>/g)) {
+    const t = match[1];
+    parts.push(`circle:${attr(t, 'cx')},${attr(t, 'cy')},${attr(t, 'r')}`);
   }
 
-  const rectMatches = svgContent.matchAll(/<rect[^>]+x="([^"]*)"[^>]+y="([^"]*)"[^>]+width="([^"]+)"[^>]+height="([^"]+)"/g);
-  for (const match of rectMatches) {
-    paths.push(`rect:${match[1]},${match[2]},${match[3]},${match[4]}`);
+  // <ellipse cx cy rx ry>
+  for (const match of svgContent.matchAll(/<ellipse\b([^>]*)\/?\s*>/g)) {
+    const t = match[1];
+    parts.push(`ellipse:${attr(t, 'cx')},${attr(t, 'cy')},${attr(t, 'rx')},${attr(t, 'ry')}`);
   }
 
-  // Create signature by joining all path data
-  return paths.join('|');
+  // <rect x y width height> — attribute-order independent
+  for (const match of svgContent.matchAll(/<rect\b([^>]*)\/?\s*>/g)) {
+    const t = match[1];
+    parts.push(`rect:${attr(t, 'x')},${attr(t, 'y')},${attr(t, 'width')},${attr(t, 'height')}`);
+  }
+
+  // <line x1 y1 x2 y2>
+  for (const match of svgContent.matchAll(/<line\b([^>]*)\/?\s*>/g)) {
+    const t = match[1];
+    parts.push(`line:${attr(t, 'x1')},${attr(t, 'y1')},${attr(t, 'x2')},${attr(t, 'y2')}`);
+  }
+
+  // <polygon points="...">
+  for (const match of svgContent.matchAll(/<polygon\b[^>]+points="([^"]+)"/g)) {
+    parts.push(`polygon:${match[1]}`);
+  }
+
+  // <polyline points="...">
+  for (const match of svgContent.matchAll(/<polyline\b[^>]+points="([^"]+)"/g)) {
+    parts.push(`polyline:${match[1]}`);
+  }
+
+  // Create signature by joining all shape data
+  return parts.join('|');
 }
 
 /**
@@ -400,7 +464,7 @@ export async function exportAssets(
   // times inside repeated component instances. We only need one representative
   // per unique icon to export, then map all duplicates to the same file.
   // Include color in the key because same-named icons can have different colors.
-  const dedupeKey = (n: { name: string; dimensions?: { width: number; height: number }; figmaStyles?: any }) => {
+  const dedupeKey = (n: { name: string; dimensions?: { width: number; height: number }; figmaStyles?: any; type?: string }) => {
     const w = n.dimensions?.width ?? 0;
     const h = n.dimensions?.height ?? 0;
     // Include fill/stroke colors so different-colored icons stay separate
@@ -411,7 +475,13 @@ export async function exportAssets(
     if (n.figmaStyles?.strokes) {
       colorKey += JSON.stringify(n.figmaStyles.strokes);
     }
-    return `${n.name}|${w}x${h}|${colorKey}`;
+    // Include stroke weight, opacity, effects, and node type to prevent
+    // collapsing icons that differ only in these properties
+    const sw = n.figmaStyles?.strokeWeight ?? '';
+    const op = n.figmaStyles?.opacity ?? '';
+    const fx = n.figmaStyles?.effects ? JSON.stringify(n.figmaStyles.effects) : '';
+    const nodeType = (n as any).type ?? '';
+    return `${n.name}|${w}x${h}|${colorKey}|sw:${sw}|op:${op}|fx:${fx}|t:${nodeType}`;
   };
   const uniqueMap = new Map<string, typeof nodes[0]>();       // key → representative node
   const dupeMapping = new Map<string, string>();              // duplicate nodeId → representative nodeId
@@ -545,6 +615,61 @@ export async function exportAssets(
   }
 
   return entries;
+}
+
+/**
+ * Exports rendered images for nodes with IMAGE fills (photos, avatars, backgrounds).
+ * Uses Figma's image rendering API to get SVG exports of these nodes, which embed
+ * the raster image as a base64 data URI inside an `<image>` element.
+ *
+ * Returns a map of nodeId → filename for use in serializeNodeForPrompt().
+ */
+export async function exportImageFills(
+  nodes: { id: string; name: string; dimensions?: { width: number; height: number } }[],
+  fileKey: string,
+  client: FigmaClient,
+): Promise<{ assets: AssetEntry[]; imageFillMap: Map<string, string> }> {
+  if (nodes.length === 0) return { assets: [], imageFillMap: new Map() };
+
+  const nodeIds = nodes.map((n) => n.id);
+  const imageUrls = await client.getImages(fileKey, nodeIds, 'svg', 2);
+
+  const assets: AssetEntry[] = [];
+  const imageFillMap = new Map<string, string>();
+  const usedNames = new Map<string, number>();
+
+  for (const node of nodes) {
+    const url = imageUrls[node.id];
+    if (!url) continue;
+
+    // Generate unique filename
+    let baseName = toKebabCase(node.name) || 'image';
+    const count = (usedNames.get(baseName) ?? 0) + 1;
+    usedNames.set(baseName, count);
+    if (count > 1) baseName = `${baseName}-${count}`;
+    const filename = `${baseName}.svg`;
+
+    // Download SVG content
+    let content: string | undefined;
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) content = await resp.text();
+    } catch { /* download failed */ }
+
+    if (content) {
+      assets.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        filename,
+        url,
+        content,
+        dimensions: node.dimensions,
+      });
+      imageFillMap.set(node.id, filename);
+    }
+  }
+
+  return { assets, imageFillMap };
 }
 
 /**
@@ -692,14 +817,12 @@ export async function exportAssetsFromAllVariants(
   for (const entry of entries) {
     if (!entry.content) continue; // Skip if download failed
 
-    // Group by: position + SVG path shape only.
-    // Color is no longer part of the key because makeColorInheritable() has
-    // already replaced all hardcoded colours with currentColor — same-shape
-    // icons from different style variants are now visually identical SVGs and
-    // should be a single file whose colour is driven by CSS `color`.
+    // Group by: position + SVG path shape + color.
+    // Same shape + same color = one file; same shape + different color = separate files.
     const position = entry.parentName || 'icon';
     const contentSignature = extractSVGPathSignature(entry.content);
-    const groupKey = `${position}::${contentSignature}`;
+    const colorSignature = extractSVGColorSignature(entry.content);
+    const groupKey = `${position}::${contentSignature}::${colorSignature}`;
 
     // Track shape group (position + shape WITHOUT color) for color-variant grouping
     entry.shapeGroupId = `${position}::${contentSignature}`;

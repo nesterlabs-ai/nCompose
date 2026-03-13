@@ -35,7 +35,8 @@ export default function HeroSection(props) {
 3. **Include ALL spacing** — layout.gap, layout.padding, width, height from the YAML.
 4. **Include ALL visual effects** — shadows, backdrop-filter, filter, opacity, border-radius, blend modes.
 5. **NEVER invent colors or sizes** — only use values from the YAML. If a value is missing, omit it rather than guessing.
-6. **Image fills** — if a fill has `type: image`, use CSS `background-image` with `background-size: cover` (for scaleMode: fill) or `background-size: contain` (for scaleMode: fit).
+6. **Image fills** — `fills: [{ type: image, scaleMode: fill, assetFile: "./assets/photo.svg" }]` → `background-image: url('./assets/photo.svg'); background-size: cover;` (use `contain` for scaleMode: fit). If no `assetFile` is present, use `background-color: #ccc;` as a placeholder.
+7. **NEVER invent `margin-bottom` or `margin-top`.** Only emit margins when the YAML explicitly contains a `marginBottom` or `margin` value. A common LLM error is setting `margin-bottom` equal to `font-size` — this is ALWAYS incorrect.
 
 ### Content Fidelity — No Hallucinated Text
 

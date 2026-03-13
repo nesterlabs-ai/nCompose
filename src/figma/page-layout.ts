@@ -5,6 +5,8 @@
  * and its children. Outputs BEM CSS for the page wrapper and section slots.
  */
 
+import { toKebabCase } from './component-set-parser.js';
+
 export interface SectionInfo {
   /** Kebab-case BEM element name, e.g. "hero" */
   name: string;
@@ -39,26 +41,17 @@ function inferSemanticTag(name: string, index?: number, totalChildren?: number):
   if (/^nav/i.test(lower)) {
     return 'nav';
   }
-  // Position-based fallback: first child → header, last child → footer
+  // Position-based fallback: first child → header
+  // Don't auto-assign footer based on position alone — "main" content
+  // is often the last section. Only use 'footer' when the name explicitly
+  // matches (handled above).
   if (index !== undefined && totalChildren !== undefined) {
     if (index === 0) return 'header';
-    if (index === totalChildren - 1) return 'footer';
   }
   return 'section';
 }
 
-/**
- * Convert a Figma node name to a kebab-case CSS class segment.
- */
-function toKebab(name: string): string {
-  return name
-    .replace(/[^a-zA-Z0-9\s-_]/g, '')       // strip unsafe chars
-    .replace(/([a-z])([A-Z])/g, '$1-$2')     // camelCase → kebab
-    .replace(/[\s_]+/g, '-')                  // spaces/underscores → hyphens
-    .replace(/-+/g, '-')                      // collapse multiple hyphens
-    .replace(/^-|-$/g, '')                    // trim leading/trailing hyphens
-    .toLowerCase();
-}
+// toKebabCase imported from component-set-parser.ts for consistency
 
 /**
  * Extract a background-color CSS declaration from Figma fills.
@@ -162,7 +155,7 @@ function resolveSectionNames(children: any[]): string[] {
  * @param children - The direct children of rootNode
  */
 export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayoutResult {
-  const pageName = toKebab(rootNode.name || 'page') || 'page';
+  const pageName = toKebabCase(rootNode.name || 'page') || 'page';
 
   // Root dimensions
   const rootBounds = rootNode.absoluteBoundingBox;
@@ -229,7 +222,7 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       if (child.visible === false) continue;
 
       const rawName = child.name || `section-${sections.length + 1}`;
-      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebabCase(rawName) || `section-${sections.length + 1}`;
 
       // Deduplicate: "content" + "content" → "content", "content-2"
       const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
@@ -269,8 +262,14 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
         css += `  width: fit-content;\n`;
       } else {
         const childWidth = child.absoluteBoundingBox?.width ?? child.dimensions?.width ?? child.size?.x;
-        if (childWidth) css += `  width: ${childWidth}px;\n`;
-        else css += `  width: 100%;\n`;
+        // If the child is the same width as its parent, it's effectively "fill" — use 100%
+        if (childWidth && width && Math.abs(childWidth - width) < 2) {
+          css += `  width: 100%;\n`;
+        } else if (childWidth) {
+          css += `  width: ${childWidth}px;\n`;
+        } else {
+          css += `  width: 100%;\n`;
+        }
       }
 
       const verticalSizing = child.layoutSizingVertical ?? child.layoutSizing?.vertical;
@@ -306,7 +305,7 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       if (child.visible === false) continue;
 
       const rawName = child.name || `section-${sections.length + 1}`;
-      let kebabName = toKebab(rawName) || `section-${sections.length + 1}`;
+      let kebabName = toKebabCase(rawName) || `section-${sections.length + 1}`;
 
       // Deduplicate: "content" + "content" → "content", "content-2"
       const nameCount = (usedNames.get(kebabName) ?? 0) + 1;
@@ -331,7 +330,12 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
       } else {
         // No bounding box — fallback to full-width flow
         const childWidth = child.dimensions?.width ?? child.size?.x;
-        css += childWidth ? `  width: ${childWidth}px;\n` : `  width: 100%;\n`;
+        // If the child is the same width as parent, use 100% instead of px
+        if (childWidth && width && Math.abs(childWidth - width) < 2) {
+          css += `  width: 100%;\n`;
+        } else {
+          css += childWidth ? `  width: ${childWidth}px;\n` : `  width: 100%;\n`;
+        }
       }
       css += '}\n';
       sectionCSS += css;

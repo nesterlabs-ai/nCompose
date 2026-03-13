@@ -43,6 +43,8 @@ export interface ExtractedStyle {
   iconColor?: string;
   /** Component structure tree extracted from Figma (e.g. "Input[border,bg,rounded] > {MagnifyingGlass(icon), Value(text)}") */
   structure?: string;
+  /** Per-text-node typography info (name, fontSize, fontWeight, color) */
+  textStyles?: Array<{ name: string; fontSize?: number; fontWeight?: number; color?: string }>;
 }
 
 export interface VariantStyles {
@@ -88,12 +90,8 @@ function extractStroke(node: any): { color?: string; width?: number } {
   };
 }
 
-function extractShadow(node: any): string | undefined {
-  const effects = node?.effects;
-  if (!Array.isArray(effects)) return undefined;
-  const shadow = effects.find((e: any) =>
-    (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW') && e.visible !== false
-  );
+/** Format a single shadow effect object into a CSS-like string */
+function formatShadowEffect(shadow: any): string | undefined {
   if (!shadow) return undefined;
   const color = shadow.color ? rgbaToHex(shadow.color) : '#000000';
   const x = shadow.offset?.x ?? 0;
@@ -102,6 +100,15 @@ function extractShadow(node: any): string | undefined {
   const spread = shadow.spread ?? 0;
   const inset = shadow.type === 'INNER_SHADOW' ? 'inset ' : '';
   return `${inset}${x}px ${y}px ${blur}px ${spread}px ${color}`;
+}
+
+function extractShadow(node: any): string | undefined {
+  const effects = node?.effects;
+  if (!Array.isArray(effects)) return undefined;
+  const shadow = effects.find((e: any) =>
+    (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW') && e.visible !== false
+  );
+  return formatShadowEffect(shadow);
 }
 
 // ── Padding helpers (handles both raw and enhanced formats) ───────────
@@ -276,10 +283,11 @@ function getDeepVectorColor(node: any): string | undefined {
 
 /**
  * Extract a human-readable component structure tree from a Figma variant node.
- * This tells the LLM how the component is laid out (what's inside what).
+ * Includes ACTUAL VALUES (colors, sizes, gaps, padding, radius) so the LLM
+ * can replicate the design exactly without guessing.
  */
 function extractStructureTree(node: any, depth: number = 0): string {
-  if (!node || depth > 4) return '';
+  if (!node || depth > 6) return '';
 
   const children = node.children;
   if (!Array.isArray(children) || children.length === 0) return '';
@@ -314,26 +322,113 @@ function classifyChildType(node: any): string {
   return node.type?.toLowerCase() ?? 'unknown';
 }
 
+/**
+ * Extract actual Figma values for a node — not just trait labels but real numbers and colors.
+ * This is what the LLM reads to build the exact Tailwind classes.
+ */
 function getNodeTraits(node: any): string[] {
   const traits: string[] = [];
-  // Has visible border?
-  if (Array.isArray(node.strokes) && node.strokes.some((s: any) => s.visible !== false && s.type === 'SOLID')) {
-    traits.push('border');
-  }
-  // Has visible fill/background?
+
+  // Dimensions
+  const dim = getNodeDimensions(node);
+  if (dim.width && dim.height) traits.push(`${Math.round(dim.width)}x${Math.round(dim.height)}`);
+
+  // Background fill with actual color + opacity
   const fills = node.fills ?? node.background;
-  if (Array.isArray(fills) && fills.some((f: any) => f.visible !== false && f.type === 'SOLID')) {
-    traits.push('bg');
+  if (Array.isArray(fills)) {
+    for (const f of fills) {
+      if (f.visible !== false && f.type === 'SOLID' && f.color) {
+        const hex = rgbaToHex(f.color);
+        const opacity = f.opacity !== undefined && f.opacity < 1 ? `(${f.opacity})` : '';
+        if (hex) traits.push(`bg:${hex}${opacity}`);
+      }
+    }
   }
-  // Has corner radius?
-  if (node.cornerRadius && node.cornerRadius > 0) traits.push('rounded');
-  // Has padding?
-  if (node.paddingTop || node.paddingLeft || (node.padding && (node.padding.top || node.padding.left))) {
-    traits.push('padding');
+
+  // Border stroke with actual color
+  if (Array.isArray(node.strokes)) {
+    for (const s of node.strokes) {
+      if (s.visible !== false && s.type === 'SOLID' && s.color) {
+        const hex = rgbaToHex(s.color);
+        const w = node.strokeWeight ?? 1;
+        if (hex) traits.push(`border:${w}px ${hex}`);
+      }
+    }
   }
-  // Layout direction
+
+  // Corner radius with actual value
+  if (node.cornerRadius && node.cornerRadius > 0) traits.push(`radius:${node.cornerRadius}px`);
+
+  // Padding with actual values
+  const pad = getPadding(node);
+  if (pad.top || pad.left || pad.right || pad.bottom) {
+    traits.push(`pad:${pad.top ?? 0}/${pad.right ?? 0}/${pad.bottom ?? 0}/${pad.left ?? 0}`);
+  }
+
+  // Gap with actual value
+  if (node.itemSpacing !== undefined && node.itemSpacing > 0) traits.push(`gap:${node.itemSpacing}px`);
+
+  // Layout direction + alignment (from Figma auto-layout)
   if (node.layoutMode === 'HORIZONTAL') traits.push('flex-row');
   else if (node.layoutMode === 'VERTICAL') traits.push('flex-col');
+
+  // Cross-axis alignment: counterAxisAlignItems
+  if (node.counterAxisAlignItems === 'CENTER') traits.push('items-center');
+  else if (node.counterAxisAlignItems === 'MAX') traits.push('items-end');
+  else if (node.counterAxisAlignItems === 'MIN') traits.push('items-start');
+
+  // Main-axis alignment: primaryAxisAlignItems
+  if (node.primaryAxisAlignItems === 'CENTER') traits.push('justify-center');
+  else if (node.primaryAxisAlignItems === 'MAX') traits.push('justify-end');
+  else if (node.primaryAxisAlignItems === 'MIN') traits.push('justify-start');
+  else if (node.primaryAxisAlignItems === 'SPACE_BETWEEN') traits.push('justify-between');
+
+  // Self alignment within parent
+  if (node.layoutAlign === 'STRETCH') traits.push('self-stretch');
+  else if (node.layoutAlign === 'CENTER') traits.push('self-center');
+  else if (node.layoutAlign === 'MIN') traits.push('self-start');
+  else if (node.layoutAlign === 'MAX') traits.push('self-end');
+
+  // Text alignment from Figma
+  if (node.type === 'TEXT') {
+    const textAlign = node.style?.textAlignHorizontal ?? node.textAlignHorizontal;
+    if (textAlign === 'CENTER') traits.push('text-center');
+    else if (textAlign === 'RIGHT') traits.push('text-right');
+  }
+
+  // Shadow with actual values
+  if (Array.isArray(node.effects)) {
+    for (const e of node.effects) {
+      if (e.visible !== false && (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW')) {
+        const shadowStr = formatShadowEffect(e);
+        if (shadowStr) traits.push(`shadow:${shadowStr}`);
+      }
+    }
+  }
+
+  // Opacity
+  if (node.opacity !== undefined && node.opacity < 1) traits.push(`opacity:${node.opacity}`);
+
+  // TEXT node: include font details and color
+  if (node.type === 'TEXT') {
+    const style = node.style ?? {};
+    const chars = (node.characters ?? '').slice(0, 40);
+    if (chars) traits.push(`"${chars}"`);
+    if (style.fontSize) traits.push(`${style.fontSize}px`);
+    if (style.fontWeight) traits.push(`weight:${style.fontWeight}`);
+    if (style.fontFamily) traits.push(`font:${style.fontFamily}`);
+    const textColor = extractSolidColor(node.fills);
+    if (textColor) traits.push(`color:${textColor}`);
+  }
+
+  // VECTOR node: include stroke color (icon color)
+  if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') {
+    const strokeColor = extractSolidColor(node.strokes);
+    if (strokeColor) traits.push(`stroke:${strokeColor}`);
+    const fillColor = extractSolidColor(node.fills);
+    if (fillColor) traits.push(`fill:${fillColor}`);
+  }
+
   return traits;
 }
 
@@ -409,6 +504,22 @@ export function extractNodeStyle(node: any): ExtractedStyle {
 
   // Extract icon color from INSTANCE/VECTOR children
   result.iconColor = extractIconColor(node);
+
+  // Extract per-text-node typography (all TEXT nodes with name, fontSize, fontWeight, color)
+  const textStyles: Array<{ name: string; fontSize?: number; fontWeight?: number; color?: string }> = [];
+  (function walkTexts(n: any) {
+    if (!n) return;
+    if (n.type === 'TEXT' && n.characters?.trim()) {
+      textStyles.push({
+        name: n.name || n.characters.trim().slice(0, 20),
+        fontSize: n.style?.fontSize ?? n.fontSize,
+        fontWeight: n.style?.fontWeight ?? n.fontWeight,
+        color: extractSolidColor(n.fills),
+      });
+    }
+    if (Array.isArray(n.children)) for (const c of n.children) walkTexts(c);
+  })(node);
+  if (textStyles.length > 1) result.textStyles = textStyles;
 
   // Extract component structure tree
   const structure = extractStructureTree(node);
@@ -586,6 +697,27 @@ function fmtStyle(s: ExtractedStyle): string {
   if (s.placeholderColor) p.push(`  placeholder-color: ${s.placeholderColor}`);
   if (s.errorColor) p.push(`  error-color: ${s.errorColor}`);
   if (s.iconColor) p.push(`  icon-color: ${s.iconColor}`);
-  if (s.structure) p.push(`  structure: ${s.structure}`);
+  // Per-text-node typography
+  if (s.textStyles && s.textStyles.length > 0) {
+    p.push(`  text-elements:`);
+    for (const ts of s.textStyles) {
+      const parts = [`    - "${ts.name}"`];
+      if (ts.fontSize) parts.push(`${ts.fontSize}px`);
+      if (ts.fontWeight) parts.push(`weight ${ts.fontWeight}`);
+      if (ts.color) parts.push(ts.color);
+      p.push(parts.join(' '));
+    }
+  }
+  // Full structure tree with actual values — this is the source of truth
+  if (s.structure) {
+    p.push('');
+    p.push('  COMPONENT TREE (use these exact values):');
+    // Format the structure tree with indentation for readability
+    const formatted = s.structure
+      .replace(/> \{/g, '>\n    ')
+      .replace(/\}, /g, '\n    ')
+      .replace(/\}$/g, '');
+    p.push(`    ${formatted}`);
+  }
   return p.join('\n');
 }

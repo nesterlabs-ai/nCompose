@@ -13,6 +13,9 @@ const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   search: 'input',
   chip: 'button',
   statusIndicator: 'badge',
+  toast: 'toast',
+  dialog: 'dialog',
+  modal: 'dialog',
 };
 
 /** Also map ComponentCategory values that differ from formRole */
@@ -26,6 +29,9 @@ const CATEGORY_TO_SHADCN: Record<string, string> = {
   tag: 'badge',
   badge: 'badge',
   'status-indicator': 'badge',
+  toast: 'toast',
+  dialog: 'dialog',
+  modal: 'dialog',
 };
 
 const SUPPORTED = new Set([

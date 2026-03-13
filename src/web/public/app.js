@@ -838,10 +838,32 @@ function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
   const sizeValues = sizeAxes.length > 0 ? sizeAxes[0].values : ['Default'];
   const variantValues = variantAxes.length > 0 ? variantAxes[0].values : ['Default'];
   const variantAxisName = variantAxes.length > 0 ? variantAxes[0].name : null;
-  // Determine the actual prop name for the variant axis (e.g. "color", "variant", "style" → "variant")
-  const variantPropName = variantAxisName
-    ? (/^style$|^type$/i.test(variantAxisName) ? 'variant' : variantAxisName.charAt(0).toLowerCase() + variantAxisName.slice(1))
-    : 'variant';
+
+  // Parse actual CVA key names from the generated shadcn source to use the exact prop names
+  // the LLM chose (instead of guessing from Figma axis names)
+  const cvaKeys = {};
+  if (currentUpdatedShadcnSource) {
+    const cvaMatch = currentUpdatedShadcnSource.match(/variants\s*:\s*\{([\s\S]*?)\n\s*\}/);
+    if (cvaMatch) {
+      const variantBlock = cvaMatch[1];
+      const keyMatches = variantBlock.matchAll(/^\s*(\w+)\s*:/gm);
+      for (const m of keyMatches) {
+        cvaKeys[m[1]] = true;
+      }
+    }
+  }
+
+  // Use the actual CVA key for variant prop — fall back to Figma axis name if not found
+  let variantPropName = 'variant';
+  if (cvaKeys['variant']) {
+    variantPropName = 'variant';
+  } else if (variantAxisName) {
+    const camel = variantAxisName.charAt(0).toLowerCase() + variantAxisName.slice(1);
+    variantPropName = cvaKeys[camel] ? camel : (Object.keys(cvaKeys).find(k => k !== 'size' && k !== 'state') || camel);
+  }
+
+  const sizePropName = 'size';
+  const statePropName = 'state';
 
   // Build set of valid Figma variant combos for filtering
   // Format: sorted lowercase values joined by "|"
@@ -919,13 +941,14 @@ function App() {
             <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#333', marginBottom: '12px', textTransform: 'capitalize' }}>
               {variant}
             </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
               {combos.map((c, idx) => (
-                <div key={idx} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                <div key={idx} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', flexShrink: 0 }}>
                   <${componentName}
                     ${variantPropName}={normalizeName(c.variant)}
-                    size={normalizeName(c.size)}
-                    state={normalizeName(c.state)}
+                    ${sizePropName}={normalizeName(c.size)}
+                    ${statePropName}={normalizeName(c.state)}
+                    onClose={() => {}}
                   />
                   <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{c.state} / {c.size}</div>
                 </div>

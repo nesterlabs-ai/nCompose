@@ -949,6 +949,8 @@ function App() {
                     ${sizePropName}={normalizeName(c.size)}
                     ${statePropName}={normalizeName(c.state)}
                     onClose={() => {}}
+                    checked={normalizeName(c.state) === 'checked' || normalizeName(c.state) === 'selected' || normalizeName(c.state) === 'on'}
+                    onCheckedChange={() => {}}
                   />
                   <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{c.state} / {c.size}</div>
                 </div>

@@ -329,9 +329,19 @@ function classifyChildType(node: any): string {
 function getNodeTraits(node: any): string[] {
   const traits: string[] = [];
 
-  // Dimensions
+  // Dimensions — only emit for nodes that need fixed sizes (icons, images, root containers)
+  // Skip for TEXT nodes and auto-layout FRAMEs where dimensions are just bounding boxes
   const dim = getNodeDimensions(node);
-  if (dim.width && dim.height) traits.push(`${Math.round(dim.width)}x${Math.round(dim.height)}`);
+  if (dim.width && dim.height) {
+    const isText = node.type === 'TEXT';
+    const isAutoLayoutChild = node.layoutAlign === 'STRETCH' || node.layoutGrow === 1;
+    const isSmallFixed = dim.width <= 48 && dim.height <= 48; // icons, avatars, toggle tracks
+    const isVector = node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION' || node.type === 'ELLIPSE';
+
+    if (!isText && (isSmallFixed || isVector || !isAutoLayoutChild)) {
+      traits.push(`${Math.round(dim.width)}px×${Math.round(dim.height)}px`);
+    }
+  }
 
   // Background fill with actual color + opacity
   const fills = node.fills ?? node.background;
@@ -362,7 +372,7 @@ function getNodeTraits(node: any): string[] {
   // Padding with actual values
   const pad = getPadding(node);
   if (pad.top || pad.left || pad.right || pad.bottom) {
-    traits.push(`pad:${pad.top ?? 0}/${pad.right ?? 0}/${pad.bottom ?? 0}/${pad.left ?? 0}`);
+    traits.push(`pad:${pad.top ?? 0}px/${pad.right ?? 0}px/${pad.bottom ?? 0}px/${pad.left ?? 0}px`);
   }
 
   // Gap with actual value

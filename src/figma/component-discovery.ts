@@ -22,7 +22,7 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
   { pattern: /search\s*bar|search\s*field|search\s*input/i, formRole: 'search' },
   { pattern: /text\s*area|text\s*editor/i, formRole: 'textarea' },
   { pattern: /checkbox/i, formRole: 'checkbox' },
-  { pattern: /radio\s*button|radio\s*group/i, formRole: 'radio' },
+  { pattern: /radio\s*button|radio\s*group|radio\b/i, formRole: 'radio' },
   { pattern: /toggle|switch/i, formRole: 'toggle' },
   { pattern: /^button\b|btn\b|cta\b/i, formRole: 'button' },
   { pattern: /button\s*icon|icon\s*button/i, formRole: 'iconButton' },

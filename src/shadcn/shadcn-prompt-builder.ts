@@ -63,6 +63,7 @@ Your task: Take a base shadcn component source and customize it with design data
    - VECTOR nodes show: \`stroke:#hex\` — this is the icon color, use it directly
    - **Replicate this exact nesting in your JSX output.** Match every container, gap, padding, and color.
    - **Alignment is in the tree**: \`items-center\`, \`justify-center\`, \`items-end\`, \`self-stretch\`, \`text-center\` etc. come directly from Figma layout data. Apply them exactly as shown.
+   - **Dimensions are bounding boxes, NOT fixed sizes**: The \`WxH\` values in the tree are Figma's measured bounding box. Do NOT hardcode them as \`w-[Npx] h-[Npx]\` on every element. Use flex layout (\`flex-row\`, \`flex-col\`, \`gap-[Npx]\`, \`self-stretch\`) to let content flow naturally. Only set explicit width/height on: (1) the root component container if it has a deliberate fixed size, (2) icon/image frames that need exact dimensions, (3) elements that are clearly fixed-size (circles, avatars, toggles). For text, labels, descriptions — let them size naturally.
    - For nested sub-components (e.g. buttons inside a modal): read their bg, radius, padding, gap, shadow from the tree — do NOT use default/generic styles.
    - Elements outside the inner frame in Figma should also be outside the wrapper in JSX.
    - **Dialog/Modal/Toast**: Do NOT use \`position: fixed\` or overlay backdrop. Render as a normal inline block element so it displays correctly in a variant grid preview. Use a simple wrapper div with the exact Figma dimensions, background, border, radius, and shadow.
@@ -108,7 +109,9 @@ Your task: Take a base shadcn component source and customize it with design data
 
 11. **Each variant must look visually distinct**: When the Figma component has multiple variant values (e.g. Success, Warning, Danger), each MUST render with different colors/icons as shown in the Figma data. If the background, border, or icon colors differ across variants, those differences must be reflected in CVA variant styles or compoundVariants — NOT collapsed into a single shared style.
 
-12. **No extra explanations** — just the two code blocks.
+12. **Pixel dimensions → Tailwind arbitrary values**: All dimensions in the structure tree are in \`px\`. Convert them to Tailwind arbitrary values: \`16px×16px\` → \`h-[16px] w-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px/8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`. Do NOT drop the \`px\` unit — \`h-16\` in Tailwind means 64px, not 16px.
+
+13. **No extra explanations** — just the two code blocks.
 `;
 }
 

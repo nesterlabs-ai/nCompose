@@ -1235,6 +1235,8 @@ export function buildComponentSetUserPrompt(
     reqs.push('For icon slot props, use: `{props.iconName || <svg ...>...</svg>}` (inline SVG fallback)');
   }
 
+  reqs.push('If an icon slot/frame exists in the tree but NO exported SVG asset is listed for that slot, leave it EMPTY — do NOT fill it with an unrelated icon from another slot');
+
   reqs.push('Use string concatenation (not template literals) for building the class string');
 
   // Default variant fallback — ensure icons/content render when prop is undefined

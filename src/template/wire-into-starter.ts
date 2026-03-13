@@ -229,13 +229,30 @@ export function ComponentPreviewPage() {
       }
     }
 
-    // Map prop axes to component prop names
+    // Parse actual CVA key names from the generated shadcn source
+    const cvaKeys: Record<string, boolean> = {};
+    if (updatedShadcnSource) {
+      const cvaMatch = updatedShadcnSource.match(/variants\s*:\s*\{([\s\S]*?)\n\s*\}/);
+      if (cvaMatch) {
+        const variantBlock = cvaMatch[1];
+        for (const m of variantBlock.matchAll(/^\s*(\w+)\s*:/gm)) {
+          cvaKeys[m[1]] = true;
+        }
+      }
+    }
+
+    // Map prop axes to component prop names using actual CVA keys
     const propMappings = propAxes.map((axis) => {
-      const lower = axis.name.toLowerCase();
-      const propName =
-        lower === 'style' || lower === 'type'
-          ? 'variant'
-          : axis.camel;
+      const camel = axis.camel;
+      let propName: string;
+      if (cvaKeys[camel]) {
+        propName = camel;
+      } else if (cvaKeys['variant'] && (axis.name.toLowerCase() === 'style' || axis.name.toLowerCase() === 'type')) {
+        propName = 'variant';
+      } else {
+        // Find a matching CVA key, excluding size/state
+        propName = Object.keys(cvaKeys).find(k => k !== 'size' && k !== 'state') || camel;
+      }
       return { axis, propName };
     });
 

@@ -35,6 +35,8 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
   { pattern: /slider|range/i, formRole: 'slider' },
   { pattern: /pagination/i, formRole: 'pagination' },
   { pattern: /stepper|step\s*indicator/i, formRole: 'stepper' },
+  { pattern: /toast\b|snackbar/i, formRole: 'toast' },
+  { pattern: /dialog\b|modal\b/i, formRole: 'dialog' },
 ];
 
 // ── Types ───────────────────────────────────────────────────────────────────

@@ -16,6 +16,9 @@ const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   toast: 'toast',
   dialog: 'dialog',
   modal: 'dialog',
+  checkbox: 'checkbox',
+  radio: 'radio',
+  toggle: 'switch',
 };
 
 /** Also map ComponentCategory values that differ from formRole */
@@ -32,6 +35,11 @@ const CATEGORY_TO_SHADCN: Record<string, string> = {
   toast: 'toast',
   dialog: 'dialog',
   modal: 'dialog',
+  checkbox: 'checkbox',
+  radio: 'radio',
+  'radio-button': 'radio',
+  toggle: 'switch',
+  switch: 'switch',
 };
 
 const SUPPORTED = new Set([

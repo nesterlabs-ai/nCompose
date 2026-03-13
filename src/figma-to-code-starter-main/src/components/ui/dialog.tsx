@@ -3,11 +3,11 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const dialogContentVariants = cva(
-  "rounded-lg border bg-[var(--color-background)] p-6 shadow-lg w-full max-w-lg flex flex-col",
+  "rounded-lg border p-6 shadow-lg w-full max-w-lg flex flex-col",
   {
     variants: {
       variant: {
-        default: "bg-[var(--color-background)] text-[var(--color-foreground)]",
+        default: "",
       },
       size: {
         default: "max-w-lg",
@@ -87,7 +87,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm text-[var(--color-muted-foreground)]", className)}
+    className={cn("text-sm", className)}
     {...props}
   />
 ));

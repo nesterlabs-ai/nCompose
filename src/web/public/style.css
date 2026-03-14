@@ -2783,3 +2783,318 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(239, 49, 57, 0.15);
 }
+/* ── Visual Edit Mode ── */
+
+.panel__header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.header-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.header-back-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.visual-edit-toggle-bar {
+  padding: 0 16px 10px;
+}
+
+.ve-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ve-toggle-btn:hover {
+  background: var(--border);
+  box-shadow: 0 0 0 4px hsla(0, 0%, 100%, 0.05);
+}
+
+.ve-toggle-btn svg {
+  color: #3b82f6; /* Blue icon like Lovable */
+}
+
+/* Sidebar Properties */
+.visual-edit-sidebar {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.ve-sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ve-sidebar__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.ve-sidebar__control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ve-sidebar__control label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.ve-sidebar__control textarea {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  resize: vertical;
+  min-height: 80px;
+}
+
+.ve-sidebar__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.ve-sidebar__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.color-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.color-preview {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.color-input-wrap input {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--text);
+  width: 100%;
+}
+
+.spacing-input-group {
+  display: flex;
+  align-items: center;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.spacing-input-group input {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--text);
+  padding: 8px;
+  width: 100%;
+  text-align: center;
+}
+
+.spacing-expand-btn {
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.ve-sidebar__control select {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.alignment-group {
+  display: flex;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.align-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.align-btn:hover {
+  background: var(--border);
+}
+
+.align-btn.active {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* Floating AI Prompt */
+.ve-floating-prompt {
+  position: absolute;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.2), 0 0 1px 0 rgba(0, 0, 0, 0.1);
+  padding: 4px;
+  border-radius: 12px;
+  gap: 10px;
+  transform: translate(-50%, -100%);
+  margin-top: -12px;
+  min-width: 320px;
+  animation: ve-float-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes ve-float-in {
+  from { opacity: 0; transform: translate(-50%, -90%); }
+  to { opacity: 1; transform: translate(-50%, -100%); }
+}
+
+[data-theme="dark"] .ve-floating-prompt {
+  background: rgba(30, 30, 30, 0.8);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.ve-floating-prompt__tag {
+  background: #3b82f6;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+}
+
+.ve-floating-prompt__input-wrap {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+[data-theme="dark"] .ve-floating-prompt__input-wrap {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ve-floating-prompt__input-wrap input {
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  padding: 6px;
+  outline: none;
+}
+
+.ve-floating-prompt__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ve-floating-prompt__actions button {
+  background: transparent;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.ve-floating-prompt__actions button:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text);
+}
+
+[data-theme="dark"] .ve-floating-prompt__actions button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#ve-ai-delete:hover {
+  color: var(--error);
+}
+
+/* HIGHLIGHTS FOR IFRAME (Injected via script) */
+.ve-hover-outline {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: -2px !important;
+  cursor: pointer !important;
+}
+
+.ve-selected-outline {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: -2px !important;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important;
+}

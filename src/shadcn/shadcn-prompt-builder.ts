@@ -5,7 +5,7 @@
  * with Figma variant styles.
  */
 
-import type { VariantStyles } from './style-extractor.js';
+import type { VariantStyles, ExtractedStyle } from './style-extractor.js';
 import { formatStylesForPrompt } from './style-extractor.js';
 import type { ExtractedContent } from './content-extractor.js';
 import { formatContentForPrompt } from './content-extractor.js';
@@ -219,6 +219,225 @@ export function buildShadcnUserPrompt(ctx: ShadcnPromptContext): string {
     parts.push('- Use the icon-color from Figma style data for iconColor (NOT text-color). If icon-color is the same across all states, use a constant');
     parts.push('- Only swap icons between states if Figma data shows different icons per state — do NOT invent cursor lines or other replacements');
   }
+
+  return parts.join('\n');
+}
+
+// ── Single-component prompt builders (PATH B + PATH C inline) ────────────────
+
+export interface ShadcnSingleComponentPromptContext {
+  componentName: string;
+  shadcnType: string;
+  baseShadcnSource: string;
+  style: ExtractedStyle;
+  content: ExtractedContent;
+  booleanProps?: Record<string, boolean>;
+  assets?: IconAssetInfo[];
+  nodeYaml?: string;
+}
+
+/**
+ * System prompt for shadcn single-component generation (no CVA variants).
+ * Simplified from the COMPONENT_SET version — no variant axis mapping.
+ */
+export function buildShadcnSingleComponentSystemPrompt(): string {
+  return `You are a React component expert specializing in shadcn/ui.
+
+Your task: Take a base shadcn component source and customize it with design data from a single Figma component.
+
+## Rules
+
+1. **Output exactly TWO fenced code blocks** — no other code blocks:
+   - Block 1: Updated shadcn component (\`.tsx\`) customized with the Figma styles
+   - Block 2: Consumer component (\`.jsx\`) that imports and uses the shadcn component
+
+2. **Apply Figma styles as Tailwind arbitrary values**: Use exact hex colors, padding, font sizes, border-radius from the Figma data. E.g. \`bg-[#F04E4C]\`, \`text-[14px]\`, \`rounded-[8px]\`, \`px-[16px]\`.
+
+3. **No CVA variants needed** — this is a single component instance, not a variant set. Keep the component simple with hardcoded Tailwind classes matching the Figma design exactly.
+
+4. **Component structure from Figma**: Match the exact nesting, gaps, padding, colors, and typography from the design data.
+
+5. **Preserve imports**: Keep all original imports from the base source. The updated component should export the same interface.
+
+6. **Consumer component**: The .jsx file MUST:
+   - Import the shadcn component from \`@/components/ui/{type}\`
+   - Render exactly ONE instance with the appropriate props
+   - Use default export
+
+7. **Pixel dimensions → Tailwind arbitrary values**: \`16px\` → \`h-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`.
+
+8. **No extra explanations** — just the two code blocks.
+`;
+}
+
+/**
+ * User prompt for shadcn single-component generation.
+ */
+export function buildShadcnSingleComponentUserPrompt(ctx: ShadcnSingleComponentPromptContext): string {
+  const parts: string[] = [];
+
+  parts.push(`# Component: ${ctx.componentName}`);
+  parts.push(`# shadcn type: ${ctx.shadcnType}`);
+  parts.push('');
+
+  // Style info
+  parts.push('## Figma Styles');
+  const style = ctx.style;
+  const styleLines: string[] = [];
+  if (style.bg) styleLines.push(`- Background: ${style.bg}`);
+  if (style.textColor) styleLines.push(`- Text color: ${style.textColor}`);
+  if (style.borderColor) styleLines.push(`- Border color: ${style.borderColor}`);
+  if (style.borderWidth) styleLines.push(`- Border width: ${style.borderWidth}px`);
+  if (style.borderRadius) styleLines.push(`- Border radius: ${style.borderRadius}px`);
+  if (style.paddingTop || style.paddingRight || style.paddingBottom || style.paddingLeft) {
+    styleLines.push(`- Padding: ${style.paddingTop ?? 0}px ${style.paddingRight ?? 0}px ${style.paddingBottom ?? 0}px ${style.paddingLeft ?? 0}px`);
+  }
+  if (style.fontSize) styleLines.push(`- Font size: ${style.fontSize}px`);
+  if (style.fontWeight) styleLines.push(`- Font weight: ${style.fontWeight}`);
+  if (style.gap) styleLines.push(`- Gap: ${style.gap}px`);
+  if (style.width) styleLines.push(`- Width: ${style.width}px`);
+  if (style.height) styleLines.push(`- Height: ${style.height}px`);
+  if (style.shadow) styleLines.push(`- Shadow: ${style.shadow}`);
+  if (style.opacity) styleLines.push(`- Opacity: ${style.opacity}`);
+  if (style.labelColor) styleLines.push(`- Label color: ${style.labelColor}`);
+  if (style.placeholderColor) styleLines.push(`- Placeholder color: ${style.placeholderColor}`);
+  if (style.errorColor) styleLines.push(`- Error color: ${style.errorColor}`);
+  if (style.iconColor) styleLines.push(`- Icon color: ${style.iconColor}`);
+  if (style.structure) {
+    styleLines.push('');
+    styleLines.push('COMPONENT TREE:');
+    styleLines.push(style.structure);
+  }
+  parts.push(styleLines.join('\n'));
+  parts.push('');
+
+  // Content
+  parts.push(formatContentForPrompt(ctx.content));
+  parts.push('');
+
+  if (ctx.booleanProps && Object.keys(ctx.booleanProps).length > 0) {
+    parts.push('## Boolean Properties');
+    for (const [name, val] of Object.entries(ctx.booleanProps)) {
+      parts.push(`- ${name}: default ${val}`);
+    }
+    parts.push('');
+  }
+
+  // Assets
+  if (ctx.assets && ctx.assets.length > 0) {
+    parts.push('## Icon Assets (inline as SVG in JSX)');
+    for (const asset of ctx.assets) {
+      const dims = asset.dimensions ? ` (${asset.dimensions.width}x${asset.dimensions.height})` : '';
+      parts.push(`### \`${asset.filename}\`${dims}`);
+      if (asset.svgContent) {
+        parts.push('```svg');
+        parts.push(asset.svgContent.trim());
+        parts.push('```');
+      }
+      parts.push('');
+    }
+  }
+
+  // Node YAML for structural context
+  if (ctx.nodeYaml) {
+    parts.push('## Node Structure (YAML)');
+    parts.push('```yaml');
+    parts.push(ctx.nodeYaml.trim());
+    parts.push('```');
+    parts.push('');
+  }
+
+  // Base source
+  parts.push('## Base shadcn Component Source (customize this)');
+  parts.push('```tsx');
+  parts.push(ctx.baseShadcnSource);
+  parts.push('```');
+  parts.push('');
+
+  parts.push('## Output Instructions');
+  parts.push(`1. First code block: Updated \`${ctx.shadcnType}.tsx\` with the exact Figma styles above`);
+  parts.push(`2. Second code block: Consumer \`${ctx.componentName}.jsx\` that imports from \`@/components/ui/${ctx.shadcnType}\``);
+  parts.push('');
+  parts.push('Remember:');
+  parts.push('- Use exact hex colors from the Figma data as Tailwind arbitrary values');
+  parts.push('- The consumer component must use default export');
+  parts.push(`- The consumer component name is: ${ctx.componentName}`);
+
+  return parts.join('\n');
+}
+
+/**
+ * System prompt for shadcn inline-component generation (PATH C sub-components).
+ * Outputs a single self-contained React JSX block (not two files).
+ */
+export function buildShadcnInlineComponentSystemPrompt(): string {
+  return `You are a React component expert specializing in shadcn/ui patterns.
+
+Your task: Generate a self-contained React JSX fragment for a UI component, using the shadcn template as structural guidance.
+
+## Rules
+
+1. **Output exactly ONE fenced code block** containing the JSX body (no export, no function wrapper).
+2. **Use Tailwind arbitrary values** for exact Figma styling: \`bg-[#hex]\`, \`text-[14px]\`, \`rounded-[8px]\`.
+3. **Use className** not class.
+4. **Follow the shadcn template structure** but with the exact colors, sizes, and content from the Figma data.
+5. **No imports needed** — the output is inlined into a parent component.
+6. **Static content only** — no hooks, state, or event handlers.
+7. **No extra explanations** — just the code block.
+`;
+}
+
+/**
+ * User prompt for shadcn inline-component generation.
+ */
+export function buildShadcnInlineComponentUserPrompt(
+  componentName: string,
+  shadcnType: string,
+  baseShadcnSource: string,
+  style: ExtractedStyle,
+  content: ExtractedContent,
+  nodeYaml?: string,
+): string {
+  const parts: string[] = [];
+
+  parts.push(`# Inline component: ${componentName} (based on shadcn ${shadcnType})`);
+  parts.push('');
+  parts.push('Generate a self-contained JSX fragment (no function wrapper) for this component.');
+  parts.push('');
+
+  // Minimal style info
+  const styleLines: string[] = ['## Figma Styles'];
+  if (style.bg) styleLines.push(`- Background: ${style.bg}`);
+  if (style.textColor) styleLines.push(`- Text color: ${style.textColor}`);
+  if (style.borderColor) styleLines.push(`- Border: ${style.borderWidth ?? 1}px ${style.borderColor}`);
+  if (style.borderRadius) styleLines.push(`- Radius: ${style.borderRadius}px`);
+  if (style.fontSize) styleLines.push(`- Font size: ${style.fontSize}px`);
+  if (style.fontWeight) styleLines.push(`- Font weight: ${style.fontWeight}`);
+  if (style.structure) {
+    styleLines.push('');
+    styleLines.push('COMPONENT TREE:');
+    styleLines.push(style.structure);
+  }
+  parts.push(styleLines.join('\n'));
+  parts.push('');
+
+  parts.push(formatContentForPrompt(content));
+  parts.push('');
+
+  if (nodeYaml) {
+    parts.push('## Node Structure');
+    parts.push('```yaml');
+    parts.push(nodeYaml.trim());
+    parts.push('```');
+    parts.push('');
+  }
+
+  parts.push('## shadcn Reference (use as structural guide)');
+  parts.push('```tsx');
+  parts.push(baseShadcnSource);
+  parts.push('```');
+  parts.push('');
+  parts.push('Output a single code block with self-contained JSX using Tailwind classes. No wrapper function.');
 
   return parts.join('\n');
 }

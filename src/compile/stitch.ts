@@ -274,8 +274,11 @@ export function stitchPageComponent(
   pageBaseClass: string,
   pageLayoutCSS: string,
   sections: SectionOutput[],
+  templateMode?: boolean,
 ): StitchedPage {
   const sectionJSXParts: string[] = [];
+  // Use className for React (templateMode), class for Mitosis
+  const classAttr = templateMode ? 'className' : 'class';
 
   for (const section of sections) {
     if (section.failed) {
@@ -292,8 +295,8 @@ export function stitchPageComponent(
       const tag = section.info.semanticTag;
       const cls = section.info.baseClass;
       sectionJSXParts.push(
-        `      <${tag} class="${cls}">\n` +
-        `        <div class="chart-section-${section.chartComponentName}" />\n` +
+        `      <${tag} ${classAttr}="${cls}">\n` +
+        `        <div ${classAttr}="chart-section-${section.chartComponentName}" />\n` +
         `      </${tag}>`
       );
       continue;
@@ -304,11 +307,9 @@ export function stitchPageComponent(
     const cls = section.info.baseClass;
 
     // If JSX body is empty the LLM generated CSS-only output.
-    // Emit a visible placeholder so the developer knows exactly which
-    // section is missing instead of getting a silent empty tag.
     if (!body.trim()) {
       sectionJSXParts.push(
-        `      {/* ⚠ Section "${section.info.name}" — LLM generated empty JSX.\n` +
+        `      {/* Section "${section.info.name}" — LLM generated empty JSX.\n` +
         `         CSS rules are present in the merged stylesheet (class: .${section.info.baseClass}).\n` +
         `         Re-run or manually fill this section. */}`
       );
@@ -317,16 +318,16 @@ export function stitchPageComponent(
 
     // Wrap the section body in its semantic tag with the page-level BEM class
     sectionJSXParts.push(
-      `      <${tag} class="${cls}">\n        ${body.split('\n').join('\n        ')}\n      </${tag}>`
+      `      <${tag} ${classAttr}="${cls}">\n        ${body.split('\n').join('\n        ')}\n      </${tag}>`
     );
   }
 
   const jsxBody = sectionJSXParts.join('\n');
 
-  // Build the full Mitosis component — purely static, no useStore/Show/For
+  // Build the full component — Mitosis or React depending on templateMode
   const mitosisSource = `export default function ${pageName}(props) {
   return (
-    <div class="${pageBaseClass}">
+    <div ${classAttr}="${pageBaseClass}">
 ${jsxBody}
     </div>
   );

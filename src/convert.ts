@@ -35,6 +35,8 @@ import {
   assembleUserPrompt,
   assemblePageSectionSystemPrompt,
   assemblePageSectionUserPrompt,
+  assembleReactSystemPrompt,
+  assembleReactUserPrompt,
   type PageSectionContext,
 } from './prompt/index.js';
 import { generateWithRetry } from './compile/retry.js';
@@ -47,7 +49,8 @@ import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComp
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
 import { isShadcnSupported } from './shadcn/shadcn-types.js';
-import { generateShadcnComponentSet } from './shadcn/shadcn-codegen.js';
+import { generateShadcnComponentSet, generateShadcnSingleComponent } from './shadcn/shadcn-codegen.js';
+import { generateReactDirect } from './compile/react-direct-gen.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
@@ -1400,30 +1403,81 @@ async function convertSingleComponent(
     onStep?.(`Detected component category: ${category}`);
   }
 
-  // Assemble prompts
-  onStep?.('Assembling prompts...');
-  const systemPrompt = assembleSystemPrompt(options.templateMode);
-  // Build asset map so serialization can annotate icon nodes with their SVG filenames.
-  // This embeds `type: ICON, assetFile: "./assets/foo.svg"` directly in the YAML,
-  // giving the LLM clear context to generate <img> tags at the right positions.
+  // Build asset map and serialize YAML (needed by all paths)
   const pathBAssetMap = buildAssetMap(assets);
-  // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
-  // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
   const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : null;
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
     : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap) : enhanced, { lineWidth: 120, noRefs: true });
   const assetHints = buildPathBAssetHints(assets, rootNode);
+
+  const llm = createLLMProvider(options.llm);
+
+  // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
+  if (options.templateMode) {
+    const category = hintedCategory ?? detectComponentCategory(rootNode?.name ?? '');
+
+    // Try shadcn path for recognized components
+    if (category && category !== 'unknown' && isShadcnSupported(category)) {
+      try {
+        onStep?.(`[shadcn] Generating single component via shadcn template (${category})...`);
+        const componentName = options.name ?? toPascalCase(rootNode?.name ?? 'Component');
+        const result = await generateShadcnSingleComponent(
+          rootNode, category, componentName, llm, onStep, assets, llmYaml,
+        );
+        const reactPlaceholder = '// shadcn/ui component (React only)';
+        const frameworkOutputs: Record<string, string> = {};
+        for (const fw of options.frameworks) {
+          frameworkOutputs[fw] = fw === 'react' ? result.consumerCode : reactPlaceholder;
+        }
+        return {
+          componentName: result.componentName,
+          mitosisSource: result.consumerCode,
+          frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+          assets,
+          updatedShadcnSource: result.updatedShadcnSource,
+          shadcnComponentName: result.shadcnComponentName,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onStep?.(`[shadcn] Failed: ${msg} — falling back to React + Tailwind direct`);
+      }
+    }
+
+    // Fallback: React + Tailwind direct (no Mitosis)
+    onStep?.(`Generating React + Tailwind component via ${llm.name}...`);
+    const reactSystemPrompt = assembleReactSystemPrompt();
+    const reactUserPrompt = assembleReactUserPrompt(llmYaml, options.name, semanticHint ?? undefined, assetHints);
+    const reactResult = await generateReactDirect(llm, reactSystemPrompt, reactUserPrompt);
+
+    const componentName = options.name ?? toPascalCase(rootNode?.name ?? 'Component');
+    const reactPlaceholder = '// React + Tailwind component (React only in template mode)';
+    const frameworkOutputs: Record<string, string> = {};
+    for (const fw of options.frameworks) {
+      if (fw === 'react') {
+        frameworkOutputs[fw] = reactResult.css
+          ? injectCSS(reactResult.reactCode, prependFontImport(reactResult.css), fw)
+          : reactResult.reactCode;
+      } else {
+        frameworkOutputs[fw] = reactPlaceholder;
+      }
+    }
+
+    return {
+      componentName,
+      mitosisSource: reactResult.reactCode,
+      frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+      assets,
+    };
+  }
+
+  // ── templateMode OFF: existing Mitosis pipeline (unchanged) ───────────
+  onStep?.('Assembling prompts...');
+  const systemPrompt = assembleSystemPrompt(options.templateMode);
   const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode, assetHints);
 
-  // Generate Mitosis code via LLM with retry
-  const llm = createLLMProvider(options.llm);
   onStep?.(`Generating Mitosis code via ${llm.name}...`);
 
-  // Extract category + expected tag for semantic validation.
-  // Only apply semantic enforcement for actual components (small trees).
-  // Large layout frames (>20 descendants) should not get root-tag auto-fix
-  // or semantic validation — they're page layouts, not individual components.
   const descendantCount = rootNode ? countDescendants(rootNode) : 0;
   const pathBCategory = descendantCount <= 20
     ? (hintedCategory ?? detectComponentCategory(rootNode?.name ?? ''))
@@ -1914,7 +1968,86 @@ async function convertPage(
     pageBaseClass,
     layoutResult.css,
     sectionOutputs,
+    options.templateMode,
   );
+
+  const componentName = options.name ?? pageName;
+
+  // ── templateMode ON: skip Mitosis, take React output directly ─────────
+  if (options.templateMode) {
+    onStep?.('Template mode: using React output directly (skipping Mitosis)...');
+    const frameworkOutputs: Record<string, string> = {};
+    const hasCharts = allChartComponents.length > 0;
+    const reactPlaceholder = '// shadcn/ui component (React only)';
+
+    for (const fw of options.frameworks) {
+      if (fw === 'react') {
+        let reactCode = mitosisSource;
+
+        // Inline chart components for React (same as Mitosis path)
+        if (hasCharts) {
+          const rechartsImportSet = new Set<string>();
+          const chartDefinitions: string[] = [];
+
+          for (const chart of allChartComponents) {
+            const { name, reactCode: chartReact, css: chartCss } = chart;
+            const placeholderRe = new RegExp(
+              `<div\\s+className="chart-section-${name}"\\s*/>`,
+              'g',
+            );
+            reactCode = reactCode.replace(placeholderRe, `<${name} />`);
+            const rechartsMatch = chartReact.match(
+              /import\s*\{([^}]+)\}\s*from\s*['"]recharts['"]/s,
+            );
+            if (rechartsMatch) {
+              rechartsMatch[1].split(',').forEach((s: string) => {
+                const n = s.trim();
+                if (n) rechartsImportSet.add(n);
+              });
+            }
+            const body = chartReact
+              .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]+['"]\s*;?/g, '')
+              .replace(/import\s+['"][^'"]+['"]\s*;?/g, '')
+              .replace(/export\s+default\s+function/, 'function')
+              .trim();
+            chartDefinitions.push(body);
+            if (chartCss) mergedCSS += '\n' + chartCss;
+          }
+
+          const rechartsImports = rechartsImportSet.size > 0
+            ? `import { ${[...rechartsImportSet].join(', ')} } from 'recharts';\n`
+            : '';
+          const hooksImport = `import { useState, useMemo } from 'react';\n`;
+          reactCode = hooksImport + rechartsImports + '\n' +
+            chartDefinitions.join('\n\n') + '\n\n' + reactCode;
+        }
+
+        frameworkOutputs[fw] = mergedCSS
+          ? injectCSS(reactCode, prependFontImport(mergedCSS), fw)
+          : reactCode;
+      } else {
+        frameworkOutputs[fw] = reactPlaceholder;
+      }
+    }
+
+    const seenNodeIds = new Set<string>();
+    const dedupedAssets = allAssets.filter((a) => {
+      if (seenNodeIds.has(a.nodeId)) return false;
+      seenNodeIds.add(a.nodeId);
+      return true;
+    });
+
+    return {
+      componentName,
+      mitosisSource,
+      frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+      assets: dedupedAssets,
+      css: mergedCSS,
+      chartComponents: allChartComponents.length > 0 ? allChartComponents : undefined,
+    };
+  }
+
+  // ── templateMode OFF: existing Mitosis pipeline ───────────────────────
 
   // Step C4: Parse the stitched component through Mitosis
   onStep?.('Parsing stitched page component...');
@@ -1928,7 +2061,6 @@ async function convertPage(
   }
 
   // Step C5: Compile to target frameworks
-  const componentName = options.name ?? pageName;
   onStep?.(`Compiling page to: ${options.frameworks.join(', ')}...`);
   const rawFrameworkOutputs = generateFrameworkCode(pageParseResult.component, options.frameworks);
 

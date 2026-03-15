@@ -14,12 +14,17 @@ import type { LLMProvider } from '../llm/provider.js';
 import type { ParseResult } from '../types/index.js';
 import type { ChartComponent } from '../types/index.js';
 import { generateWithRetry } from './retry.js';
+import { generateReactDirect } from './react-direct-gen.js';
 import { extractJSXBody, scopeSectionCSS } from './stitch.js';
 import {
   assembleSystemPrompt,
   assembleUserPrompt,
   assemblePageSectionSystemPrompt,
   assemblePageSectionUserPrompt,
+  assembleReactSystemPrompt,
+  assembleReactUserPrompt,
+  assembleReactSectionSystemPrompt,
+  assembleReactSectionUserPrompt,
   type PageSectionContext,
 } from '../prompt/index.js';
 import {
@@ -30,6 +35,9 @@ import {
 } from '../figma/component-discovery.js';
 import { extractChartMetadata } from '../figma/chart-detection.js';
 import { generateChartCode } from './chart-codegen.js';
+import { isShadcnSupported } from '../shadcn/shadcn-types.js';
+import { generateShadcnInlineComponent } from '../shadcn/shadcn-codegen.js';
+import { detectComponentCategory } from '../figma/component-set-parser.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -210,6 +218,54 @@ export async function generateSingleComponent(
     'Do NOT generate `{state.label}`, `{state.selectedValue}`, or similar dynamic expressions. ' +
     'Copy text VERBATIM from the YAML `text` or `characters` field.\n';
 
+  // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
+  if (templateMode) {
+    const category = detectComponentCategory(componentName);
+
+    // Try shadcn inline path for recognized components
+    if (isShadcnSupported(formRole) || (category !== 'unknown' && isShadcnSupported(category))) {
+      try {
+        const shadcnRole = isShadcnSupported(formRole) ? formRole : category;
+        const result = await generateShadcnInlineComponent(
+          node, shadcnRole, componentName, llm, yaml,
+        );
+        return {
+          name: componentName,
+          formRole,
+          html: result.html,
+          css: '',
+          success: true,
+          representativeProps: extractVisibleProps(node),
+          representativeTexts: collectOrderedTexts(node),
+        };
+      } catch { /* fall through to React direct */ }
+    }
+
+    // Fallback: React + Tailwind direct (no Mitosis)
+    try {
+      const reactSystemPrompt = assembleReactSystemPrompt();
+      const reactUserPrompt = assembleReactUserPrompt(
+        yaml, componentName,
+        staticContentRule + semanticHint + responsiveHint,
+        assetHints,
+      );
+      const result = await generateReactDirect(llm, reactSystemPrompt, reactUserPrompt);
+      const html = extractJSXBody(result.reactCode);
+      return {
+        name: componentName,
+        formRole,
+        html,
+        css: result.css,
+        success: true,
+        representativeProps: extractVisibleProps(node),
+        representativeTexts: collectOrderedTexts(node),
+      };
+    } catch {
+      return { name: componentName, formRole, html: '', css: '', success: false };
+    }
+  }
+
+  // ── templateMode OFF: existing Mitosis pipeline (unchanged) ───────────
   const systemPrompt = assembleSystemPrompt(templateMode);
   const userPrompt = assembleUserPrompt(
     yaml,
@@ -462,16 +518,15 @@ export async function generateCompoundSection(
   // ── Step 4: Generate section layout (Pass 2) ───────────────────────────
   // Build a custom user prompt that includes pre-generated component HTML
   const componentRefBlock = buildComponentReferenceBlock(componentCache);
-  const sectionSystemPrompt = assemblePageSectionSystemPrompt(templateMode);
 
-  const baseUserPrompt = assemblePageSectionUserPrompt(
-    sectionYaml,
-    sectionName,
-    sectionIndex,
-    totalSections,
-    ctx,
-    templateMode,
-  );
+  // When templateMode is on, use React prompts (no Mitosis)
+  const sectionSystemPrompt = templateMode
+    ? assembleReactSectionSystemPrompt()
+    : assemblePageSectionSystemPrompt(templateMode);
+
+  const baseUserPrompt = templateMode
+    ? assembleReactSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx)
+    : assemblePageSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx, templateMode);
 
   // Insert component references and asset hints before the YAML block
   let userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
@@ -487,6 +542,19 @@ export async function generateCompoundSection(
   onStep?.(`  [PATH 2] Generating section layout with ${successCount} pre-built components...`);
 
   try {
+    // When templateMode is on, use React direct generation (skip Mitosis parsing)
+    if (templateMode) {
+      const reactResult = await generateReactDirect(llm, sectionSystemPrompt, userPrompt);
+      return {
+        rawCode: reactResult.reactCode,
+        css: mergeSectionCSS(reactResult.css, generatedComponents),
+        success: true,
+        generatedComponents,
+        discovery,
+        chartComponents,
+      };
+    }
+
     const result = await generateWithRetry(
       llm,
       sectionSystemPrompt,
@@ -1007,10 +1075,13 @@ async function fallbackMonolithicGeneration(
   fixStretchDimensions(serialized);
   const yaml = dump(serialized, { lineWidth: 120, noRefs: true });
 
-  const systemPrompt = assemblePageSectionSystemPrompt(templateMode);
-  let userPrompt = assemblePageSectionUserPrompt(
-    yaml, sectionName, sectionIndex, totalSections, ctx, templateMode,
-  );
+  // When templateMode is on, use React direct generation (skip Mitosis parsing)
+  const systemPrompt = templateMode
+    ? assembleReactSectionSystemPrompt()
+    : assemblePageSectionSystemPrompt(templateMode);
+  let userPrompt = templateMode
+    ? assembleReactSectionUserPrompt(yaml, sectionName, sectionIndex, totalSections, ctx)
+    : assemblePageSectionUserPrompt(yaml, sectionName, sectionIndex, totalSections, ctx, templateMode);
 
   // Inject asset hints so the LLM knows about available SVG files
   if (assetHints) {
@@ -1023,6 +1094,18 @@ async function fallbackMonolithicGeneration(
   }
 
   try {
+    if (templateMode) {
+      const reactResult = await generateReactDirect(llm, systemPrompt, userPrompt);
+      return {
+        rawCode: reactResult.reactCode,
+        css: reactResult.css,
+        success: true,
+        generatedComponents: [],
+        discovery,
+        chartComponents: [],
+      };
+    }
+
     const result = await generateWithRetry(
       llm, systemPrompt, userPrompt, onAttempt,
       undefined, undefined, undefined, undefined, undefined,

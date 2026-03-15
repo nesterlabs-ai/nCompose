@@ -6,5 +6,9 @@ export {
   assembleUserPrompt,
   assemblePageSectionSystemPrompt,
   assemblePageSectionUserPrompt,
+  assembleReactSystemPrompt,
+  assembleReactUserPrompt,
+  assembleReactSectionSystemPrompt,
+  assembleReactSectionUserPrompt,
   type PageSectionContext,
 } from './assemble.js';

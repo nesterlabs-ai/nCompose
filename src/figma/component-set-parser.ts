@@ -179,6 +179,7 @@ export type ComponentCategory =
   | 'accordion' | 'breadcrumb' | 'divider' | 'link'
   | 'navigation' | 'sidebar' | 'header' | 'footer'
   | 'status-indicator'
+  | 'form' | 'form-field' | 'form-group'
   | 'unknown';
 
 export interface ComponentSetData {
@@ -473,6 +474,9 @@ const CATEGORY_PATTERNS: Array<[RegExp, ComponentCategory]> = [
   [/\bsidebar\b/, 'sidebar'],
   [/\bheader\b/, 'header'],
   [/\bfooter\b/, 'footer'],
+  [/\bform[-\s]?field\b/, 'form-field'],
+  [/\bform[-\s]?group\b/, 'form-group'],
+  [/\bform\b/, 'form'],
 ];
 
 export const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
@@ -488,6 +492,7 @@ export const CATEGORY_HTML_TAGS: Record<ComponentCategory, string> = {
   'accordion': 'div', 'breadcrumb': 'nav', 'divider': 'hr', 'link': 'a',
   'navigation': 'nav', 'sidebar': 'aside', 'header': 'header', 'footer': 'footer',
   'status-indicator': 'span',
+  'form': 'form', 'form-field': 'div', 'form-group': 'fieldset',
   'unknown': 'div',
 };
 
@@ -504,6 +509,7 @@ export const CATEGORY_ARIA_ROLES: Record<ComponentCategory, string> = {
   'accordion': 'region', 'breadcrumb': 'navigation', 'divider': 'separator', 'link': 'link',
   'navigation': 'navigation', 'sidebar': 'complementary', 'header': 'banner', 'footer': 'contentinfo',
   'status-indicator': 'status',
+  'form': 'form', 'form-field': '', 'form-group': 'group',
   'unknown': '',
 };
 

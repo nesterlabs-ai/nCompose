@@ -7,7 +7,9 @@ import { loadFewShotExamples } from './few-shot-examples.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TEMPLATE_MODE_PROMPT_PATH = resolve(__dirname, '../../prompts/template-mode.md');
+const REACT_SYSTEM_PROMPT_PATH = resolve(__dirname, '../../prompts/react-system.md');
 let cachedTemplateModeAddendum: string | null = null;
+let cachedReactSystem: string | null = null;
 
 /**
  * Loads the template-mode addendum (Tailwind + cn() + CSS variables for the starter).
@@ -85,6 +87,149 @@ Fidelity requirements:
 \`\`\`yaml
 ${yamlContent.trim()}
 \`\`\``;
+}
+
+// ── React direct prompts (templateMode ON — no Mitosis) ─────────────────────
+
+function loadReactSystemPrompt(): string {
+  if (cachedReactSystem) return cachedReactSystem;
+  cachedReactSystem = readFileSync(REACT_SYSTEM_PROMPT_PATH, 'utf-8').trim();
+  return cachedReactSystem;
+}
+
+/**
+ * Assembles the system prompt for React + Tailwind direct generation.
+ * Used when templateMode is on for PATH B and PATH C (bypasses Mitosis).
+ */
+export function assembleReactSystemPrompt(): string {
+  const base = loadReactSystemPrompt();
+  const templateAddendum = loadTemplateModeAddendum();
+  return `${base}\n\n${templateAddendum}`;
+}
+
+/**
+ * Assembles the user prompt for React + Tailwind direct generation.
+ * Same structure as assembleUserPrompt() but targets React output.
+ */
+export function assembleReactUserPrompt(
+  yamlContent: string,
+  componentName?: string,
+  semanticHint?: string,
+  assetHints?: string,
+): string {
+  const nameHint = componentName
+    ? `\nComponent name: ${componentName}\n`
+    : '';
+
+  const semanticBlock = semanticHint
+    ? `\n${semanticHint}\n`
+    : '';
+
+  const assetBlock = assetHints || '';
+
+  return `Convert the following Figma design to a React component with Tailwind CSS:
+${nameHint}${semanticBlock}${assetBlock}
+Fidelity requirements:
+- **PIXEL PERFECT** — every CSS value must match the YAML data exactly. Use Tailwind arbitrary values (e.g. \`bg-[#hex]\`, \`text-[14px]\`) to match Figma exactly.
+- Preserve exact text content from Figma; do NOT replace with placeholders.
+- Preserve exact numeric dimensions, spacing, and typography values from the design data.
+- Every node with visual properties (fills, border, shadows, textStyle, borderRadius, opacity) MUST have corresponding Tailwind classes with those exact values.
+- **TEXT nodes**: Do NOT apply fills as background. Text color is already in textStyle.color — use \`text-[color]\`.
+- **ICON nodes** (type: ICON with assetFile): MUST render as \`<img src="{assetFile}" alt="" />\` with the node's width and height.
+- Do NOT skip any visual property from the YAML — if it exists, it must appear in the output.
+- Use \`className\` not \`class\`.
+
+\`\`\`yaml
+${yamlContent.trim()}
+\`\`\``;
+}
+
+/**
+ * Assembles the system prompt for React + Tailwind section layout generation.
+ * Used in PATH C Step 4 when templateMode is on.
+ */
+export function assembleReactSectionSystemPrompt(): string {
+  const base = loadReactSystemPrompt();
+  const sectionAddendum = loadPageSectionPrompt();
+  const templateAddendum = loadTemplateModeAddendum();
+  return `${base}\n\n${sectionAddendum}\n\n${templateAddendum}`;
+}
+
+/**
+ * Assembles the user prompt for React + Tailwind section layout generation.
+ * Used in PATH C Step 4 when templateMode is on.
+ */
+export function assembleReactSectionUserPrompt(
+  yamlContent: string,
+  sectionName: string,
+  sectionIndex: number,
+  totalSections: number,
+  ctx?: PageSectionContext,
+): string {
+  const contextLines: string[] = [];
+  if (ctx) {
+    if (ctx.pageWidth) contextLines.push(`- Page canvas width: ${ctx.pageWidth}px`);
+    if (ctx.sectionGap) contextLines.push(`- Gap between sections: ${ctx.sectionGap}px`);
+    if (ctx.pagePadding) {
+      const { top, right, bottom, left } = ctx.pagePadding;
+      if (top || right || bottom || left) {
+        contextLines.push(`- Page padding: ${top}px ${right}px ${bottom}px ${left}px`);
+      }
+    }
+    if (ctx.sectionWidth) {
+      if (ctx.sectionWidthMode === 'fill' || ctx.sectionWidthMode === 'hug') {
+        contextLines.push(`- This section's rendered width in the design: ${ctx.sectionWidth}px (for reference only — use the width mode below, NOT this pixel value)`);
+      } else {
+        contextLines.push(`- **This section's width: ${ctx.sectionWidth}px** — your root element MUST use this exact width`);
+      }
+    }
+    if (ctx.sectionHeight) {
+      if (ctx.sectionHeightMode === 'fill' || ctx.sectionHeightMode === 'hug') {
+        contextLines.push(`- This section's rendered height in the design: ${ctx.sectionHeight}px (for reference only — use the height mode below)`);
+      } else {
+        contextLines.push(`- **This section's height: ${ctx.sectionHeight}px**`);
+      }
+    }
+    if (ctx.pageBackground) contextLines.push(`- Page background: ${ctx.pageBackground}`);
+    if (ctx.prevSectionName) contextLines.push(`- Previous section: "${ctx.prevSectionName}"`);
+    else contextLines.push(`- This is the FIRST section (no section above)`);
+    if (ctx.nextSectionName) contextLines.push(`- Next section: "${ctx.nextSectionName}"`);
+    else contextLines.push(`- This is the LAST section (no section below)`);
+    if (ctx.sectionPositioning) {
+      const dir = ctx.pageLayoutDirection ?? 'column';
+      contextLines.push(`- **Section positioning: ${ctx.sectionPositioning}** — this section is a ${ctx.sectionPositioning} item in a ${dir} layout`);
+    }
+    if (ctx.sectionWidthMode) {
+      if (ctx.sectionWidthMode === 'fill') contextLines.push('- **Width mode: fill** — use w-full, NOT a fixed pixel value');
+      else if (ctx.sectionWidthMode === 'hug') contextLines.push('- **Width mode: hug** — use w-auto (fit content), NOT a fixed pixel value');
+      else contextLines.push('- **Width mode: fixed** — use the exact pixel value from section width');
+    }
+    if (ctx.sectionHeightMode) {
+      if (ctx.sectionHeightMode === 'fill') contextLines.push('- **Height mode: fill** — use h-full or flex-1, NOT a fixed pixel value');
+      else if (ctx.sectionHeightMode === 'hug') contextLines.push('- **Height mode: hug** — use h-auto, NOT a fixed pixel value');
+      else contextLines.push('- **Height mode: fixed** — use the exact pixel value from section height');
+    }
+  }
+
+  const contextBlock = contextLines.length > 0
+    ? `\n**Page context:**\n${contextLines.join('\n')}\n`
+    : '';
+
+  const yamlBlock = '```yaml\n' + yamlContent.trim() + '\n```';
+
+  return 'Convert the following Figma section to a static React component with Tailwind CSS.\n\n' +
+    `This is **Section ${sectionIndex} of ${totalSections}: "${sectionName}"**.\n` +
+    contextBlock + '\n' +
+    '- Use Tailwind utility classes with arbitrary values for pixel-perfect styling.\n' +
+    '- **PIXEL PERFECT** — use exact fills, colors, fonts, borders, shadows, border-radius, opacity values from the YAML as Tailwind arbitrary values.\n' +
+    '- Preserve exact text content and numeric dimensions from the input data.\n' +
+    '- Do not replace labels/content with placeholders.\n' +
+    '- Every YAML node with visual properties MUST have corresponding Tailwind classes.\n' +
+    '- **TEXT nodes**: Do NOT apply fills as background. Text color is already in textStyle.color.\n' +
+    '- **ICON nodes** (type: ICON with assetFile): MUST render as `<img src="{assetFile}" alt="" />` with the node\'s width and height.\n' +
+    '- Use `className` not `class`.\n' +
+    '- Output purely static content — no useState, no event handlers, no dynamic expressions.\n\n' +
+    yamlBlock;
 }
 
 // ── Page section prompts (PATH C) ──────────────────────────────────────────

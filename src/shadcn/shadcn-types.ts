@@ -8,6 +8,7 @@
 /** Maps formRole → shadcn registry component name */
 const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   button: 'button',
+  iconButton: 'button',
   textInput: 'input',
   textarea: 'textarea',
   search: 'input',
@@ -19,6 +20,18 @@ const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   checkbox: 'checkbox',
   radio: 'radio',
   toggle: 'switch',
+  select: 'select',
+  tab: 'tabs',
+  avatar: 'avatar',
+  tooltip: 'tooltip',
+  slider: 'slider',
+  pagination: 'pagination',
+  stepper: 'stepper',
+  breadcrumb: 'breadcrumb',
+  calendar: 'calendar',
+  dropdownMenu: 'dropdown-menu',
+  form: 'form',
+  card: 'card',
 };
 
 /** Also map ComponentCategory values that differ from formRole */
@@ -40,6 +53,28 @@ const CATEGORY_TO_SHADCN: Record<string, string> = {
   'radio-button': 'radio',
   toggle: 'switch',
   switch: 'switch',
+  select: 'select',
+  dropdown: 'select',
+  'dropdown-field': 'select',
+  tab: 'tabs',
+  tabs: 'tabs',
+  avatar: 'avatar',
+  tooltip: 'tooltip',
+  slider: 'slider',
+  range: 'slider',
+  pagination: 'pagination',
+  stepper: 'stepper',
+  'step-indicator': 'stepper',
+  breadcrumb: 'breadcrumb',
+  calendar: 'calendar',
+  'date-picker': 'calendar',
+  'dropdown-menu': 'dropdown-menu',
+  'context-menu': 'dropdown-menu',
+  'popover-menu': 'dropdown-menu',
+  form: 'form',
+  'form-field': 'form',
+  'form-group': 'form',
+  card: 'card',
 };
 
 const SUPPORTED = new Set([

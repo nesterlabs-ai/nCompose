@@ -51,12 +51,9 @@ The LLM generates `font-['Host_Grotesk']` in Tailwind classes, but the WebContai
 
 **Priority: Medium**
 
-Currently supported: button, input, textarea, badge, toast, dialog/modal.
+Currently supported: button, input, textarea, badge, toast, dialog/modal, checkbox, radio, switch/toggle.
 
 **To add**:
-- checkbox
-- radio button
-- switch / toggle
 - tabs
 - accordion
 - avatar
@@ -111,3 +108,55 @@ Fixed with flex-wrap, but the white card wrapper (`background: #fff`, `border: 1
 **Fix**: Make the card wrapper background transparent or remove it for shadcn components. Let the component's own background/border be the only visible container.
 
 **Files**: `src/web/public/app.js` (buildShadcnVariantGridApp template string)
+
+---
+
+## 8. Consolidate dual prompt systems (variant-prompt-builder vs shadcn-prompt-builder)
+
+**Priority: Medium**
+
+Currently there are TWO separate LLM prompt systems for PATH A (COMPONENT_SET):
+
+| System | File | Used when | Output |
+|--------|------|-----------|--------|
+| `variant-prompt-builder.ts` | `src/figma/variant-prompt-builder.ts` | `templateMode` OFF, or shadcn not supported | `.lite.tsx` (Mitosis) + BEM CSS → React, Vue, Svelte, Angular, Solid |
+| `shadcn-prompt-builder.ts` | `src/shadcn/shadcn-prompt-builder.ts` | `templateMode` ON + `isShadcnSupported()` true | CVA `.tsx` + consumer `.jsx` → React only |
+
+The flow in `src/convert.ts` (lines 868-937):
+```
+COMPONENT_SET detected
+  → if templateMode ON + isShadcnSupported(category):
+      → shadcn-codegen (shadcn-prompt-builder)
+      → if fails, fall through ↓
+  → convertComponentSet() (variant-prompt-builder)
+```
+
+**Why variant-prompt-builder still exists**:
+1. **Non-template mode** — when `--template` flag is off, everything uses the old path
+2. **Unsupported components** — 10 formRoles without shadcn templates (tab, avatar, slider, pagination, etc.) fall back to it
+3. **Fallback safety net** — if shadcn codegen throws, it catches the error and falls through
+4. **Multi-framework** — shadcn outputs React only; the old path outputs React + Vue + Svelte + Angular + Solid via Mitosis
+
+**Long-term goal**: Once all components have shadcn templates and if React-only output is sufficient, `variant-prompt-builder.ts` and the Mitosis compilation path can be removed entirely. This would simplify the codebase significantly — one prompt system, one output format.
+
+**Depends on**: Issue #4 (expand registry to cover all 21 detected component types)
+
+**Files**: `src/figma/variant-prompt-builder.ts`, `src/shadcn/shadcn-prompt-builder.ts`, `src/convert.ts`
+
+---
+
+## 9. Component detection — 21 patterns, only 11 have shadcn templates
+
+**Priority: Medium**
+
+`src/figma/component-discovery.ts` detects 21 UI component types by name pattern matching. Currently only 11 map to shadcn templates:
+
+**Supported (have templates)**:
+- button, input, textarea, search, checkbox, radio, toggle/switch, chip, badge/statusIndicator, toast, dialog/modal
+
+**Detected but no template (fall back to LLM+Mitosis)**:
+- select/dropdown, iconButton, tab, breadcrumb, avatar, tooltip, slider, pagination, stepper
+
+Adding templates for the remaining 10 would let all detected components use the shadcn path.
+
+**Files**: `src/figma/component-discovery.ts`, `src/shadcn/shadcn-types.ts`, `src/figma-to-code-starter-main/src/components/ui/`

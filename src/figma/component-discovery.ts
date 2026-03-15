@@ -16,6 +16,7 @@ import { isChartSection } from './chart-detection.js';
 // ── Name patterns for recognizable UI components ────────────────────────────
 
 const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
+  { pattern: /dropdown\s*menu|context\s*menu|popover\s*menu/i, formRole: 'dropdownMenu' },
   { pattern: /dropdown\s*field|drop\s*down/i, formRole: 'select' },
   { pattern: /select\s*field|select\s*box/i, formRole: 'select' },
   { pattern: /input\s*field|text\s*field|text\s*box|text\s*input/i, formRole: 'textInput' },
@@ -37,6 +38,9 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
   { pattern: /stepper|step\s*indicator/i, formRole: 'stepper' },
   { pattern: /toast\b|snackbar/i, formRole: 'toast' },
   { pattern: /dialog\b|modal\b/i, formRole: 'dialog' },
+  { pattern: /calendar|date\s*picker/i, formRole: 'calendar' },
+  { pattern: /\bform\b|form\s*field|form\s*group/i, formRole: 'form' },
+  { pattern: /\bcard\b/i, formRole: 'card' },
 ];
 
 // ── Types ───────────────────────────────────────────────────────────────────

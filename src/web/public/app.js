@@ -839,6 +839,9 @@ function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
   const variantValues = variantAxes.length > 0 ? variantAxes[0].values : ['Default'];
   const variantAxisName = variantAxes.length > 0 ? variantAxes[0].name : null;
 
+  // Extra variant axes beyond the first (e.g. Avatar has Type + Shape)
+  const extraVariantAxes = variantAxes.slice(1);
+
   // Parse actual CVA key names from the generated shadcn source to use the exact prop names
   // the LLM chose (instead of guessing from Figma axis names)
   const cvaKeys = {};
@@ -862,6 +865,12 @@ function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
     variantPropName = cvaKeys[camel] ? camel : (Object.keys(cvaKeys).find(k => k !== 'size' && k !== 'state') || camel);
   }
 
+  // Map extra variant axes to their CVA prop names
+  const extraAxisPropNames = extraVariantAxes.map(ax => {
+    const camel = ax.name.charAt(0).toLowerCase() + ax.name.slice(1);
+    return cvaKeys[camel] ? camel : camel;
+  });
+
   const sizePropName = 'size';
   const statePropName = 'state';
 
@@ -882,28 +891,53 @@ function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
   const hasStateAxis = stateAxes.length > 0;
   const hasSizeAxis = sizeAxes.length > 0;
 
+  // Build cartesian product of extra variant axes values
+  // e.g. if extraVariantAxes = [{name:'Shape', values:['Square','Circle']}]
+  // then extraCombos = [['Square'], ['Circle']]
+  let extraCombos = [[]];
+  for (const ax of extraVariantAxes) {
+    const newCombos = [];
+    for (const prev of extraCombos) {
+      for (const val of ax.values) {
+        newCombos.push([...prev, val]);
+      }
+    }
+    extraCombos = newCombos;
+  }
+
   // Build list of valid combos (filter cartesian product against actual Figma variants)
   const allCombos = [];
   for (const variant of variantValues) {
     for (const state of stateValues) {
       for (const size of sizeValues) {
-        // Check if this combo exists in Figma
-        if (figmaComboSet) {
-          // Only include values from axes that actually exist in Figma (skip fallback 'Default')
-          const keyParts = [];
-          if (hasVariantAxis) keyParts.push(variant.toLowerCase());
-          if (hasStateAxis) keyParts.push(state.toLowerCase());
-          if (hasSizeAxis) keyParts.push(size.toLowerCase());
-          const comboKey = keyParts.sort().join('|');
-          if (!figmaComboSet.has(comboKey)) continue;
+        for (const extra of extraCombos) {
+          // Check if this combo exists in Figma
+          if (figmaComboSet) {
+            const keyParts = [];
+            if (hasVariantAxis) keyParts.push(variant.toLowerCase());
+            if (hasStateAxis) keyParts.push(state.toLowerCase());
+            if (hasSizeAxis) keyParts.push(size.toLowerCase());
+            for (const ev of extra) keyParts.push(ev.toLowerCase());
+            const comboKey = keyParts.sort().join('|');
+            if (!figmaComboSet.has(comboKey)) continue;
+          }
+          const combo = { variant, state, size };
+          for (let i = 0; i < extra.length; i++) {
+            combo[extraAxisPropNames[i]] = extra[i];
+          }
+          allCombos.push(combo);
         }
-        allCombos.push({ variant, state, size });
       }
     }
   }
 
   const totalCount = allCombos.length;
   const allCombosJson = JSON.stringify(allCombos);
+
+  // Build extra axis prop assignments for JSX
+  const extraPropAssignments = extraAxisPropNames.map(p => `                    ${p}={normalizeName(c.${p})}`).join('\n');
+  const extraLabelParts = extraAxisPropNames.map(p => `\${c.${p}}`).join(' / ');
+  const extraLabel = extraLabelParts ? ` / ${extraLabelParts}` : '';
 
   // Build the App component that renders only valid combos
   return `import ${componentName} from "./components/${componentName}";
@@ -948,11 +982,11 @@ function App() {
                     ${variantPropName}={normalizeName(c.variant)}
                     ${sizePropName}={normalizeName(c.size)}
                     ${statePropName}={normalizeName(c.state)}
-                    onClose={() => {}}
+${extraPropAssignments ? extraPropAssignments + '\n' : ''}                    onClose={() => {}}
                     checked={normalizeName(c.state) === 'checked' || normalizeName(c.state) === 'selected' || normalizeName(c.state) === 'on'}
                     onCheckedChange={() => {}}
                   />
-                  <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{c.state} / {c.size}</div>
+                  <div style={{ fontSize: '9px', color: '#aaa', marginTop: '6px' }}>{c.state} / {c.size}${extraLabel}</div>
                 </div>
               ))}
             </div>

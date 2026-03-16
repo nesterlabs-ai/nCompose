@@ -646,6 +646,29 @@ export function fixInlineStyleStrings(code: string): string {
 }
 
 /**
+ * Strips `css={{...}}` inline style props from Mitosis JSX source.
+ *
+ * LLMs sometimes emit inline `css={{}}` props instead of using class-based CSS.
+ * After Mitosis compilation, these become auto-generated class names with only
+ * width/height — losing all other styling context. This function removes them
+ * so styling comes exclusively from the CSS stylesheet.
+ *
+ * Handles:
+ * - `css={{key: 'value', key2: 'value2'}}` (Mitosis inline style objects)
+ * - `css={{ key: "value" }}` (double quotes, whitespace variants)
+ *
+ * Does NOT strip `class=` or `className=` attributes.
+ */
+export function stripInlineCSS(code: string): string {
+  // Match css={{ ... }} props, handling nested braces carefully.
+  // The outer pair is {{...}} — we need to balance the inner braces.
+  return code.replace(
+    /\s*css=\{\{[^}]*\}\}/g,
+    '',
+  );
+}
+
+/**
  * Ensures the root CSS rule has a max-width constraint for PATH B outputs.
  * The LLM often omits max-width, causing the layout to stretch to fill
  * the entire viewport. We inject max-width and centering if not present.
@@ -708,6 +731,7 @@ export function replaceDesignWidthInCSS(css: string, rootWidth?: number): string
  */
 export function cleanLLMOutput(code: string, expectedRootTag?: string, rootWidth?: number): { jsx: string; css: string } {
   let cleaned = stripMarkdownFences(code);
+  cleaned = stripInlineCSS(cleaned); // Remove css={{}} before Mitosis sees them
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
   const fixedSVG = fixSVGAttributes(fixedClassName);

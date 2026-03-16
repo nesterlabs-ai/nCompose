@@ -1016,30 +1016,174 @@ async function fallbackMonolithicGeneration(
 
   // Asset info is already embedded in the YAML as type: ICON nodes
 
+  const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
+
+  let rawCode = '';
+  let css = '';
+  let success = false;
+
   try {
     const result = await generateWithRetry(
       llm, systemPrompt, userPrompt, onAttempt,
       undefined, undefined, undefined, undefined, undefined,
       yaml,  // source YAML for CSS fidelity validation
     );
-    return {
-      rawCode: result.rawCode,
-      css: result.css ?? '',
-      success: result.success,
-      generatedComponents: [],
-      discovery,
-      chartComponents: [],
-    };
-  } catch {
-    return {
-      rawCode: '',
-      css: '',
-      success: false,
-      generatedComponents: [],
-      discovery,
-      chartComponents: [],
-    };
+    rawCode = result.rawCode;
+    css = result.css ?? '';
+    success = result.success;
+  } catch (err) {
+    console.error(`  [FALLBACK] Section "${sectionName}" LLM generation failed:`, err instanceof Error ? err.message : err);
   }
+
+  // If LLM returned empty JSX, generate a structural fallback from the YAML
+  // data so the section's text content and structure are still rendered.
+  const { extractJSXBody: extractBody } = await import('./stitch.js');
+  const body = rawCode ? extractBody(rawCode) : '';
+  if (!body.trim()) {
+    console.error(`  [FALLBACK] Section "${sectionName}" — LLM produced empty JSX, generating structural fallback`);
+    const fallback = generateStructuralFallback(serialized, slug);
+    if (fallback.jsx) {
+      rawCode = fallback.jsx;
+      css = fallback.css;
+      success = true;
+    }
+  }
+
+  return {
+    rawCode,
+    css,
+    success,
+    generatedComponents: [],
+    discovery,
+    chartComponents: [],
+  };
+}
+
+// ── Structural Fallback ──────────────────────────────────────────────────────
+
+/**
+ * Generates a minimal JSX component from the serialized YAML tree when the
+ * LLM fails to produce any output. Walks the node tree and emits:
+ *   - TEXT nodes as `<span>` with their text content
+ *   - ICON nodes as `<img>` with their assetFile
+ *   - FRAME/GROUP containers as `<div>`
+ *
+ * This ensures sections with visible content always render something rather
+ * than silently disappearing. The output is structurally correct but may
+ * lack pixel-perfect styling.
+ */
+function generateStructuralFallback(serialized: any, sectionSlug: string): { jsx: string; css: string } {
+  const cssRules: string[] = [];
+  let classCounter = 0;
+
+  function makeClass(hint: string): string {
+    const clean = hint.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+    const suffix = clean || `el-${++classCounter}`;
+    return `${sectionSlug}__${suffix}`;
+  }
+
+  /** Append px only when the value is a bare number (no existing unit). */
+  function cssVal(v: any): string {
+    if (v == null) return '';
+    const s = String(v);
+    // Already has a unit (px, %, em, rem, etc.) → use as-is
+    if (/[a-z%]$/i.test(s)) return s;
+    // Pure number → append px
+    if (/^-?\d+(\.\d+)?$/.test(s)) return `${s}px`;
+    return s;
+  }
+
+  /** Serialize a border value that may be a string OR an object. */
+  function cssBorder(b: any): string {
+    if (!b) return '';
+    if (typeof b === 'string') return b;
+    // Object form: { width, style, color } or Figma-style { strokeWeight, color, ... }
+    const w = b.width ?? b.strokeWeight ?? 1;
+    const style = b.style ?? 'solid';
+    const c = b.color ?? '#000';
+    return `${cssVal(w)} ${style} ${typeof c === 'string' ? c : '#000'}`;
+  }
+
+  function walkNode(node: any, depth: number): string {
+    if (!node) return '';
+    const indent = '  '.repeat(depth);
+    const name = node.name || '';
+    const type = node.type || node.nodeType || '';
+
+    // TEXT node → emit <span> with text content
+    // Serialized data uses: type='TEXT', text='...' (from node.characters)
+    if (type === 'TEXT' || node.text) {
+      const text = node.text || node.characters || name;
+      if (!text.trim()) return '';
+      const cls = makeClass(name);
+      let rule = `.${cls} {\n`;
+      const ts = node.textStyle;
+      if (ts?.fontSize) rule += `  font-size: ${ts.fontSize};\n`;
+      if (ts?.fontWeight) rule += `  font-weight: ${ts.fontWeight};\n`;
+      if (ts?.lineHeight) rule += `  line-height: ${ts.lineHeight};\n`;
+      if (ts?.fontFamily) rule += `  font-family: ${ts.fontFamily};\n`;
+      if (ts?.color) rule += `  color: ${ts.color};\n`;
+      rule += `}\n`;
+      cssRules.push(rule);
+      // Wrap text in {"..."} JSX expression to prevent apostrophes / special
+      // chars from confusing extractJSXBody's paren-depth tracker.
+      return `${indent}<span class="${cls}">{${JSON.stringify(text)}}</span>`;
+    }
+
+    // ICON node → emit <img>
+    if (type === 'ICON' && node.assetFile) {
+      const cls = makeClass(name);
+      cssRules.push(`.${cls} { width: ${cssVal(node.width) || '20px'}; height: ${cssVal(node.height) || '20px'}; }\n`);
+      return `${indent}<img src="./assets/${node.assetFile}" alt="" class="${cls}" />`;
+    }
+
+    // Container → recurse children
+    const children = node.children || [];
+    const childJSX = children.map((c: any) => walkNode(c, depth + 1)).filter(Boolean);
+    if (childJSX.length === 0 && !node.text) return '';
+
+    const cls = makeClass(name);
+    let rule = `.${cls} {\n  display: flex;\n`;
+    const dir = node.layout?.direction || (node.layoutMode === 'HORIZONTAL' ? 'row' : 'column');
+    rule += `  flex-direction: ${dir};\n`;
+    const gap = node.layout?.gap ?? node.gap ?? node.itemSpacing;
+    if (gap) rule += `  gap: ${cssVal(gap)};\n`;
+    if (node.padding) {
+      const p = node.padding;
+      if (typeof p === 'string') rule += `  padding: ${p};\n`;
+      else if (p.top !== undefined) rule += `  padding: ${cssVal(p.top)} ${cssVal(p.right)} ${cssVal(p.bottom)} ${cssVal(p.left)};\n`;
+    }
+    if (node.backgroundColor) rule += `  background-color: ${node.backgroundColor};\n`;
+    if (node.borderRadius) rule += `  border-radius: ${cssVal(node.borderRadius)};\n`;
+    const borderStr = cssBorder(node.border);
+    if (borderStr) rule += `  border: ${borderStr};\n`;
+    rule += `}\n`;
+    cssRules.push(rule);
+
+    return `${indent}<div class="${cls}">\n${childJSX.join('\n')}\n${indent}</div>`;
+  }
+
+  // Walk from depth 2 so the output is properly indented for the wrapper
+  const body = walkNode(serialized, 2);
+  if (!body.trim()) return { jsx: '', css: '' };
+
+  const funcName = toSafeIdentifier(sectionSlug);
+  // Don't add an inner <section> wrapper — stitch.ts already wraps each section
+  // in <section class="page__section-name">. Adding one here would create a
+  // redundant element whose class doesn't exist in CSS (BEM mismatch).
+  const jsx = `export default function ${funcName}(props) {\n  return (\n${body}\n  );\n}`;
+  const css = cssRules.join('\n');
+  return { jsx, css };
+}
+
+/** Convert a slug like "frame-2147225838" to a valid PascalCase JS identifier. */
+function toSafeIdentifier(s: string): string {
+  // Split on non-alphanumeric, capitalize each segment, filter empty
+  return s
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map(seg => seg.charAt(0).toUpperCase() + seg.slice(1))
+    .join('');
 }
 
 // ── Stretch Dimension Fix ────────────────────────────────────────────────────

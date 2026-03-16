@@ -168,6 +168,77 @@ export function computeStructuralFingerprint(node: any): string {
   return parts.join('|');
 }
 
+// ── Component-set property inference ─────────────────────────────────────────
+
+/**
+ * Infers a formRole from componentProperties (variant axes).
+ *
+ * INSTANCE nodes from COMPONENT_SETs carry variant properties like
+ * Type, Size, State, Disabled, etc. These properties tell us what kind
+ * of component it is — no name matching or dimension heuristics needed.
+ *
+ * Returns a formRole string. Falls back to 'component' (generic) if
+ * the properties don't give a clear signal.
+ */
+function inferFormRoleFromProperties(cp: any): string {
+  // Normalize all property keys and values to lowercase for matching.
+  // Handle two formats:
+  //   Raw Figma:       { "Type#123:0": { value: "Primary", type: "VARIANT" }, ... }
+  //   Simplified node: [ { name: "Type#123:0", value: "Primary", type: "VARIANT" }, ... ]
+  const keys = new Map<string, string>(); // lowercaseKey → value
+
+  if (Array.isArray(cp)) {
+    // Simplified format: array of {name, value, type}
+    for (const entry of cp) {
+      const cleanKey = cleanPropKey(String(entry.name ?? '')).toLowerCase();
+      const value = String(entry.value ?? '').toLowerCase();
+      keys.set(cleanKey, value);
+    }
+  } else {
+    // Raw Figma format: key-value object
+    for (const [rawKey, val] of Object.entries(cp)) {
+      const cleanKey = cleanPropKey(rawKey).toLowerCase();
+      const value = typeof val === 'object' && val !== null
+        ? String((val as any).value ?? '').toLowerCase()
+        : String(val).toLowerCase();
+      keys.set(cleanKey, value);
+    }
+  }
+
+  // Check property keys/values for component-type signals
+  const keyArr: string[] = [];
+  const valArr: string[] = [];
+  keys.forEach((v, k) => { keyArr.push(k); valArr.push(v); });
+  const hasKey = (patterns: RegExp) => keyArr.some((k) => patterns.test(k));
+  const hasValue = (patterns: RegExp) => valArr.some((v) => patterns.test(v));
+
+  // Checked / Unchecked → checkbox or toggle/switch
+  if (hasKey(/^checked$|^selected$/)) return 'checkbox';
+
+  // Open / Expanded → dropdown, dialog, or accordion
+  if (hasKey(/^open$|^expanded$/)) return 'select';
+
+  // Placeholder / Value + has input-like signals
+  if (hasKey(/^placeholder$/)) return 'textInput';
+
+  // Has Disabled + Type/Size/Icon properties → likely button
+  if (hasKey(/^disabled$/) && (hasKey(/^type$|^variant$|^style$/) || hasKey(/^size$/))) {
+    // Check if values suggest specific types
+    if (hasValue(/primary|secondary|tertiary|destructive|danger|ghost|outline|link/)) {
+      return 'button';
+    }
+  }
+
+  // Has Icon properties → likely button or icon-button
+  if (hasKey(/icon/)) {
+    if (hasKey(/^disabled$/) || hasKey(/^type$|^variant$/)) return 'button';
+  }
+
+  // Generic: node is from a COMPONENT_SET but we can't determine exact type.
+  // Return 'component' so it still gets extracted as a sub-component.
+  return 'component';
+}
+
 // ── Visual heuristic helpers ─────────────────────────────────────────────────
 
 /**
@@ -182,9 +253,10 @@ function getNodeDimensions(node: any): { w: number; h: number } | null {
 
 /**
  * Checks if node has a horizontal auto-layout.
+ * Checks both simplified and raw node since simplification may strip layoutMode.
  */
-function isHorizontalLayout(node: any): boolean {
-  return node.layoutMode === 'HORIZONTAL';
+function isHorizontalLayout(node: any, rawNode?: any): boolean {
+  return node.layoutMode === 'HORIZONTAL' || rawNode?.layoutMode === 'HORIZONTAL';
 }
 
 /**
@@ -221,24 +293,25 @@ function visibleChildCount(node: any): number {
  * Uses measurable node properties (dimensions, layout, children) — no names.
  * Returns a formRole string or null if no heuristic matches.
  */
-function matchVisualHeuristic(node: any): string | null {
-  const dims = getNodeDimensions(node);
+function matchVisualHeuristic(node: any, rawNode?: any): string | null {
+  const dims = getNodeDimensions(node) ?? getNodeDimensions(rawNode);
   if (!dims) return null;
   const { w, h } = dims;
   const childCount = visibleChildCount(node);
+  const horiz = isHorizontalLayout(node, rawNode);
 
   // Button: h≤64, horizontal layout, 1-3 children, has TEXT child
-  if (h <= 64 && isHorizontalLayout(node) && childCount >= 1 && childCount <= 3 && hasTextChild(node)) {
+  if (h <= 64 && horiz && childCount >= 1 && childCount <= 3 && hasTextChild(node)) {
     return 'button';
   }
 
   // Input: horizontal, has border/stroke, wider than tall, has TEXT, h≤64
-  if (isHorizontalLayout(node) && hasBorder(node) && w > h && hasTextChild(node) && h <= 64) {
+  if (horiz && hasBorder(node) && w > h && hasTextChild(node) && h <= 64) {
     return 'textInput';
   }
 
   // Checkbox: horizontal, has small square child (≤28px), has TEXT, h≤40
-  if (isHorizontalLayout(node) && h <= 40 && hasTextChild(node) && Array.isArray(node.children)) {
+  if (horiz && h <= 40 && hasTextChild(node) && Array.isArray(node.children)) {
     const hasSmallSquare = node.children.some((c: any) => {
       const cd = getNodeDimensions(c);
       return cd && cd.w <= 28 && cd.h <= 28 && Math.abs(cd.w - cd.h) <= 4;
@@ -260,7 +333,7 @@ function matchVisualHeuristic(node: any): string | null {
   }
 
   // Chip/Badge: horizontal, h≤36, border-radius ≥ 40% of height, has TEXT
-  if (isHorizontalLayout(node) && h <= 36 && hasTextChild(node)) {
+  if (horiz && h <= 36 && hasTextChild(node)) {
     const cr = node.cornerRadius ?? (node.rectangleCornerRadii ? node.rectangleCornerRadii[0] : 0);
     if (cr && cr >= h * 0.4) return 'chip';
   }
@@ -376,7 +449,21 @@ function walkForComponents(
   // Check if this is a recognizable component INSTANCE
   if (node.type === 'INSTANCE' && node.name) {
     let rawFormRole = matchComponentPattern(node.name);
-    if (!rawFormRole) rawFormRole = matchVisualHeuristic(node); // visual fallback
+    if (!rawFormRole) rawFormRole = matchVisualHeuristic(node, rawNode); // visual fallback
+
+    // Option 3: If name and visual heuristics didn't match, check if the
+    // INSTANCE comes from a COMPONENT_SET (has componentProperties with
+    // variant axes). Any such node is a reusable design-system component
+    // and should be extracted as a sub-component — no name guessing needed.
+    if (!rawFormRole) {
+      const cp = node.componentProperties ?? node.componentPropertyValues
+        ?? rawNode?.componentProperties ?? rawNode?.componentPropertyValues;
+      const cpLen = Array.isArray(cp) ? cp.length : (cp ? Object.keys(cp).length : 0);
+      if (cp && cpLen > 0) {
+        rawFormRole = inferFormRoleFromProperties(cp);
+      }
+    }
+
     if (rawFormRole) {
       const formRole = refineFormRole(rawFormRole, node);
       const fingerprint = computeStructuralFingerprint(node);

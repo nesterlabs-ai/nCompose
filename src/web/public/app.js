@@ -166,6 +166,7 @@ let generatedTabsData = [];
 let templateWired = false;
 let currentUpdatedShadcnSource = null;
 let currentShadcnComponentName = null;
+let currentShadcnSubComponents = null;
 let currentComponentPropertyDefs = null;
 let currentVariantMetadata = null;
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
@@ -1609,29 +1610,39 @@ export default App;
 
   const hasCharts = (chartComponents && chartComponents.length > 0) ||
     /from ['"]recharts['"]/.test(componentCode);
+  const hasShadcnSub = !!(currentShadcnSubComponents && currentShadcnSubComponents.length);
+  const needsShadcnDeps = hasShadcn || hasShadcnSub;
   const deps = { react: '^18.3.1', 'react-dom': '^18.3.1' };
   if (hasCharts) deps['recharts'] = '^2.12.0';
-  if (hasShadcn) {
+  if (needsShadcnDeps) {
     deps['class-variance-authority'] = '^0.7.0';
     deps['clsx'] = '^2.1.0';
     deps['tailwind-merge'] = '^2.2.0';
     deps['@radix-ui/react-slot'] = '^1.0.2';
     // Scan generated shadcn source for @radix-ui/* imports and add them dynamically
-    if (currentUpdatedShadcnSource) {
-      const radixMatches = currentUpdatedShadcnSource.matchAll(/@radix-ui\/[\w-]+/g);
-      for (const m of radixMatches) {
-        if (!deps[m[0]]) deps[m[0]] = '^1.0.0';
+    const allShadcnSources = [currentUpdatedShadcnSource || ''];
+    if (currentShadcnSubComponents) {
+      for (const sub of currentShadcnSubComponents) {
+        allShadcnSources.push(sub.updatedShadcnSource || '');
+      }
+    }
+    for (const src of allShadcnSources) {
+      if (src) {
+        const radixMatches = src.matchAll(/@radix-ui\/[\w-]+/g);
+        for (const m of radixMatches) {
+          if (!deps[m[0]]) deps[m[0]] = '^1.0.0';
+        }
       }
     }
     // Also scan consumer code for any additional imports
-    const allCode = componentCode + (currentUpdatedShadcnSource || '');
+    const allCode = componentCode + allShadcnSources.join('');
     if (/lucide-react/.test(allCode)) deps['lucide-react'] = '^0.460.0';
     if (/react-day-picker/.test(allCode)) deps['react-day-picker'] = '^8.10.0';
     if (/date-fns/.test(allCode)) deps['date-fns'] = '^3.6.0';
   }
 
   // Vite config — add @/ path alias for shadcn imports
-  const viteConfig = hasShadcn
+  const viteConfig = needsShadcnDeps
     ? 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; import path from "path"; export default defineConfig({ plugins: [react()], resolve: { alias: { "@": path.resolve(__dirname, "./src") } } });'
     : 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });';
 
@@ -1765,6 +1776,17 @@ export default App;
   if (hasShadcn) {
     files[`src/components/ui/${currentShadcnComponentName}.tsx`] = currentUpdatedShadcnSource;
     files['src/lib/utils.ts'] = 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n';
+  }
+
+  // Add shadcn sub-components (composite delegation)
+  if (currentShadcnSubComponents && currentShadcnSubComponents.length) {
+    for (const sub of currentShadcnSubComponents) {
+      files[`src/components/ui/${sub.shadcnComponentName}.tsx`] = sub.updatedShadcnSource;
+    }
+    // Ensure cn() utility is present even if no single shadcn component
+    if (!hasShadcn) {
+      files['src/lib/utils.ts'] = 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n';
+    }
   }
 
   // Chart components are inlined into the main React JSX — no separate files needed.
@@ -2095,6 +2117,7 @@ function handleComplete(data) {
   templateWired = Boolean(data.templateWired);
   currentUpdatedShadcnSource = data.updatedShadcnSource || null;
   currentShadcnComponentName = data.shadcnComponentName || null;
+  currentShadcnSubComponents = data.shadcnSubComponents || null;
   currentComponentPropertyDefs = data.componentPropertyDefinitions || null;
   currentVariantMetadata = data.variantMetadata || null;
 

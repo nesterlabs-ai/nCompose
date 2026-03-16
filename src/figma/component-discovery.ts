@@ -418,6 +418,7 @@ function walkForComponents(
   rawNode: any,
   path: number[],
   results: Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>,
+  deepRecurse?: boolean,
 ): void {
   if (!node || node.visible === false) return;
 
@@ -449,6 +450,7 @@ function walkForComponents(
   // Check if this is a recognizable component INSTANCE
   if (node.type === 'INSTANCE' && node.name) {
     let rawFormRole = matchComponentPattern(node.name);
+    const nameMatched = !!rawFormRole;
     if (!rawFormRole) rawFormRole = matchVisualHeuristic(node, rawNode); // visual fallback
 
     // Option 3: If name and visual heuristics didn't match, check if the
@@ -466,18 +468,31 @@ function walkForComponents(
 
     if (rawFormRole) {
       const formRole = refineFormRole(rawFormRole, node);
-      const fingerprint = computeStructuralFingerprint(node);
-      const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
-      if (!results.has(key)) {
-        results.set(key, { formRole, componentName: node.name, instances: [] });
+
+      // In deepRecurse mode, skip collecting and continue recursing when:
+      // 1. formRole is generic 'component' (no specific UI primitive detected), OR
+      // 2. formRole was NOT name-matched — property inference and visual heuristics
+      //    can misclassify container instances (e.g. "list of items" with an
+      //    "Expanded" property gets inferred as 'select'). Name-pattern matching
+      //    is the most reliable signal, so in deepRecurse mode we only trust it
+      //    for stopping recursion. This lets us find actual primitives (radio,
+      //    checkbox, button) nested inside misclassified containers.
+      if (deepRecurse && (formRole === 'component' || !nameMatched)) {
+        // Fall through to child recursion below
+      } else {
+        const fingerprint = computeStructuralFingerprint(node);
+        const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
+        if (!results.has(key)) {
+          results.set(key, { formRole, componentName: node.name, instances: [] });
+        }
+        results.get(key)!.instances.push({
+          node,
+          props: extractProps(node),
+          treePath: [...path],
+        });
+        // Don't recurse into recognized components — they're leaf units
+        return;
       }
-      results.get(key)!.instances.push({
-        node,
-        props: extractProps(node),
-        treePath: [...path],
-      });
-      // Don't recurse into recognized components — they're leaf units
-      return;
     }
   }
 
@@ -488,7 +503,7 @@ function walkForComponents(
       const child = node.children[i];
       const rawChild = rawChildren[i] ?? child;
       if (child && child.visible !== false) {
-        walkForComponents(child, rawChild, [...path, i], results);
+        walkForComponents(child, rawChild, [...path, i], results, deepRecurse);
       }
     }
   }
@@ -500,15 +515,22 @@ function walkForComponents(
  *
  * @param sectionNode    - The root FRAME of a page section (simplified)
  * @param rawSectionNode - The raw Figma node (for chart detection)
+ * @param options        - Discovery options
+ * @param options.deepRecurse - When true, recurse through generic 'component'
+ *   INSTANCE nodes to find specific UI primitives nested inside container
+ *   components. Used by PATH B composite delegation to find shadcn-supported
+ *   children buried inside wrapper instances (e.g. Checkbox Field inside
+ *   "item row" inside "list of items"). Default: false (PATH C behavior unchanged).
  * @returns Discovery result with unique component types and their instances
  */
 export function discoverComponents(
   sectionNode: any,
   rawSectionNode?: any,
+  options?: { deepRecurse?: boolean },
 ): ComponentDiscoveryResult {
   const componentMap = new Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>();
 
-  walkForComponents(sectionNode, rawSectionNode ?? sectionNode, [], componentMap);
+  walkForComponents(sectionNode, rawSectionNode ?? sectionNode, [], componentMap, options?.deepRecurse);
 
   const components: DiscoveredComponent[] = [];
   let totalInstances = 0;

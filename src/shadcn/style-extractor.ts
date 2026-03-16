@@ -294,7 +294,8 @@ function extractStructureTree(node: any, depth: number = 0): string {
 
   const parts: string[] = [];
   for (const child of children) {
-    if ((child.name ?? '').startsWith('_')) continue; // skip hidden
+    if ((child.name ?? '').startsWith('_')) continue; // skip hidden by naming convention
+    if (child.visible === false) continue; // skip invisible nodes entirely — prevents LLM hallucination
     const type = classifyChildType(child);
     const traits = getNodeTraits(child);
 
@@ -310,12 +311,6 @@ function extractStructureTree(node: any, depth: number = 0): string {
           if (val !== undefined && val !== '') traits.push(`${cleanKey}=${val}`);
         }
       }
-    }
-
-    // For nodes with visible=false, mark them but still include their name/type
-    // (e.g. an Options dropdown that's closed still tells the LLM this is a select)
-    if (child.visible === false) {
-      traits.push('hidden');
     }
 
     const traitsStr = traits.length > 0 ? `[${traits.join(', ')}]` : '';

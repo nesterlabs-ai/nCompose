@@ -265,6 +265,7 @@ app.post('/api/convert', (req: any, res: any) => {
           chartComponents: result.chartComponents,
           updatedShadcnSource: result.updatedShadcnSource,
           shadcnComponentName: result.shadcnComponentName,
+          shadcnSubComponents: result.shadcnSubComponents,
         });
         sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
       } catch (writeErr) {
@@ -291,6 +292,7 @@ app.post('/api/convert', (req: any, res: any) => {
               updatedShadcnSource: result.updatedShadcnSource,
               shadcnComponentName: result.shadcnComponentName,
               figmaVariantNames,
+              shadcnSubComponents: result.shadcnSubComponents,
             });
             templateWired = true;
             sendEvent('step', {
@@ -328,6 +330,7 @@ app.post('/api/convert', (req: any, res: any) => {
           : undefined,
         updatedShadcnSource: result.updatedShadcnSource ?? undefined,
         shadcnComponentName: result.shadcnComponentName ?? undefined,
+        shadcnSubComponents: result.shadcnSubComponents ?? undefined,
         componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
         variantMetadata: result.variantMetadata ?? undefined,
       });

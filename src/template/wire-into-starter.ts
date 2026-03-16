@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { normalizeStateName, normalizeVariantName } from '../shadcn/style-extractor.js';
+import type { ShadcnSubComponent } from '../types/index.js';
 
 // Local copy of preview's toCamelCase for prop names
 function toCamelCase(str: string): string {
@@ -39,6 +40,8 @@ export interface WireIntoStarterOptions {
   shadcnComponentName?: string;
   /** Actual Figma variant names (e.g. ["State=Default, Size=Medium, Color=Green", ...]) — used to filter preview to only existing combos */
   figmaVariantNames?: string[];
+  /** shadcn sub-components generated from child nodes in a composite component */
+  shadcnSubComponents?: ShadcnSubComponent[];
 }
 
 /**
@@ -135,6 +138,15 @@ export function wireIntoStarter(options: WireIntoStarterOptions): string {
     const uiDir = join(appDir, 'src', 'components', 'ui');
     mkdirSync(uiDir, { recursive: true });
     writeFileSync(join(uiDir, `${shadcnComponentName}.tsx`), updatedShadcnSource, 'utf-8');
+  }
+
+  // 3c. Copy shadcn sub-components (composite delegation) to ui/ directory
+  if (options.shadcnSubComponents?.length) {
+    const uiDir = join(appDir, 'src', 'components', 'ui');
+    mkdirSync(uiDir, { recursive: true });
+    for (const sub of options.shadcnSubComponents) {
+      writeFileSync(join(uiDir, `${sub.shadcnComponentName}.tsx`), sub.updatedShadcnSource, 'utf-8');
+    }
   }
 
   // 4. Create a page that renders the component (single or variant grid)

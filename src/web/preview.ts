@@ -26,6 +26,8 @@ function transformReactCode(
   let css = '';
 
   for (const line of lines) {
+    // Skip "use client" directive (not needed in browser context)
+    if (/^\s*["']use client["'];?\s*$/.test(line)) continue;
     // Skip all import lines (including CSS imports and chart component imports)
     if (/^\s*import\s+/.test(line)) continue;
     // "export default function Foo() {" → keep as "function Foo() {" so the function is defined
@@ -254,7 +256,7 @@ ${variantBuildJS}
               <div key={i} style={{ width: '100%' }}>
                 <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
                 <div style={{ width: '100%' }}>
-                  <${componentName} {...v.props}>Button</${componentName}>
+                  <${componentName} {...v.props} />
                 </div>
               </div>
             ))}
@@ -293,6 +295,15 @@ export function generatePreviewHTML(
   const fontFamilies = collectFontFamilies(css);
   const fontLink = buildGoogleFontsLink(fontFamilies);
 
+  // Escape code for embedding inside a JS string literal (used in manual transpile approach)
+  // We manually call Babel.transform instead of using type="text/babel" to get error handling.
+  const escapedJSX = (
+    `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    code + '\n' +
+    appCode + '\n' +
+    `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`
+  ).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -307,6 +318,10 @@ export function generatePreviewHTML(
       background: #f8f9fa;
       min-height: 100vh;
     }
+    .preview-error { padding: 1rem; color: #dc2626; font-family: monospace; white-space: pre-wrap; font-size: 13px; }
+    .preview-error h3 { margin-bottom: 0.5rem; font-size: 14px; }
+    .ve-hover-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; cursor: pointer !important; }
+    .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
     ${css}
   </style>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -316,14 +331,104 @@ export function generatePreviewHTML(
 <body>
   <div id="root"></div>
 
-  <script type="text/babel" data-type="module">
-    const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}
-    ${code}
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      var el = document.getElementById('root');
+      if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + (line ? ' (line ' + line + ')' : '') + '</div>';
+    };
+    try {
+      var jsxCode = \`${escapedJSX}\`;
+      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+      var script = document.createElement('script');
+      script.textContent = result.code;
+      document.body.appendChild(script);
+    } catch (e) {
+      var el = document.getElementById('root');
+      if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
+      console.error('Babel transpile error:', e);
+    }
+  </script>
+  <script>
+    (function() {
+      let lastHovered = null;
+      let selectedEl = null;
 
-    ${appCode}
+      document.addEventListener('mouseover', (e) => {
+        if (!window.parentVisualEditActive) return;
+        if (lastHovered && lastHovered !== selectedEl) {
+          lastHovered.classList.remove('ve-hover-outline');
+        }
+        lastHovered = e.target;
+        if (lastHovered && lastHovered !== selectedEl && lastHovered !== document.body && lastHovered !== document.documentElement) {
+          lastHovered.classList.add('ve-hover-outline');
+        }
+      }, true);
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+      document.addEventListener('click', (e) => {
+        if (!window.parentVisualEditActive) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (selectedEl) {
+          selectedEl.classList.remove('ve-selected-outline');
+        }
+        selectedEl = e.target;
+        if (!selectedEl || selectedEl === document.body || selectedEl === document.documentElement) return;
+
+        selectedEl.classList.remove('ve-hover-outline');
+        selectedEl.classList.add('ve-selected-outline');
+
+        const style = window.getComputedStyle(selectedEl);
+        const rect = selectedEl.getBoundingClientRect();
+
+        window.parent.postMessage({
+          type: 'elementSelected',
+          tagName: selectedEl.tagName.toLowerCase(),
+          textContent: selectedEl.textContent.trim(),
+          computedStyle: {
+            color: style.color,
+            backgroundColor: style.backgroundColor,
+            fontSize: style.fontSize,
+            fontWeight: style.fontWeight,
+            margin: style.margin,
+            padding: style.padding,
+            textAlign: style.textAlign
+          },
+          rect: {
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height
+          }
+        }, '*');
+      }, true);
+
+      window.addEventListener('message', (e) => {
+        console.log('Iframe received message:', e.data.type, e.data.active);
+        if (e.data.type === 'updateElement') {
+          if (selectedEl) {
+            if (e.data.prop === 'textContent') {
+              selectedEl.textContent = e.data.value;
+            } else {
+              selectedEl.style[e.data.prop] = e.data.value;
+            }
+            const rect = selectedEl.getBoundingClientRect();
+            window.parent.postMessage({ type: 'rectUpdated', rect }, '*');
+          }
+        } else if (e.data.type === 'setVisualEditActive') {
+          window.parentVisualEditActive = e.data.active;
+          console.log('Iframe Visual Edit Active:', window.parentVisualEditActive);
+          if (!e.data.active) {
+            if (lastHovered) lastHovered.classList.remove('ve-hover-outline');
+            if (selectedEl) selectedEl.classList.remove('ve-selected-outline');
+            selectedEl = null;
+          }
+        }
+      });
+
+      // Report ready to parent
+      window.parent.postMessage({ type: 'iframeReady' }, '*');
+    })();
   </script>
 </body>
 </html>`;

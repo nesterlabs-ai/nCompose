@@ -13,6 +13,7 @@
  */
 
 import type { LLMProvider } from '../llm/provider.js';
+import { toKebabCase } from './component-set-parser.js';
 
 /**
  * Chart type is a string — NOT a fixed union.
@@ -3706,10 +3707,4 @@ function toPascalCase(str: string): string {
     .join('');
 }
 
-function toKebabCase(str: string): string {
-  return str
-    .replace(/([a-z])([A-Z])/g, '$1-$2')
-    .replace(/[\s_]+/g, '-')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '');
-}
+// toKebabCase imported from component-set-parser.ts for consistency

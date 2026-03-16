@@ -182,6 +182,18 @@ export type ComponentCategory =
   | 'form' | 'form-field' | 'form-group'
   | 'unknown';
 
+/** Tracks text content that changes between variants for a given layer */
+export interface VariantTextDiff {
+  /** BEM key of the TEXT layer (e.g. "toast__row__text-title") */
+  layerKey: string;
+  /** Default variant's text content */
+  defaultText: string;
+  /** Map of variant axis value → text content (only entries that differ from default) */
+  variantTexts: Record<string, string>;
+  /** Name of the axis that drives this text change */
+  axisName: string;
+}
+
 export interface ComponentSetData {
   name: string;
   nodeId: string;
@@ -203,6 +215,8 @@ export interface ComponentSetData {
   variableModesCSS: Record<string, string>;
   cssTokensReferenced: string[];
   childLayers: ChildLayerInfo[];
+  /** Text content that varies across variants (not captured by CSS diffs) */
+  variantTextDiffs: VariantTextDiff[];
   isInteractive: boolean;
   componentCategory: ComponentCategory;
   suggestedHtmlTag: string;
@@ -864,6 +878,9 @@ export function parseComponentSet(completeDesign: any): ComponentSetData | null 
 
   const childLayers = extractChildLayers(defaultVariantNode, globalStyles, resolvedVariables);
 
+  // Collect text content diffs across ALL variants
+  const variantTextDiffs = collectVariantTextDiffs(children, defaultVariantNode, axes, stateAxis);
+
   // Enhanced detection: analyze name, variant axes, AND child node names
   const childNames = (defaultVariantNode?.children ?? []).map((c: any) => c.name ?? '');
   const componentCategory = detectComponentCategoryEnhanced(rootNode.name, axes, childNames);
@@ -884,8 +901,133 @@ export function parseComponentSet(completeDesign: any): ComponentSetData | null 
     variableModesCSS,
     cssTokensReferenced: collectCSSTokens(defaultVariant.styles),
     childLayers,
+    variantTextDiffs,
     isInteractive, componentCategory, suggestedHtmlTag, suggestedAriaRole,
   };
+}
+
+// ============================================================================
+// SECTION 8b: VARIANT TEXT DIFF COLLECTION
+// ============================================================================
+
+/**
+ * Walk a variant node's children and collect TEXT content keyed by BEM path.
+ * Returns a flat map: { bemKey: characters }
+ */
+function collectTextContentFromNode(
+  node: any,
+  prefix: string,
+  depth: number,
+  maxDepth: number,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  if (!node?.children || depth > maxDepth) return result;
+
+  for (const child of node.children) {
+    if (!child?.name) continue;
+    if (child.visible === false) continue;
+
+    let childKebab = toKebabCase(child.name);
+    if (isContentDerivedName(child)) {
+      childKebab = inferTextSemanticKey(child);
+    }
+    const key = buildBemKey(prefix, childKebab);
+
+    if (child.type === 'TEXT' && child.characters) {
+      result.set(key, child.characters);
+    }
+
+    // Recurse into non-icon children
+    if (child.children) {
+      const childMap = collectTextContentFromNode(child, key, depth + 1, maxDepth);
+      for (const [k, v] of childMap) result.set(k, v);
+    }
+  }
+  return result;
+}
+
+/**
+ * Compare TEXT content across all variant nodes to find text that changes
+ * between variants. Returns an array of VariantTextDiff for each text layer
+ * whose content differs from the default variant in at least one other variant.
+ */
+function collectVariantTextDiffs(
+  allVariantNodes: any[],
+  defaultVariantNode: any,
+  axes: VariantAxis[],
+  stateAxis: VariantAxis | null,
+): VariantTextDiff[] {
+  // Collect default variant's text content
+  const defaultTexts = collectTextContentFromNode(defaultVariantNode, '', 0, 12);
+  if (defaultTexts.size === 0) return [];
+
+  // Collect text content from all non-default variant nodes
+  // Map: layerKey → { variantLabel → text }
+  const allTexts = new Map<string, Map<string, string>>();
+
+  // Initialize with default texts
+  for (const [key, text] of defaultTexts) {
+    allTexts.set(key, new Map([['__default__', text]]));
+  }
+
+  for (const variantNode of allVariantNodes) {
+    if (variantNode === defaultVariantNode) continue;
+
+    const props = parseVariantName(variantNode.name) ?? parseVariantProperties(variantNode);
+    if (!props) continue;
+
+    // Build a label for this variant (e.g., "Warning" or "Primary / Hover")
+    const variantLabel = Object.entries(props)
+      .filter(([k]) => !stateAxis || k !== stateAxis.name)
+      .map(([, v]) => v)
+      .join(' / ') || variantNode.name;
+
+    const texts = collectTextContentFromNode(variantNode, '', 0, 12);
+
+    for (const [key, text] of texts) {
+      if (!allTexts.has(key)) {
+        allTexts.set(key, new Map([['__default__', '']]));
+      }
+      allTexts.get(key)!.set(variantLabel, text);
+    }
+  }
+
+  // Find text layers where content differs across variants
+  const diffs: VariantTextDiff[] = [];
+
+  for (const [layerKey, textsMap] of allTexts) {
+    const defaultText = textsMap.get('__default__') ?? '';
+    const variantTexts: Record<string, string> = {};
+    let hasDiff = false;
+
+    for (const [label, text] of textsMap) {
+      if (label === '__default__') continue;
+      if (text !== defaultText) {
+        variantTexts[label] = text;
+        hasDiff = true;
+      }
+    }
+
+    if (!hasDiff) continue;
+
+    // Determine which axis drives this text change by finding the axis
+    // whose values best correlate with the text changes
+    let axisName = axes.length > 0 ? axes[0].name : 'variant';
+    if (stateAxis) {
+      // Exclude state axis — text diffs are typically driven by prop axes
+      const propAxes = axes.filter(a => a !== stateAxis);
+      if (propAxes.length > 0) axisName = propAxes[0].name;
+    }
+
+    diffs.push({
+      layerKey,
+      defaultText,
+      variantTexts,
+      axisName,
+    });
+  }
+
+  return diffs;
 }
 
 // ============================================================================
@@ -2627,7 +2769,10 @@ function emitDiffRules(
 }
 
 function maybeEmit(lines: string[], selector: string, props: Record<string, string>, fps?: Set<string>): void {
-  const body = Object.entries(props).map(([p, v]) => `  ${p}: ${v};`).join('\n');
+  // Sort entries by key for deterministic fingerprints — same CSS properties
+  // in different insertion order should produce the same fingerprint.
+  const sorted = Object.entries(props).sort(([a], [b]) => a.localeCompare(b));
+  const body = sorted.map(([p, v]) => `  ${p}: ${v};`).join('\n');
   const fp   = `${selector}||${body}`;
   if (fps) { if (fps.has(fp)) return; fps.add(fp); }
   lines.push('', `${selector} {`, body, '}');

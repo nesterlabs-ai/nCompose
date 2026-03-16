@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Framework, AssetEntry, FidelityReport, ChartComponent } from './types/index.js';
+import type { Framework, AssetEntry, FidelityReport, ChartComponent, ShadcnSubComponent } from './types/index.js';
 import { FRAMEWORK_EXTENSIONS } from './types/index.js';
 
 export interface WriteOutputOptions {
@@ -25,6 +25,8 @@ export interface WriteOutputOptions {
   updatedShadcnSource?: string;
   /** shadcn component name (e.g. "button") */
   shadcnComponentName?: string;
+  /** shadcn sub-components generated from child nodes in a composite component */
+  shadcnSubComponents?: ShadcnSubComponent[];
 }
 
 /**
@@ -90,6 +92,15 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     const shadcnPath = join(outputDir, `${options.shadcnComponentName}.tsx`);
     writeFileSync(shadcnPath, options.updatedShadcnSource, 'utf-8');
     writtenPaths.push(shadcnPath);
+  }
+
+  // Write shadcn sub-components (composite delegation)
+  if (options.shadcnSubComponents?.length) {
+    for (const sub of options.shadcnSubComponents) {
+      const shadcnPath = join(outputDir, `${sub.shadcnComponentName}.tsx`);
+      writeFileSync(shadcnPath, sub.updatedShadcnSource, 'utf-8');
+      writtenPaths.push(shadcnPath);
+    }
   }
 
   // Write fidelity diagnostics report

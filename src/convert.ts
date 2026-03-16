@@ -48,12 +48,13 @@ import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
 import { config } from './config.js';
-import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent } from './types/index.js';
+import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent, ShadcnSubComponent } from './types/index.js';
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
-import { isShadcnSupported } from './shadcn/shadcn-types.js';
-import { generateShadcnComponentSet } from './shadcn/shadcn-codegen.js';
+import { isShadcnSupported, getShadcnComponentType } from './shadcn/shadcn-types.js';
+import { generateShadcnComponentSet, generateShadcnSingleComponent } from './shadcn/shadcn-codegen.js';
 import { generateReactDirect } from './compile/react-direct-gen.js';
+import { discoverComponents } from './figma/component-discovery.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
@@ -447,9 +448,13 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
   const flexGrowSuppressWidth = result.flexGrow && parentLayoutDirection === 'row';
   const flexGrowSuppressHeight = result.flexGrow && parentLayoutDirection === 'column';
 
-  // Root element (depth=0): suppress fixed pixel width for auto-layout containers.
-  // The root should be full-width (100%) not fixed to a canvas width like 1440px.
-  const isRootAutoLayout = depth === 0 && isAutoLayoutContainer;
+  // Root element (depth=0): suppress fixed pixel width for auto-layout FRAME/PAGE
+  // containers. These are typically full-width page layouts (1440px) that should be
+  // responsive, not fixed. COMPONENT and INSTANCE nodes keep their width — it's
+  // intentional design sizing (e.g. a 357px dropdown component).
+  const nodeType = node.type ?? '';
+  const isPageLevelFrame = nodeType === 'FRAME' || nodeType === 'PAGE' || nodeType === 'GROUP';
+  const isRootAutoLayout = depth === 0 && isAutoLayoutContainer && isPageLevelFrame;
 
   // When a child's width matches the parent's width (within 2px), the child is
   // effectively filling the parent. Emitting the pixel value causes rigid layout.
@@ -1479,7 +1484,158 @@ async function convertSingleComponent(
 
   // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
   if (options.templateMode) {
-    // React + Tailwind direct (no Mitosis, no shadcn for PATH B)
+    // shadcn intercept: if recognized component → use shadcn single-component codegen
+    const category = hintedCategory ?? detectComponentCategory(rootNode?.name ?? '');
+    if (isShadcnSupported(category)) {
+      try {
+        onStep?.(`[shadcn] Detected "${category}" → using shadcn single-component codegen...`);
+        const shadcnResult = await generateShadcnSingleComponent(
+          rootNode,
+          category,
+          options.name ?? toPascalCase(rootNode?.name ?? 'Component'),
+          llm,
+          onStep,
+          assets,
+          llmYaml,
+        );
+
+        const scFrameworkOutputs: Record<string, string> = {};
+        for (const fw of options.frameworks) {
+          scFrameworkOutputs[fw] = fw === 'react'
+            ? shadcnResult.consumerCode
+            : `// ${shadcnResult.componentName} — shadcn/ui component (React only).\n`;
+        }
+
+        return {
+          componentName: shadcnResult.componentName,
+          mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
+          frameworkOutputs: scFrameworkOutputs as Record<Framework, string>,
+          assets,
+          updatedShadcnSource: shadcnResult.updatedShadcnSource,
+          shadcnComponentName: shadcnResult.shadcnComponentName,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onStep?.(`[shadcn] Failed: ${msg} — falling back to React + Tailwind direct`);
+      }
+    }
+
+    // ── Composite delegation: scan children for shadcn primitives ──────
+    if (rootNode) {
+      // deepRecurse: true — recurse through generic container instances
+      // (e.g. "item row", "list of items") to find specific UI primitives
+      // (checkbox, radio, button) nested at any depth
+      const discovery = discoverComponents(rootNode, undefined, { deepRecurse: true });
+      const shadcnChildren = discovery.components.filter((comp) => isShadcnSupported(comp.formRole));
+
+      if (shadcnChildren.length > 0) {
+        // Deduplicate by shadcn type (e.g. 6 buttons → 1 button.tsx)
+        // Also collect ALL Figma node names per type for the prompt mapping.
+        // When multiple formRoles map to the same shadcn type (e.g. chip→button,
+        // button→button), prefer the component whose formRole matches the shadcn
+        // type name directly (e.g. prefer "Button" over "Chip" for button.tsx).
+        const uniqueShadcnTypes = new Map<string, typeof shadcnChildren[0]>();
+        const figmaNodeNamesByType = new Map<string, string[]>();
+        for (const comp of shadcnChildren) {
+          const shadcnType = getShadcnComponentType(comp.formRole);
+          if (shadcnType) {
+            const existing = uniqueShadcnTypes.get(shadcnType);
+            if (!existing) {
+              uniqueShadcnTypes.set(shadcnType, comp);
+              figmaNodeNamesByType.set(shadcnType, []);
+            } else if (comp.formRole === shadcnType && existing.formRole !== shadcnType) {
+              // Replace: prefer the component whose formRole directly matches
+              // the shadcn type (e.g. formRole 'button' for shadcn 'button')
+              // over an indirect mapping (e.g. formRole 'chip' → shadcn 'button')
+              uniqueShadcnTypes.set(shadcnType, comp);
+            }
+            // Collect unique Figma node names for this shadcn type
+            const names = figmaNodeNamesByType.get(shadcnType)!;
+            if (!names.includes(comp.name)) {
+              names.push(comp.name);
+            }
+          }
+        }
+
+        const shadcnSubComponents: ShadcnSubComponent[] = [];
+        const availableShadcn: Array<{ name: string; importPath: string; source: string; figmaNodeNames?: string[] }> = [];
+
+        for (const [shadcnType, comp] of uniqueShadcnTypes) {
+          try {
+            onStep?.(`[shadcn-composite] Generating ${shadcnType} from child "${comp.name}"...`);
+            const subResult = await generateShadcnSingleComponent(
+              comp.representativeNode,
+              comp.formRole,
+              toPascalCase(comp.name),
+              llm,
+              onStep,
+              assets,
+            );
+
+            // Sanitize: the LLM sometimes appends extra consumer components
+            // (e.g. ChipList) into Block 1 (the shadcn base file), causing
+            // duplicate exports. Strip everything after the first top-level
+            // `export { ... }` or `export default` to keep only the base component.
+            let cleanSource = subResult.updatedShadcnSource;
+            const firstExportMatch = cleanSource.match(/^export\s*\{[^}]+\};?\s*$/m);
+            if (firstExportMatch) {
+              const exportEnd = cleanSource.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
+              const trailing = cleanSource.slice(exportEnd).trim();
+              if (trailing.length > 0) {
+                onStep?.(`[shadcn-composite] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
+                cleanSource = cleanSource.slice(0, exportEnd).trimEnd() + '\n';
+              }
+            }
+
+            shadcnSubComponents.push({
+              shadcnComponentName: subResult.shadcnComponentName,
+              updatedShadcnSource: cleanSource,
+            });
+
+            availableShadcn.push({
+              name: subResult.shadcnComponentName,
+              importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+              source: cleanSource,
+              figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            onStep?.(`[shadcn-composite] Failed to generate ${shadcnType}: ${msg} — skipping`);
+          }
+        }
+
+        if (shadcnSubComponents.length > 0) {
+          onStep?.(`[shadcn-composite] ${shadcnSubComponents.length} sub-component(s) generated, enriching React direct prompt...`);
+          const reactSystemPrompt = assembleReactSystemPrompt();
+          const reactUserPrompt = assembleReactUserPrompt(
+            llmYaml, options.name, semanticHint ?? undefined, undefined, availableShadcn,
+          );
+          const reactResult = await generateReactDirect(llm, reactSystemPrompt, reactUserPrompt);
+
+          const componentName = options.name ?? toPascalCase(rootNode?.name ?? 'Component');
+          const frameworkOutputs: Record<string, string> = {};
+          for (const fw of options.frameworks) {
+            if (fw === 'react') {
+              frameworkOutputs[fw] = reactResult.css
+                ? injectCSS(reactResult.reactCode, prependFontImport(reactResult.css), fw)
+                : reactResult.reactCode;
+            } else {
+              frameworkOutputs[fw] = '// React + Tailwind component (React only in template mode)';
+            }
+          }
+
+          return {
+            componentName,
+            mitosisSource: reactResult.reactCode,
+            frameworkOutputs: frameworkOutputs as Record<Framework, string>,
+            assets,
+            shadcnSubComponents,
+          };
+        }
+      }
+    }
+
+    // Fallback: React + Tailwind direct (no shadcn)
     onStep?.(`Generating React + Tailwind component via ${llm.name}...`);
     const reactSystemPrompt = assembleReactSystemPrompt();
     const reactUserPrompt = assembleReactUserPrompt(llmYaml, options.name, semanticHint ?? undefined);

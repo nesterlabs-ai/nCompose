@@ -297,6 +297,27 @@ function extractStructureTree(node: any, depth: number = 0): string {
     if ((child.name ?? '').startsWith('_')) continue; // skip hidden
     const type = classifyChildType(child);
     const traits = getNodeTraits(child);
+
+    // For INSTANCE nodes, include componentProperties (e.g. checked=true, value="Option")
+    // This tells the LLM what kind of component this is and its current state
+    if (child.type === 'INSTANCE') {
+      const props = child.componentProperties ?? child.componentPropertyValues;
+      if (props && typeof props === 'object') {
+        for (const [k, v] of Object.entries(props as Record<string, any>)) {
+          // Strip Figma ID suffix from key: "Error#280:88" → "Error"
+          const cleanKey = k.replace(/#[\d:]+$/, '');
+          const val = typeof v === 'object' && v !== null ? (v.value ?? v) : v;
+          if (val !== undefined && val !== '') traits.push(`${cleanKey}=${val}`);
+        }
+      }
+    }
+
+    // For nodes with visible=false, mark them but still include their name/type
+    // (e.g. an Options dropdown that's closed still tells the LLM this is a select)
+    if (child.visible === false) {
+      traits.push('hidden');
+    }
+
     const traitsStr = traits.length > 0 ? `[${traits.join(', ')}]` : '';
     const childStructure = extractStructureTree(child, depth + 1);
 
@@ -313,12 +334,12 @@ function classifyChildType(node: any): string {
   if (node.type === 'TEXT') return 'text';
   if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') return 'vector';
   if (node.type === 'INSTANCE') {
-    // Check if it's an icon-like instance (small, has vectors)
     const dim = getNodeDimensions(node);
     if (dim.width && dim.width <= 32 && dim.height && dim.height <= 32) return 'icon';
     return 'instance';
   }
-  if (node.type === 'FRAME' || node.type === 'COMPONENT') return 'frame';
+  if (node.type === 'COMPONENT') return 'component';
+  if (node.type === 'FRAME') return 'frame';
   return node.type?.toLowerCase() ?? 'unknown';
 }
 
@@ -329,18 +350,10 @@ function classifyChildType(node: any): string {
 function getNodeTraits(node: any): string[] {
   const traits: string[] = [];
 
-  // Dimensions — only emit for nodes that need fixed sizes (icons, images, root containers)
-  // Skip for TEXT nodes and auto-layout FRAMEs where dimensions are just bounding boxes
+  // Dimensions — emit for all non-text nodes directly from Figma data
   const dim = getNodeDimensions(node);
-  if (dim.width && dim.height) {
-    const isText = node.type === 'TEXT';
-    const isAutoLayoutChild = node.layoutAlign === 'STRETCH' || node.layoutGrow === 1;
-    const isSmallFixed = dim.width <= 48 && dim.height <= 48; // icons, avatars, toggle tracks
-    const isVector = node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION' || node.type === 'ELLIPSE';
-
-    if (!isText && (isSmallFixed || isVector || !isAutoLayoutChild)) {
-      traits.push(`${Math.round(dim.width)}px×${Math.round(dim.height)}px`);
-    }
+  if (dim.width && dim.height && node.type !== 'TEXT') {
+    traits.push(`${Math.round(dim.width)}px×${Math.round(dim.height)}px`);
   }
 
   // Background fill with actual color + opacity

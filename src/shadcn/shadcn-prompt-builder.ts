@@ -61,9 +61,11 @@ Your task: Take a base shadcn component source and customize it with design data
    - Every node shows: \`Name(type)[dimensions, bg:#hex, border:Npx #hex, radius:Npx, pad:T/R/B/L, gap:Npx, flex-row/col]\`
    - TEXT nodes show: \`"text content" Npx weight:N font:Family color:#hex\`
    - VECTOR nodes show: \`stroke:#hex\` — this is the icon color, use it directly
+   - **INSTANCE nodes represent reusable Figma components.** Their \`name\` (e.g. "Select Field", "Input Field", "CheckboxField") and \`componentProperties\` (e.g. Open=false, Value=text, Has Error=true) tell you what the element IS and its current state. **Read the node name, child names, and properties to determine the correct semantic HTML element.** For example, a node named "Select Field" with a child "Options" frame containing text items is a dropdown — render it with \`<select>\` and \`<option>\` elements using the option texts from the tree. A node named "CheckboxField" with a "Checkbox" child is a checkbox input.
+   - **Nodes marked [hidden] are visually hidden but semantically important** — e.g. a closed dropdown's Options list. Use these to understand the component's purpose and data even though they're not visible.
    - **Replicate this exact nesting in your JSX output.** Match every container, gap, padding, and color.
    - **Alignment is in the tree**: \`items-center\`, \`justify-center\`, \`items-end\`, \`self-stretch\`, \`text-center\` etc. come directly from Figma layout data. Apply them exactly as shown.
-   - **Dimensions are bounding boxes, NOT fixed sizes**: The \`WxH\` values in the tree are Figma's measured bounding box. Do NOT hardcode them as \`w-[Npx] h-[Npx]\` on every element. Use flex layout (\`flex-row\`, \`flex-col\`, \`gap-[Npx]\`, \`self-stretch\`) to let content flow naturally. Only set explicit width/height on: (1) the root component container if it has a deliberate fixed size, (2) icon/image frames that need exact dimensions, (3) elements that are clearly fixed-size (circles, avatars, toggles). For text, labels, descriptions — let them size naturally.
+   - **Dimensions**: Read the exact width and height from the Figma tree for each node. If a node has a specific height in Figma, set \`h-[Npx]\` to match it exactly — do NOT rely on padding alone to produce the correct height, as padding + content + line-height often adds up to more than the Figma value. Use \`items-center\` to vertically center content within the explicit height. Only omit explicit height on nodes that use \`auto-layout\` with \`hug-contents\` (the tree will show no fixed height). Always match the Figma dimensions.
    - For nested sub-components (e.g. buttons inside a modal): read their bg, radius, padding, gap, shadow from the tree — do NOT use default/generic styles.
    - Elements outside the inner frame in Figma should also be outside the wrapper in JSX.
    - **Dialog/Modal/Toast**: Do NOT use \`position: fixed\` or overlay backdrop. Render as a normal inline block element so it displays correctly in a variant grid preview. Use a simple wrapper div with the exact Figma dimensions, background, border, radius, and shadow.
@@ -85,6 +87,7 @@ Your task: Take a base shadcn component source and customize it with design data
 
 8. **Consumer component**: The .jsx file MUST:
    - Import the shadcn component from \`@/components/ui/{type}\`
+   - Import React from "react" — and NOTHING ELSE. **Never import external packages** like \`react-hook-form\`, \`zod\`, \`date-fns\`, etc. The consumer code must only use React and the shadcn component imports.
    - Accept ALL CVA variant axis names as props (e.g. type, variant, size, state) plus label, title, description, disabled, onClose, and any boolean visibility props
    - **Render exactly ONE instance** of the shadcn component, passing all props through
    - **NEVER hardcode multiple instances** showing different variants — the preview system handles variant iteration externally
@@ -111,7 +114,9 @@ Your task: Take a base shadcn component source and customize it with design data
 
 12. **Pixel dimensions → Tailwind arbitrary values**: All dimensions in the structure tree are in \`px\`. Convert them to Tailwind arbitrary values: \`16px×16px\` → \`h-[16px] w-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px/8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`. Do NOT drop the \`px\` unit — \`h-16\` in Tailwind means 64px, not 16px.
 
-13. **No extra explanations** — just the two code blocks.
+13. **Derive semantic HTML from Figma node names and structure**: Read node names, child names, and componentProperties to determine the correct HTML element. Nodes marked \`[hidden]\` are visually hidden but semantically important (e.g. dropdown options). Never approximate semantic elements with generic divs.
+
+14. **No extra explanations** — just the two code blocks.
 `;
 }
 
@@ -261,12 +266,19 @@ Your task: Take a base shadcn component source and customize it with design data
 
 6. **Consumer component**: The .jsx file MUST:
    - Import the shadcn component from \`@/components/ui/{type}\`
+   - Import React from "react" — and NOTHING ELSE. **Never import external packages** like \`react-hook-form\`, \`zod\`, \`date-fns\`, etc.
    - Render exactly ONE instance with the appropriate props
    - Use default export
 
 7. **Pixel dimensions → Tailwind arbitrary values**: \`16px\` → \`h-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`.
 
-8. **No extra explanations** — just the two code blocks.
+8. **Dimensions**: Read the exact width and height from the Figma tree for each node. If a node has a specific height in Figma, set \`h-[Npx]\` to match it exactly — do NOT rely on padding alone to produce the correct height, as padding + content + line-height often adds up to more than the Figma value. Use \`items-center\` to vertically center content within the explicit height. Only omit explicit height on nodes that use \`auto-layout\` with \`hug-contents\` (the tree will show no fixed height). Always match the Figma dimensions.
+
+9. **Derive semantic HTML from Figma node names and structure**: Read the node names, child names, and componentProperties in the COMPONENT TREE and Node Structure to determine the correct HTML element. A node named "Select Field" with an "Options" child containing text items is a dropdown — use \`<select>\` with \`<option>\` elements populated from those texts. A node named "CheckboxField" is a checkbox — use \`<input type="checkbox">\`. Nodes marked \`[hidden]\` are visually hidden but semantically important (e.g. a closed dropdown's option list). Never approximate a semantic element with a generic \`<div>\`.
+
+10. **Icons must come from Figma data only**: Only render SVG icons that are explicitly provided in the Icon Assets section or that appear as VECTOR nodes in the component tree for THAT specific element. Never copy an SVG path from one element and paste it into a different element. If no icon asset is listed for a button or slot, render it without any icon.
+
+11. **No extra explanations** — just the two code blocks.
 `;
 }
 
@@ -362,6 +374,9 @@ export function buildShadcnSingleComponentUserPrompt(ctx: ShadcnSingleComponentP
   parts.push('- Use exact hex colors from the Figma data as Tailwind arbitrary values');
   parts.push('- The consumer component must use default export');
   parts.push(`- The consumer component name is: ${ctx.componentName}`);
+  parts.push('- Read exact width and height from Figma for each node. If the node has a specific height, set h-[Npx] explicitly — do NOT rely on padding alone, it often renders taller than intended.');
+  parts.push('- Read node names and children to determine HTML elements — e.g. "Select Field" with "Options" children → <select> with <option> elements');
+  parts.push('- Only render SVG icons that exist in the Figma data for that specific element — never copy SVGs between elements');
 
   return parts.join('\n');
 }
@@ -383,7 +398,10 @@ Your task: Generate a self-contained React JSX fragment for a UI component, usin
 4. **Follow the shadcn template structure** but with the exact colors, sizes, and content from the Figma data.
 5. **No imports needed** — the output is inlined into a parent component.
 6. **Static content only** — no hooks, state, or event handlers.
-7. **No extra explanations** — just the code block.
+7. **Dimensions are bounding boxes**: Do NOT hardcode \`h-[Npx]\` on container elements — let flex layout size them naturally.
+8. **Derive semantic HTML from Figma node names and structure**: Read node names and children to determine the correct element. Nodes marked \`[hidden]\` contain semantic data (e.g. dropdown options).
+9. **Icons must come from Figma data only**: Only render SVGs explicitly provided or present as VECTOR nodes for that specific element. Never copy SVGs between elements.
+10. **No extra explanations** — just the code block.
 `;
 }
 

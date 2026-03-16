@@ -1,91 +1,146 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
+import { ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
-const paginationItemVariants = cva(
-  "inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+// Inline buttonVariants to avoid cross-file dependency
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default: "",
+        destructive: "",
+        outline: "border bg-transparent",
+        secondary: "",
+        ghost: "",
+        link: "underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 w-9",
-        sm: "h-8 w-8 text-xs",
-        lg: "h-10 w-10",
-      },
-      state: {
-        default: "",
-        active: "",
+        default: "h-9 px-4 py-2",
+        sm: "h-8 rounded-[var(--radius-sm)] px-3 text-xs",
+        lg: "h-10 rounded-[var(--radius-md)] px-8 text-base",
+        icon: "h-9 w-9",
       },
     },
     defaultVariants: {
       variant: "default",
       size: "default",
-      state: "default",
     },
   }
 );
 
-export interface PaginationProps extends React.HTMLAttributes<HTMLElement>,
-  VariantProps<typeof paginationItemVariants> {
-  totalPages?: number;
-  currentPage?: number;
-  onPageChange?: (page: number) => void;
-}
+type ButtonSize = VariantProps<typeof buttonVariants>["size"];
 
-const Pagination = React.forwardRef<HTMLElement, PaginationProps>(
-  ({ className, variant, size, totalPages = 5, currentPage = 1, onPageChange, ...props }, ref) => {
-    const pages = Array.from({ length: totalPages }, (_, i) => i + 1);
-
-    return (
-      <nav ref={ref} role="navigation" aria-label="pagination" className={cn("flex items-center gap-1", className)} {...props}>
-        {/* Previous */}
-        <button
-          type="button"
-          className={cn(paginationItemVariants({ variant, size, state: "default" }))}
-          onClick={() => onPageChange?.(Math.max(1, currentPage - 1))}
-          disabled={currentPage <= 1}
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7.5 9L4.5 6L7.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-
-        {/* Page numbers */}
-        {pages.map((page) => (
-          <button
-            key={page}
-            type="button"
-            aria-current={page === currentPage ? "page" : undefined}
-            className={cn(
-              paginationItemVariants({
-                variant,
-                size,
-                state: page === currentPage ? "active" : "default",
-              })
-            )}
-            onClick={() => onPageChange?.(page)}
-          >
-            {page}
-          </button>
-        ))}
-
-        {/* Next */}
-        <button
-          type="button"
-          className={cn(paginationItemVariants({ variant, size, state: "default" }))}
-          onClick={() => onPageChange?.(Math.min(totalPages, currentPage + 1))}
-          disabled={currentPage >= totalPages}
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4.5 3L7.5 6L4.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-      </nav>
-    );
-  }
+const Pagination = ({ className, ...props }: React.ComponentProps<"nav">) => (
+  <nav
+    role="navigation"
+    aria-label="pagination"
+    className={cn("mx-auto flex w-full justify-center", className)}
+    {...props}
+  />
 );
 Pagination.displayName = "Pagination";
 
-export { Pagination, paginationItemVariants };
+const PaginationContent = React.forwardRef<
+  HTMLUListElement,
+  React.ComponentProps<"ul">
+>(({ className, ...props }, ref) => (
+  <ul
+    ref={ref}
+    className={cn("flex flex-row items-center gap-1", className)}
+    {...props}
+  />
+));
+PaginationContent.displayName = "PaginationContent";
+
+const PaginationItem = React.forwardRef<
+  HTMLLIElement,
+  React.ComponentProps<"li">
+>(({ className, ...props }, ref) => (
+  <li ref={ref} className={cn("", className)} {...props} />
+));
+PaginationItem.displayName = "PaginationItem";
+
+type PaginationLinkProps = {
+  isActive?: boolean;
+  size?: ButtonSize;
+} & React.ComponentProps<"a">;
+
+const PaginationLink = ({
+  className,
+  isActive,
+  size = "icon",
+  ...props
+}: PaginationLinkProps) => (
+  <a
+    aria-current={isActive ? "page" : undefined}
+    className={cn(
+      buttonVariants({
+        variant: isActive ? "outline" : "ghost",
+        size,
+      }),
+      className
+    )}
+    {...props}
+  />
+);
+PaginationLink.displayName = "PaginationLink";
+
+const PaginationPrevious = ({
+  className,
+  ...props
+}: React.ComponentProps<typeof PaginationLink>) => (
+  <PaginationLink
+    aria-label="Go to previous page"
+    size="default"
+    className={cn("gap-1 pl-2.5", className)}
+    {...props}
+  >
+    <ChevronLeft className="h-4 w-4" />
+    <span>Previous</span>
+  </PaginationLink>
+);
+PaginationPrevious.displayName = "PaginationPrevious";
+
+const PaginationNext = ({
+  className,
+  ...props
+}: React.ComponentProps<typeof PaginationLink>) => (
+  <PaginationLink
+    aria-label="Go to next page"
+    size="default"
+    className={cn("gap-1 pr-2.5", className)}
+    {...props}
+  >
+    <span>Next</span>
+    <ChevronRight className="h-4 w-4" />
+  </PaginationLink>
+);
+PaginationNext.displayName = "PaginationNext";
+
+const PaginationEllipsis = ({
+  className,
+  ...props
+}: React.ComponentProps<"span">) => (
+  <span
+    aria-hidden
+    className={cn("flex h-9 w-9 items-center justify-center", className)}
+    {...props}
+  >
+    <MoreHorizontal className="h-4 w-4" />
+    <span className="sr-only">More pages</span>
+  </span>
+);
+PaginationEllipsis.displayName = "PaginationEllipsis";
+
+export {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+};

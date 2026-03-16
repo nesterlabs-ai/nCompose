@@ -318,9 +318,23 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
     };
   }
 
-  // Prune invisible subtrees entirely — they bloat the YAML with hidden
-  // error states, chip lists, descriptions etc. that are useless for static output.
-  if (node.visible === false) return null;
+  // For invisible nodes: include a compact summary if they contain semantic data
+  // (e.g. dropdown options, hidden descriptions) — the node names and text content
+  // tell the LLM what kind of component this is, even if it's visually hidden.
+  if (node.visible === false) {
+    // Check if this invisible node has TEXT children (e.g. select options)
+    const textChildren = (node.children || []).filter((c: any) => c.type === 'TEXT' && c.characters);
+    if (textChildren.length > 0) {
+      return {
+        name: node.name,
+        type: node.type,
+        hidden: true,
+        options: textChildren.map((c: any) => c.characters),
+      };
+    }
+    // Otherwise prune — genuinely invisible UI like error states, descriptions
+    return null;
+  }
 
   if (depth > MAX_SERIALIZE_DEPTH) {
     console.warn(`[serializeNodeForPrompt] Depth limit (${MAX_SERIALIZE_DEPTH}) reached at "${node.name ?? 'unknown'}" — subtree truncated`);

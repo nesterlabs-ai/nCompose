@@ -1,73 +1,65 @@
 import * as React from "react";
-import { cva, type VariantProps } from "class-variance-authority";
+
 import { cn } from "@/lib/utils";
 
-const dialogContentVariants = cva(
-  "rounded-lg border p-6 shadow-lg w-full max-w-lg flex flex-col",
-  {
-    variants: {
-      variant: {
-        default: "",
-      },
-      size: {
-        default: "max-w-lg",
-        sm: "max-w-sm",
-        lg: "max-w-2xl",
-        full: "max-w-[90vw]",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
-  }
-);
+/**
+ * Inline dialog/modal components for preview.
+ * Renders as a normal block element (no portal, no overlay, no fixed positioning)
+ * so it displays correctly in variant grid previews.
+ */
 
-export interface DialogProps extends React.HTMLAttributes<HTMLDivElement>,
-  VariantProps<typeof dialogContentVariants> {
-  open?: boolean;
-  onClose?: () => void;
-}
-
-const Dialog = React.forwardRef<HTMLDivElement, DialogProps>(
-  ({ className, variant, size, open = true, onClose, children, ...props }, ref) => {
-    if (!open) return null;
-    return (
-      <div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        className={cn(dialogContentVariants({ variant, size }), className)}
-        {...props}
-      >
-        {children}
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 transition-opacity"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-        )}
-      </div>
-    );
-  }
-);
+const Dialog = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & { open?: boolean }
+>(({ className, open, ...props }, ref) => (
+  <div ref={ref} className={cn("relative", className)} {...props} />
+));
 Dialog.displayName = "Dialog";
 
-const DialogHeader = React.forwardRef<
+const DialogContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5", className)}
+    className={cn(
+      "relative grid w-full max-w-lg gap-4 border bg-white p-6 shadow-lg rounded-lg",
+      className
+    )}
+    {...props}
+  >
+    {children}
+  </div>
+));
+DialogContent.displayName = "DialogContent";
+
+const DialogHeader = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col space-y-1.5 text-center sm:text-left",
+      className
+    )}
     {...props}
   />
-));
+);
 DialogHeader.displayName = "DialogHeader";
+
+const DialogFooter = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
+      className
+    )}
+    {...props}
+  />
+);
+DialogFooter.displayName = "DialogFooter";
 
 const DialogTitle = React.forwardRef<
   HTMLHeadingElement,
@@ -75,7 +67,10 @@ const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <h2
     ref={ref}
-    className={cn("text-lg font-semibold leading-none tracking-tight", className)}
+    className={cn(
+      "text-lg font-semibold leading-none tracking-tight",
+      className
+    )}
     {...props}
   />
 ));
@@ -87,29 +82,33 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm", className)}
+    className={cn("text-sm text-muted-foreground", className)}
     {...props}
   />
 ));
 DialogDescription.displayName = "DialogDescription";
 
-const DialogFooter = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
+const DialogClose = React.forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement>
 >(({ className, ...props }, ref) => (
-  <div
+  <button
     ref={ref}
-    className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-4", className)}
+    className={cn(
+      "absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none",
+      className
+    )}
     {...props}
   />
 ));
-DialogFooter.displayName = "DialogFooter";
+DialogClose.displayName = "DialogClose";
 
 export {
   Dialog,
+  DialogClose,
+  DialogContent,
   DialogHeader,
+  DialogFooter,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
-  dialogContentVariants,
 };

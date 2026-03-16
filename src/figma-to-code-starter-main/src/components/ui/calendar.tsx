@@ -1,141 +1,86 @@
 import * as React from "react";
-import { cva, type VariantProps } from "class-variance-authority";
+import { cva } from "class-variance-authority";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { DayPicker } from "react-day-picker";
+
 import { cn } from "@/lib/utils";
 
-const calendarVariants = cva(
-  "p-3 rounded-md border",
+// Inline buttonVariants to avoid cross-file dependency
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default: "",
+        outline: "border bg-transparent",
+        ghost: "",
       },
       size: {
-        default: "",
-      },
-      state: {
-        default: "",
+        default: "h-9 px-4 py-2",
+        icon: "h-9 w-9",
       },
     },
     defaultVariants: {
       variant: "default",
       size: "default",
-      state: "default",
     },
   }
 );
 
-const calendarDayVariants = cva(
-  "inline-flex items-center justify-center rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
-  {
-    variants: {
-      variant: {
-        default: "",
-      },
-      size: {
-        default: "h-8 w-8",
-        sm: "h-7 w-7 text-xs",
-        lg: "h-9 w-9",
-      },
-      state: {
-        default: "",
-        selected: "",
-        today: "",
-        disabled: "opacity-50 pointer-events-none",
-        "range-start": "",
-        "range-middle": "",
-        "range-end": "",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-      state: "default",
-    },
-  }
-);
+export type CalendarProps = React.ComponentProps<typeof DayPicker>;
 
-export interface CalendarProps extends React.HTMLAttributes<HTMLDivElement>,
-  VariantProps<typeof calendarVariants> {
-  month?: number;
-  year?: number;
-  selectedDate?: number;
-  todayDate?: number;
-  onDateSelect?: (date: number) => void;
-  weekStartsOn?: 0 | 1;
+function Calendar({
+  className,
+  classNames,
+  showOutsideDays = true,
+  ...props
+}: CalendarProps) {
+  return (
+    <DayPicker
+      showOutsideDays={showOutsideDays}
+      className={cn("p-3", className)}
+      classNames={{
+        months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
+        month: "space-y-4",
+        caption: "flex justify-center pt-1 relative items-center",
+        caption_label: "text-sm font-medium",
+        nav: "space-x-1 flex items-center",
+        nav_button: cn(
+          buttonVariants({ variant: "outline" }),
+          "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100"
+        ),
+        nav_button_previous: "absolute left-1",
+        nav_button_next: "absolute right-1",
+        table: "w-full border-collapse space-y-1",
+        head_row: "flex",
+        head_cell:
+          "text-muted-foreground rounded-md w-9 font-normal text-[0.8rem]",
+        row: "flex w-full mt-2",
+        cell: "h-9 w-9 text-center text-sm p-0 relative [&:has([aria-selected].day-range-end)]:rounded-r-md [&:has([aria-selected].day-outside)]:bg-accent/50 [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20",
+        day: cn(
+          buttonVariants({ variant: "ghost" }),
+          "h-9 w-9 p-0 font-normal aria-selected:opacity-100"
+        ),
+        day_range_end: "day-range-end",
+        day_selected:
+          "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+        day_today: "bg-accent text-accent-foreground",
+        day_outside:
+          "day-outside text-muted-foreground aria-selected:bg-accent/50 aria-selected:text-muted-foreground",
+        day_disabled: "text-muted-foreground opacity-50",
+        day_range_middle:
+          "aria-selected:bg-accent aria-selected:text-accent-foreground",
+        day_hidden: "invisible",
+        ...classNames,
+      }}
+      components={{
+        IconLeft: ({ ...props }) => <ChevronLeft className="h-4 w-4" />,
+        IconRight: ({ ...props }) => <ChevronRight className="h-4 w-4" />,
+      }}
+      {...props}
+    />
+  );
 }
-
-const DAYS_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-function getDaysInMonth(month: number, year: number) {
-  return new Date(year, month + 1, 0).getDate();
-}
-
-function getFirstDayOfMonth(month: number, year: number) {
-  return new Date(year, month, 1).getDay();
-}
-
-const Calendar = React.forwardRef<HTMLDivElement, CalendarProps>(
-  ({ className, variant, size, state, month = new Date().getMonth(), year = new Date().getFullYear(), selectedDate, todayDate, onDateSelect, ...props }, ref) => {
-    const daysInMonth = getDaysInMonth(month, year);
-    const firstDay = getFirstDayOfMonth(month, year);
-    const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-    const blanks = Array.from({ length: firstDay }, (_, i) => i);
-
-    return (
-      <div ref={ref} className={cn(calendarVariants({ variant, size, state }), className)} {...props}>
-        {/* Header */}
-        <div className="flex items-center justify-between mb-2">
-          <button type="button" className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:opacity-70">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M7.5 9L4.5 6L7.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <span className="text-sm font-medium">
-            {MONTHS[month]} {year}
-          </span>
-          <button type="button" className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:opacity-70">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M4.5 3L7.5 6L4.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-        </div>
-
-        {/* Day headers */}
-        <div className="grid grid-cols-7 gap-1 mb-1">
-          {DAYS_SHORT.map((day) => (
-            <div key={day} className="flex items-center justify-center h-8 w-8 text-xs font-medium opacity-50">
-              {day}
-            </div>
-          ))}
-        </div>
-
-        {/* Days grid */}
-        <div className="grid grid-cols-7 gap-1">
-          {blanks.map((i) => (
-            <div key={`blank-${i}`} className="h-8 w-8" />
-          ))}
-          {days.map((day) => {
-            let dayState: string = "default";
-            if (day === selectedDate) dayState = "selected";
-            else if (day === todayDate) dayState = "today";
-
-            return (
-              <button
-                key={day}
-                type="button"
-                className={cn(calendarDayVariants({ variant, size: size || "default", state: dayState as any }))}
-                onClick={() => onDateSelect?.(day)}
-              >
-                {day}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-);
 Calendar.displayName = "Calendar";
 
-export { Calendar, calendarVariants, calendarDayVariants };
+export { Calendar };

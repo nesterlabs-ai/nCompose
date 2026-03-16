@@ -747,6 +747,18 @@ export default App;
     deps['clsx'] = '^2.1.0';
     deps['tailwind-merge'] = '^2.2.0';
     deps['@radix-ui/react-slot'] = '^1.0.2';
+    // Scan generated shadcn source for @radix-ui/* imports and add them dynamically
+    if (currentUpdatedShadcnSource) {
+      const radixMatches = currentUpdatedShadcnSource.matchAll(/@radix-ui\/[\w-]+/g);
+      for (const m of radixMatches) {
+        if (!deps[m[0]]) deps[m[0]] = '^1.0.0';
+      }
+    }
+    // Also scan consumer code for any additional imports
+    const allCode = componentCode + (currentUpdatedShadcnSource || '');
+    if (/lucide-react/.test(allCode)) deps['lucide-react'] = '^0.460.0';
+    if (/react-day-picker/.test(allCode)) deps['react-day-picker'] = '^8.10.0';
+    if (/date-fns/.test(allCode)) deps['date-fns'] = '^3.6.0';
   }
 
   // Vite config — add @/ path alias for shadcn imports

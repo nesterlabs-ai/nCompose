@@ -71,6 +71,11 @@ export function extractJSXBody(rawCode: string): string {
   let inTemplate = false;
   let templateExprDepth = 0;
   let escaped = false;
+  // JSX context: track whether we're inside a JSX tag (<tag ...>) or JSX text.
+  // Quotes in JSX text content (e.g. apostrophes in "it's") are NOT JS strings.
+  // Only quotes inside JSX tags (attributes) or JS expressions ({...}) are strings.
+  let inJSXTag = false;        // true between '<tagName' and '>'
+  let jsxExprDepth = 0;        // depth of { } JSX expression nesting
 
   while (i < rawCode.length && depth > 0) {
     const ch = rawCode[i];
@@ -120,8 +125,38 @@ export function extractJSXBody(rawCode: string): string {
       // inside the expression (they are real expression characters).
     }
 
-    // ── Expression context: detect string / template literal starts ────────
-    if (ch === '"' || ch === "'") {
+    // ── JSX tag context tracking ──────────────────────────────────────────
+    // '<' followed by a letter or '/' starts a JSX tag; '>' ends it.
+    // Inside tags, quotes are attribute values (JS strings).
+    // Outside tags (text content), quotes are literal characters.
+    if (ch === '<' && !inJSXTag && jsxExprDepth === 0) {
+      const next = rawCode[i + 1];
+      if (next && (next === '/' || /[a-zA-Z]/.test(next))) {
+        inJSXTag = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === '>' && inJSXTag) {
+      inJSXTag = false;
+      i++;
+      continue;
+    }
+
+    // ── JSX expression tracking ({...}) ───────────────────────────────────
+    if (ch === '{' && !inJSXTag) {
+      jsxExprDepth++;
+      i++;
+      continue;
+    }
+    if (ch === '}' && jsxExprDepth > 0) {
+      jsxExprDepth--;
+      i++;
+      continue;
+    }
+
+    // ── String / template literal starts (only in tag attrs or JS exprs) ──
+    if ((ch === '"' || ch === "'") && (inJSXTag || jsxExprDepth > 0)) {
       quoteChar = ch;
       i++;
       continue;
@@ -281,9 +316,16 @@ export function stitchPageComponent(
   const classAttr = templateMode ? 'className' : 'class';
 
   for (const section of sections) {
+    const tag = section.info.semanticTag;
+    const cls = section.info.baseClass;
+
     if (section.failed) {
+      // Emit a real DOM element so the layout CSS slot (position, width, height)
+      // still applies. A JSX comment would be invisible and break the layout.
       sectionJSXParts.push(
-        `      {/* Section "${section.info.name}" failed to generate */}`
+        `      <${tag} class="${cls}">\n` +
+        `        {/* Section "${section.info.name}" failed to generate */}\n` +
+        `      </${tag}>`
       );
       continue;
     }
@@ -292,8 +334,6 @@ export function stitchPageComponent(
     // so its base class CSS (position: absolute, top, left, width, height) is applied.
     // Step C6 in convert.ts replaces the inner placeholder with the actual chart import.
     if (section.isChart && section.chartComponentName) {
-      const tag = section.info.semanticTag;
-      const cls = section.info.baseClass;
       sectionJSXParts.push(
         `      <${tag} ${classAttr}="${cls}">\n` +
         `        <div ${classAttr}="chart-section-${section.chartComponentName}" />\n` +
@@ -303,15 +343,16 @@ export function stitchPageComponent(
     }
 
     const body = extractJSXBody(section.rawCode);
-    const tag = section.info.semanticTag;
-    const cls = section.info.baseClass;
 
-    // If JSX body is empty the LLM generated CSS-only output.
+    // If JSX body is empty the LLM generated CSS-only output or extraction failed.
+    // Still emit a real DOM element so the layout CSS slot (position, top, left,
+    // width, height) remains functional — a JSX comment would be invisible and
+    // break absolutely-positioned or flex layouts.
     if (!body.trim()) {
       sectionJSXParts.push(
-        `      {/* Section "${section.info.name}" — LLM generated empty JSX.\n` +
-        `         CSS rules are present in the merged stylesheet (class: .${section.info.baseClass}).\n` +
-        `         Re-run or manually fill this section. */}`
+        `      <${tag} class="${cls}">\n` +
+        `        {/* Section "${section.info.name}" — LLM generated empty JSX. Re-run or manually fill. */}\n` +
+        `      </${tag}>`
       );
       continue;
     }

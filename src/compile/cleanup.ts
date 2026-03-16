@@ -264,6 +264,26 @@ function fixSVGAttributes(code: string): string {
 }
 
 /**
+ * Strips hallucinated `margin-bottom` values from CSS rule blocks.
+ *
+ * LLMs (especially DeepSeek) systematically add `margin-bottom: Xpx` equal to
+ * `font-size: Xpx` on text elements. This is a known hallucination — the Figma
+ * data has no paragraph spacing for these nodes. Real paragraph spacing from
+ * Figma comes through as `textStyle.marginBottom` and wouldn't match font-size.
+ */
+function stripHallucinatedMargins(css: string): string {
+  // For each CSS rule block, if margin-bottom equals font-size, remove it.
+  return css.replace(
+    /(\{[^}]*?)font-size:\s*(\d+(?:\.\d+)?px)\s*;([^}]*?)margin-bottom:\s*\2\s*;/g,
+    '$1font-size: $2;$3'
+  ).replace(
+    // Also handle reverse order: margin-bottom before font-size
+    /(\{[^}]*?)margin-bottom:\s*(\d+(?:\.\d+)?px)\s*;([^}]*?)font-size:\s*\2\s*;/g,
+    '$1$3font-size: $2;'
+  );
+}
+
+/**
  * Fixes invalid CSS values that LLMs sometimes hallucinate.
  * Applied to the extracted CSS block, not the JSX.
  */
@@ -626,15 +646,92 @@ export function fixInlineStyleStrings(code: string): string {
 }
 
 /**
+ * Strips `css={{...}}` inline style props from Mitosis JSX source.
+ *
+ * LLMs sometimes emit inline `css={{}}` props instead of using class-based CSS.
+ * After Mitosis compilation, these become auto-generated class names with only
+ * width/height — losing all other styling context. This function removes them
+ * so styling comes exclusively from the CSS stylesheet.
+ *
+ * Handles:
+ * - `css={{key: 'value', key2: 'value2'}}` (Mitosis inline style objects)
+ * - `css={{ key: "value" }}` (double quotes, whitespace variants)
+ *
+ * Does NOT strip `class=` or `className=` attributes.
+ */
+export function stripInlineCSS(code: string): string {
+  // Match css={{ ... }} props, handling nested braces carefully.
+  // The outer pair is {{...}} — we need to balance the inner braces.
+  return code.replace(
+    /\s*css=\{\{[^}]*\}\}/g,
+    '',
+  );
+}
+
+/**
+ * Ensures the root CSS rule has a max-width constraint for PATH B outputs.
+ * The LLM often omits max-width, causing the layout to stretch to fill
+ * the entire viewport. We inject max-width and centering if not present.
+ *
+ * @param css - The extracted CSS
+ * @param rootWidth - The root node's width from Figma (e.g. 1440)
+ */
+function ensureRootMaxWidth(css: string, rootWidth?: number): string {
+  if (!css || !rootWidth || rootWidth < 200) return css;
+  // Find the first CSS rule (should be the root element)
+  const firstRuleMatch = css.match(/^([^{]*\{)([^}]*)(\})/);
+  if (!firstRuleMatch) return css;
+  const [fullMatch, selector, body, close] = firstRuleMatch;
+  // Already has max-width? Skip
+  if (body.includes('max-width')) return css;
+  // Inject max-width + centering
+  const injection = `\n  max-width: ${Math.round(rootWidth)}px;\n  width: 100%;\n  margin-left: auto;\n  margin-right: auto;`;
+  return css.replace(fullMatch, `${selector}${body}${injection}\n${close}`);
+}
+
+/**
+ * Replaces hardcoded design-canvas-width values (e.g. `width: 1440px`) with
+ * `width: 100%` on non-root CSS rules. Inner elements matching the design
+ * canvas width are almost certainly meant to fill their container — hardcoded
+ * pixel values cause horizontal overflow at smaller viewports.
+ *
+ * Skips the very first rule (root element, handled by ensureRootMaxWidth)
+ * and rules for `img` / image-related selectors where the width may be intentional.
+ */
+export function replaceDesignWidthInCSS(css: string, rootWidth?: number): string {
+  if (!css || !rootWidth || rootWidth < 200) return css;
+  const widthPx = `${Math.round(rootWidth)}px`;
+  let isFirst = true;
+  return css.replace(
+    /([^}]*?\{)([^}]*)(\})/g,
+    (match, selector: string, body: string, close: string) => {
+      // Skip the first rule (root element)
+      if (isFirst) { isFirst = false; return match; }
+      // Skip actual image selectors where pixel width may be intentional.
+      // Match `img` tags and class names ending with `__image` (not `__image-wrap`, etc.)
+      if (/\bimg\b|__image(?:\s|,|\{|$)/i.test(selector)) return match;
+      // Replace width: <rootWidth>px → width: 100%
+      const newBody = body.replace(
+        new RegExp(`(\\bwidth:\\s*)${Math.round(rootWidth)}px`, 'g'),
+        '$1100%',
+      );
+      return `${selector}${newBody}${close}`;
+    },
+  );
+}
+
+/**
  * Full cleanup pipeline: extracts CSS block, strips fences, fixes Mitosis
  * compliance issues, auto-fixes root element, hoists consts, and fixes imports.
  * Returns both the cleaned JSX and extracted CSS.
  *
  * @param code - Raw LLM output
  * @param expectedRootTag - If provided, auto-fixes root <div> → expected tag
+ * @param rootWidth - Optional root node width for max-width injection
  */
-export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: string; css: string } {
+export function cleanLLMOutput(code: string, expectedRootTag?: string, rootWidth?: number): { jsx: string; css: string } {
   let cleaned = stripMarkdownFences(code);
+  cleaned = stripInlineCSS(cleaned); // Remove css={{}} before Mitosis sees them
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
   const fixedSVG = fixSVGAttributes(fixedClassName);
@@ -645,6 +742,8 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string): { jsx: s
   const fixedMap = fixMapToFor(fixedRoot);
   const hoisted = hoistLocalConsts(fixedMap);
   const fixedJsx = fixMissingImports(hoisted);
-  const fixedCSS = repairTruncatedCSS(fixInvalidCSSValues(css));
+  let fixedCSS = repairTruncatedCSS(fixInvalidCSSValues(stripHallucinatedMargins(css)));
+  fixedCSS = ensureRootMaxWidth(fixedCSS, rootWidth);
+  fixedCSS = replaceDesignWidthInCSS(fixedCSS, rootWidth);
   return { jsx: fixedJsx, css: fixedCSS };
 }

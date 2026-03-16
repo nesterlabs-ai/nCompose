@@ -94,6 +94,7 @@ Rules:
 2. **Every node with visual properties MUST have a CSS rule** — if a node has fills, border, shadows, textStyle, borderRadius, or opacity, it MUST get a CSS class with those exact values.
 3. **NEVER invent CSS values** — if a property is not in the YAML, do NOT guess. Only output CSS that maps directly to YAML data.
 4. **NEVER omit CSS values** — if YAML provides a color, dimension, shadow, or font property, it MUST appear in the CSS output.
+5. **NEVER add `margin`, `margin-bottom`, or `margin-top` unless the YAML explicitly contains `textStyle.marginBottom` or a `margin` property.** LLMs commonly hallucinate `margin-bottom` matching `font-size` — this is ALWAYS wrong. Only emit margin when the YAML data explicitly provides it.
 
 ## Styling Mappings
 
@@ -134,6 +135,7 @@ Convert YAML properties to CSS rules in the `---CSS---` block:
 - `fills: ["rgba(255, 255, 255, 0.7)"]` → `background-color: rgba(255, 255, 255, 0.7);`
 - `fills: ["linear-gradient(180deg, rgb(255,255,255) 0%, rgb(0,0,0) 100%)"]` → `background: linear-gradient(180deg, rgb(255,255,255) 0%, rgb(0,0,0) 100%);`
 - **CRITICAL: TEXT nodes MUST NEVER have `background-color` from fills.** TEXT nodes' fills represent text color, which is already in `textStyle.color`. Only apply `fills` as `background-color` on FRAME, GROUP, INSTANCE, COMPONENT, and other non-TEXT node types.
+- **Image fills** — `fills: [{ type: image, scaleMode: fill, assetFile: "./assets/photo.svg" }]` → `background-image: url('./assets/photo.svg'); background-size: cover;` (use `contain` for scaleMode: fit). If no `assetFile` is present, use `background-color: #ccc;` as a placeholder.
 - Multiple fills → use the last one (topmost in Figma)
 
 ### Text Style — COPY VERBATIM

@@ -150,7 +150,6 @@ const FORM_ROLE_HINTS: Record<string, string> = {
  * @param onAttempt - Progress callback
  * @param bemSuffix - Optional variant suffix to produce unique class names (e.g., "-v2")
  * @param templateMode - When true, use Tailwind + CSS variables for the starter
- * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateSingleComponent(
   node: any,
@@ -161,7 +160,6 @@ export async function generateSingleComponent(
   onAttempt?: (attempt: number, maxRetries: number, error?: string) => void,
   bemSuffix?: string,
   templateMode?: boolean,
-  assetHints?: string,
 ): Promise<GeneratedComponent> {
   const componentName = node.name ?? 'Component';
 
@@ -223,7 +221,6 @@ export async function generateSingleComponent(
       const reactUserPrompt = assembleReactUserPrompt(
         yaml, componentName,
         staticContentRule + semanticHint + responsiveHint,
-        assetHints,
       );
       const result = await generateReactDirect(llm, reactSystemPrompt, reactUserPrompt);
       const html = extractJSXBody(result.reactCode);
@@ -243,12 +240,12 @@ export async function generateSingleComponent(
 
   // ── templateMode OFF: existing Mitosis pipeline (unchanged) ───────────
   const systemPrompt = assembleSystemPrompt(templateMode);
+  // Asset info is already embedded in the YAML as type: ICON nodes
   const userPrompt = assembleUserPrompt(
     yaml,
     componentName,
     staticContentRule + semanticHint + responsiveHint + (componentBemHint ? `\n${componentBemHint}` : ''),
     templateMode,
-    assetHints,
   );
 
   // Collect expected text for fidelity validation
@@ -288,7 +285,8 @@ export async function generateSingleComponent(
       representativeProps: extractVisibleProps(node),
       representativeTexts: collectOrderedTexts(node),
     };
-  } catch {
+  } catch (err) {
+    console.error(`  [PATH 1] "${componentName}" error:`, err instanceof Error ? err.message : err);
     return { name: componentName, formRole, html: '', css: '', success: false };
   }
 }
@@ -313,7 +311,6 @@ export async function generateSingleComponent(
  * @param onStep - Progress callback
  * @param onAttempt - Retry attempt callback
  * @param templateMode - When true, prompts use Tailwind + CSS variables for the starter
- * @param assetHints - Optional asset hints string (icon SVG file references for the LLM)
  */
 export async function generateCompoundSection(
   sectionNode: any,
@@ -328,7 +325,6 @@ export async function generateCompoundSection(
   templateMode?: boolean,
   rawSectionNode?: any,
   existingChartNames?: Set<string>,
-  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -340,7 +336,7 @@ export async function generateCompoundSection(
     onStep?.(`  No recognizable components found — using monolithic generation`);
     return fallbackMonolithicGeneration(
       sectionNode, sectionName, sectionIndex, totalSections,
-      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode, assetHints,
+      serializeNode, llm, ctx, onAttempt, discovery, templateMode, rawSectionNode,
     );
   }
 
@@ -425,32 +421,37 @@ export async function generateCompoundSection(
     }
   }
 
-  // Generate UI components via LLM (PATH 1 — parallel)
-  const generationPromises = uiComps.map(async (comp) => {
-    const suffix = bemSuffixes.get(comp.variantKey) ?? '';
-    const displayName = comp.variantKey !== comp.name
-      ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
-      : comp.name;
-    onStep?.(`  [PATH 1] Generating "${displayName}" (${comp.formRole})${suffix ? ` → BEM suffix "${suffix}"` : ''}...`);
-    const generated = await generateSingleComponent(
-      comp.representativeNode,
-      comp.formRole,
-      serializeNode,
-      llm,
-      slug,
-      onAttempt,
-      suffix || undefined,
-      templateMode,
-      assetHints,
-    );
-    componentCache.set(comp.variantKey, generated);
-    onStep?.(
-      `  [PATH 1] "${displayName}" → ${generated.success ? 'OK' : 'FAILED'}`,
-    );
-    return generated;
-  });
+  // Generate UI components via LLM (PATH 1 — concurrency-limited)
+  // Limit concurrency to avoid rate limiting from LLM providers (e.g. DeepSeek 429s).
+  const MAX_CONCURRENCY = 3;
+  const generatedComponents: GeneratedComponent[] = [];
 
-  const generatedComponents = await Promise.all(generationPromises);
+  for (let batch = 0; batch < uiComps.length; batch += MAX_CONCURRENCY) {
+    const batchComps = uiComps.slice(batch, batch + MAX_CONCURRENCY);
+    const batchResults = await Promise.all(batchComps.map(async (comp) => {
+      const suffix = bemSuffixes.get(comp.variantKey) ?? '';
+      const displayName = comp.variantKey !== comp.name
+        ? `${comp.name} [${comp.variantKey.slice(comp.name.length + 2)}]`
+        : comp.name;
+      onStep?.(`  [PATH 1] Generating "${displayName}" (${comp.formRole})${suffix ? ` → BEM suffix "${suffix}"` : ''}...`);
+      const generated = await generateSingleComponent(
+        comp.representativeNode,
+        comp.formRole,
+        serializeNode,
+        llm,
+        slug,
+        onAttempt,
+        suffix || undefined,
+        templateMode,
+      );
+      componentCache.set(comp.variantKey, generated);
+      onStep?.(
+        `  [PATH 1] "${displayName}" → ${generated.success ? 'OK' : 'FAILED'}`,
+      );
+      return generated;
+    }));
+    generatedComponents.push(...batchResults);
+  }
 
   const successCount = generatedComponents.filter((g) => g.success).length;
   onStep?.(
@@ -504,16 +505,9 @@ export async function generateCompoundSection(
     ? assembleReactSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx)
     : assemblePageSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx, templateMode);
 
-  // Insert component references and asset hints before the YAML block
-  let userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
-  if (assetHints) {
-    const yamlIdx = userPrompt.indexOf('```yaml');
-    if (yamlIdx !== -1) {
-      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
-    } else {
-      userPrompt += '\n\n' + assetHints;
-    }
-  }
+  // Insert component references before the YAML block
+  // Asset info is already embedded in the YAML as type: ICON nodes
+  const userPrompt = injectComponentReferences(baseUserPrompt, componentRefBlock);
 
   onStep?.(`  [PATH 2] Generating section layout with ${successCount} pre-built components...`);
 
@@ -548,7 +542,8 @@ export async function generateCompoundSection(
       discovery,
       chartComponents,
     };
-  } catch {
+  } catch (err) {
+    console.error(`  [PATH 2] Section "${sectionName}" error:`, err instanceof Error ? err.message : err);
     return {
       rawCode: '',
       css: '',
@@ -575,7 +570,9 @@ function substituteComponents(
   path: number[] = [],
 ): any {
   if (!node || node.visible === false) return null;
-  if (node.name?.startsWith('_')) return null;
+  // Only skip truly empty utility/meta nodes with `_` prefix.
+  // Visible `_` prefixed nodes with children or text content must be preserved.
+  if (node.name?.startsWith('_') && !node.children?.length && !node.characters) return null;
 
   // Check if this node matches a chart component (identified by tree path)
   const chartPathKey = path.join('-');
@@ -882,6 +879,11 @@ function buildComponentReferenceBlock(
     'customized for each specific instance (labels, values, placeholders are correct). ' +
     'Do NOT change the text, class names, or HTML structure. ' +
     'Do NOT regenerate these as `<div>` — use the semantic HTML provided.\n\n' +
+    '**CRITICAL: COMPONENT_REF nodes are COMPLETE and SELF-CONTAINED.** ' +
+    'They have NO children to expand. ALL content (text, icons, structure) is ' +
+    'already inside `generatedHTML`. Do NOT render any children, text, or icons ' +
+    'separately for COMPONENT_REF nodes — only output the `generatedHTML` wrapped ' +
+    'in a sized container div.\n\n' +
     '**Sizing COMPONENT_REF wrappers:** When a COMPONENT_REF has `widthMode: fill`, ' +
     'its wrapper must use `width: 100%` (NOT a fixed pixel width). ' +
     'When it has a `width` in pixels, use that exact width on the wrapper. ' +
@@ -1045,7 +1047,6 @@ async function fallbackMonolithicGeneration(
   discovery: ComponentDiscoveryResult,
   templateMode?: boolean,
   rawSectionNode?: any,
-  assetHints?: string,
 ): Promise<CompoundSectionResult> {
   const serialized = serializeNode(sectionNode);
   fixStretchDimensions(serialized);
@@ -1055,19 +1056,17 @@ async function fallbackMonolithicGeneration(
   const systemPrompt = templateMode
     ? assembleReactSectionSystemPrompt()
     : assemblePageSectionSystemPrompt(templateMode);
-  let userPrompt = templateMode
+  const userPrompt = templateMode
     ? assembleReactSectionUserPrompt(yaml, sectionName, sectionIndex, totalSections, ctx)
     : assemblePageSectionUserPrompt(yaml, sectionName, sectionIndex, totalSections, ctx, templateMode);
 
-  // Inject asset hints so the LLM knows about available SVG files
-  if (assetHints) {
-    const yamlIdx = userPrompt.indexOf('```yaml');
-    if (yamlIdx !== -1) {
-      userPrompt = userPrompt.slice(0, yamlIdx) + assetHints + '\n\n' + userPrompt.slice(yamlIdx);
-    } else {
-      userPrompt += '\n\n' + assetHints;
-    }
-  }
+  // Asset info is already embedded in the YAML as type: ICON nodes
+
+  const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
+
+  let rawCode = '';
+  let css = '';
+  let success = false;
 
   try {
     if (templateMode) {
@@ -1087,24 +1086,162 @@ async function fallbackMonolithicGeneration(
       undefined, undefined, undefined, undefined, undefined,
       yaml,  // source YAML for CSS fidelity validation
     );
-    return {
-      rawCode: result.rawCode,
-      css: result.css ?? '',
-      success: result.success,
-      generatedComponents: [],
-      discovery,
-      chartComponents: [],
-    };
-  } catch {
-    return {
-      rawCode: '',
-      css: '',
-      success: false,
-      generatedComponents: [],
-      discovery,
-      chartComponents: [],
-    };
+    rawCode = result.rawCode;
+    css = result.css ?? '';
+    success = result.success;
+  } catch (err) {
+    console.error(`  [FALLBACK] Section "${sectionName}" LLM generation failed:`, err instanceof Error ? err.message : err);
   }
+
+  // If LLM returned empty JSX, generate a structural fallback from the YAML
+  // data so the section's text content and structure are still rendered.
+  const { extractJSXBody: extractBody } = await import('./stitch.js');
+  const body = rawCode ? extractBody(rawCode) : '';
+  if (!body.trim()) {
+    console.error(`  [FALLBACK] Section "${sectionName}" — LLM produced empty JSX, generating structural fallback`);
+    const fallback = generateStructuralFallback(serialized, slug);
+    if (fallback.jsx) {
+      rawCode = fallback.jsx;
+      css = fallback.css;
+      success = true;
+    }
+  }
+
+  return {
+    rawCode,
+    css,
+    success,
+    generatedComponents: [],
+    discovery,
+    chartComponents: [],
+  };
+}
+
+// ── Structural Fallback ──────────────────────────────────────────────────────
+
+/**
+ * Generates a minimal JSX component from the serialized YAML tree when the
+ * LLM fails to produce any output. Walks the node tree and emits:
+ *   - TEXT nodes as `<span>` with their text content
+ *   - ICON nodes as `<img>` with their assetFile
+ *   - FRAME/GROUP containers as `<div>`
+ *
+ * This ensures sections with visible content always render something rather
+ * than silently disappearing. The output is structurally correct but may
+ * lack pixel-perfect styling.
+ */
+function generateStructuralFallback(serialized: any, sectionSlug: string): { jsx: string; css: string } {
+  const cssRules: string[] = [];
+  let classCounter = 0;
+
+  function makeClass(hint: string): string {
+    const clean = hint.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+    const suffix = clean || `el-${++classCounter}`;
+    return `${sectionSlug}__${suffix}`;
+  }
+
+  /** Append px only when the value is a bare number (no existing unit). */
+  function cssVal(v: any): string {
+    if (v == null) return '';
+    const s = String(v);
+    // Already has a unit (px, %, em, rem, etc.) → use as-is
+    if (/[a-z%]$/i.test(s)) return s;
+    // Pure number → append px
+    if (/^-?\d+(\.\d+)?$/.test(s)) return `${s}px`;
+    return s;
+  }
+
+  /** Serialize a border value that may be a string OR an object. */
+  function cssBorder(b: any): string {
+    if (!b) return '';
+    if (typeof b === 'string') return b;
+    // Object form: { width, style, color } or Figma-style { strokeWeight, color, ... }
+    const w = b.width ?? b.strokeWeight ?? 1;
+    const style = b.style ?? 'solid';
+    const c = b.color ?? '#000';
+    return `${cssVal(w)} ${style} ${typeof c === 'string' ? c : '#000'}`;
+  }
+
+  function walkNode(node: any, depth: number): string {
+    if (!node) return '';
+    const indent = '  '.repeat(depth);
+    const name = node.name || '';
+    const type = node.type || node.nodeType || '';
+
+    // TEXT node → emit <span> with text content
+    // Serialized data uses: type='TEXT', text='...' (from node.characters)
+    if (type === 'TEXT' || node.text) {
+      const text = node.text || node.characters || name;
+      if (!text.trim()) return '';
+      const cls = makeClass(name);
+      let rule = `.${cls} {\n`;
+      const ts = node.textStyle;
+      if (ts?.fontSize) rule += `  font-size: ${ts.fontSize};\n`;
+      if (ts?.fontWeight) rule += `  font-weight: ${ts.fontWeight};\n`;
+      if (ts?.lineHeight) rule += `  line-height: ${ts.lineHeight};\n`;
+      if (ts?.fontFamily) rule += `  font-family: ${ts.fontFamily};\n`;
+      if (ts?.color) rule += `  color: ${ts.color};\n`;
+      rule += `}\n`;
+      cssRules.push(rule);
+      // Wrap text in {"..."} JSX expression to prevent apostrophes / special
+      // chars from confusing extractJSXBody's paren-depth tracker.
+      return `${indent}<span class="${cls}">{${JSON.stringify(text)}}</span>`;
+    }
+
+    // ICON node → emit <img>
+    if (type === 'ICON' && node.assetFile) {
+      const cls = makeClass(name);
+      cssRules.push(`.${cls} { width: ${cssVal(node.width) || '20px'}; height: ${cssVal(node.height) || '20px'}; }\n`);
+      return `${indent}<img src="./assets/${node.assetFile}" alt="" class="${cls}" />`;
+    }
+
+    // Container → recurse children
+    const children = node.children || [];
+    const childJSX = children.map((c: any) => walkNode(c, depth + 1)).filter(Boolean);
+    if (childJSX.length === 0 && !node.text) return '';
+
+    const cls = makeClass(name);
+    let rule = `.${cls} {\n  display: flex;\n`;
+    const dir = node.layout?.direction || (node.layoutMode === 'HORIZONTAL' ? 'row' : 'column');
+    rule += `  flex-direction: ${dir};\n`;
+    const gap = node.layout?.gap ?? node.gap ?? node.itemSpacing;
+    if (gap) rule += `  gap: ${cssVal(gap)};\n`;
+    if (node.padding) {
+      const p = node.padding;
+      if (typeof p === 'string') rule += `  padding: ${p};\n`;
+      else if (p.top !== undefined) rule += `  padding: ${cssVal(p.top)} ${cssVal(p.right)} ${cssVal(p.bottom)} ${cssVal(p.left)};\n`;
+    }
+    if (node.backgroundColor) rule += `  background-color: ${node.backgroundColor};\n`;
+    if (node.borderRadius) rule += `  border-radius: ${cssVal(node.borderRadius)};\n`;
+    const borderStr = cssBorder(node.border);
+    if (borderStr) rule += `  border: ${borderStr};\n`;
+    rule += `}\n`;
+    cssRules.push(rule);
+
+    return `${indent}<div class="${cls}">\n${childJSX.join('\n')}\n${indent}</div>`;
+  }
+
+  // Walk from depth 2 so the output is properly indented for the wrapper
+  const body = walkNode(serialized, 2);
+  if (!body.trim()) return { jsx: '', css: '' };
+
+  const funcName = toSafeIdentifier(sectionSlug);
+  // Don't add an inner <section> wrapper — stitch.ts already wraps each section
+  // in <section class="page__section-name">. Adding one here would create a
+  // redundant element whose class doesn't exist in CSS (BEM mismatch).
+  const jsx = `export default function ${funcName}(props) {\n  return (\n${body}\n  );\n}`;
+  const css = cssRules.join('\n');
+  return { jsx, css };
+}
+
+/** Convert a slug like "frame-2147225838" to a valid PascalCase JS identifier. */
+function toSafeIdentifier(s: string): string {
+  // Split on non-alphanumeric, capitalize each segment, filter empty
+  return s
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map(seg => seg.charAt(0).toUpperCase() + seg.slice(1))
+    .join('');
 }
 
 // ── Stretch Dimension Fix ────────────────────────────────────────────────────
@@ -1264,6 +1401,9 @@ function estimateOriginalSize(node: any, serializeNode: (n: any) => any): number
 function computeVisualFingerprint(node: any): string {
   const parts: string[] = [];
 
+  // Node type (INSTANCE vs FRAME vs TEXT — affects rendering)
+  if (node.type) parts.push(`type:${node.type}`);
+
   // Dimensions & sizing mode
   if (node.width) parts.push(`w:${node.width}`);
   if (node.height) parts.push(`h:${node.height}`);
@@ -1287,11 +1427,25 @@ function computeVisualFingerprint(node: any): string {
   if (node.borderRadius) parts.push(`br:${node.borderRadius}`);
   if (node.opacity !== undefined) parts.push(`op:${node.opacity}`);
   if (node.effects) parts.push(`e:${JSON.stringify(node.effects)}`);
+  if (node.strokeWeight) parts.push(`sw:${node.strokeWeight}`);
 
   // Positioning
   if (node.position) parts.push(`pos:${node.position}`);
   if (node.left) parts.push(`l:${node.left}`);
   if (node.top) parts.push(`t:${node.top}`);
+
+  // Text content (two "Label" nodes with different text are different)
+  if (node.text) parts.push(`txt:${node.text}`);
+  if (node.characters) parts.push(`chars:${node.characters}`);
+
+  // Children count (a container with 1 child vs 3 children needs different CSS)
+  if (node.children?.length !== undefined) parts.push(`cc:${node.children.length}`);
+
+  // Rotation (rotated arrows are visually different)
+  if (node.rotation) parts.push(`rot:${node.rotation}`);
+
+  // Visibility (hidden elements should not share class with visible ones)
+  if (node.visible === false) parts.push(`vis:false`);
 
   return parts.join('|');
 }

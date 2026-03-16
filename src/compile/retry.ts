@@ -37,12 +37,10 @@ function estimateTokens(text: string): number {
  * Returns at least the provider's configured maxOutputTokens, up to a cap.
  */
 function scaleOutputTokens(userPromptChars: number, baseMax: number): number {
-  // Heuristic: scale with input size. Larger designs produce more code.
-  // ~1 output token per 6 input chars for complex designs (many nodes/styles).
-  const estimated = Math.ceil(userPromptChars / 6);
-  // Cap at 4x the base to stay within provider limits
-  const cap = baseMax * 4;
-  return Math.min(Math.max(estimated, baseMax), cap);
+  // The provider's configured maxTokens is the hard API limit — never exceed it.
+  // For complex designs we always want the full budget, and for simple ones the
+  // base is already sufficient. Just return the provider's max.
+  return baseMax;
 }
 
 /**
@@ -246,6 +244,7 @@ export async function generateWithRetry(
   expectedTextLiterals?: string[],
   enforceLayoutFidelity?: boolean,
   sourceYaml?: string,
+  rootWidth?: number,
 ): Promise<ParseResult> {
   let lastError = '';
 
@@ -262,7 +261,7 @@ export async function generateWithRetry(
     const prompt = truncateToFit(rawPrompt, systemPrompt, llm.contextWindow, outputBudget);
 
     const code = await llm.generate(prompt, systemPrompt);
-    const result = parseMitosisCode(code, expectedRootTag);
+    const result = parseMitosisCode(code, expectedRootTag, rootWidth);
 
     if (!result.success) {
       lastError = result.error ?? 'Unknown parse error';
@@ -331,7 +330,7 @@ export async function generateWithRetry(
   const finalOutputBudget = scaleOutputTokens(finalRawPrompt.length, llm.maxOutputTokens);
   const finalPrompt = truncateToFit(finalRawPrompt, systemPrompt, llm.contextWindow, finalOutputBudget);
   const finalCode = await llm.generate(finalPrompt, systemPrompt);
-  const finalResult = parseMitosisCode(finalCode, expectedRootTag);
+  const finalResult = parseMitosisCode(finalCode, expectedRootTag, rootWidth);
   if (!finalResult.success) {
     return finalResult;
   }

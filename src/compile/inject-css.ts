@@ -57,19 +57,35 @@ function injectReactCSS(code: string, css: string): string {
   if (lastMatch) {
     const afterReturn = lastMatch.index + lastMatch[0].length;
 
-    // Find the balanced closing ) for this return, with string-context awareness
+    // Find the balanced closing ) for this return, with JSX-aware context tracking.
+    // Quotes in JSX text content (e.g. apostrophes in "it's") are NOT JS strings
+    // and must not trigger string mode — only quotes inside JSX tag attributes
+    // or JS expressions ({...}) are string delimiters.
     let depth = 1;
     let closeIndex = afterReturn;
     let inString: string | null = null;
     let inTemplate = false;
     let escaped = false;
+    let inJSXTag = false;      // true between '<tagName' and '>'
+    let jsxExprDepth = 0;      // depth of { } JSX expression nesting
     for (let i = afterReturn; i < code.length; i++) {
       const ch = code[i];
       if (escaped) { escaped = false; continue; }
       if (ch === '\\' && (inString || inTemplate)) { escaped = true; continue; }
       if (inString) { if (ch === inString) inString = null; continue; }
       if (inTemplate) { if (ch === '`') inTemplate = false; continue; }
-      if (ch === '"' || ch === "'") { inString = ch; continue; }
+      // JSX tag tracking
+      if (ch === '<' && !inJSXTag && jsxExprDepth === 0) {
+        const next = code[i + 1];
+        if (next && (next === '/' || /[a-zA-Z]/.test(next))) inJSXTag = true;
+        continue;
+      }
+      if (ch === '>' && inJSXTag) { inJSXTag = false; continue; }
+      // JSX expression tracking
+      if (ch === '{' && !inJSXTag) { jsxExprDepth++; continue; }
+      if (ch === '}' && jsxExprDepth > 0) { jsxExprDepth--; continue; }
+      // Only enter string mode inside JSX tag attrs or JS expressions
+      if ((ch === '"' || ch === "'") && (inJSXTag || jsxExprDepth > 0)) { inString = ch; continue; }
       if (ch === '`') { inTemplate = true; continue; }
       if (ch === '(') depth++;
       if (ch === ')') depth--;

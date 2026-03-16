@@ -289,10 +289,24 @@ export function extractPageLayoutCSS(rootNode: any, children: any[]): PageLayout
   } else {
     // ── No auto-layout: children are absolutely positioned ────────────────
     // Root is a positioning context; each child gets explicit top/left from bounds.
+
+    // Compute min-height from the maximum bottom extent of all children.
+    // The Figma viewport height (rootHeight) may be smaller than the actual
+    // content extent when children extend below the visible canvas.
+    let maxBottomExtent = rootHeight ?? 0;
+    for (const child of children) {
+      if (child.visible === false) continue;
+      const cb = child.absoluteBoundingBox;
+      if (cb && rootBounds) {
+        const childBottom = Math.round(cb.y - rootBounds.y) + Math.round(cb.height);
+        if (childBottom > maxBottomExtent) maxBottomExtent = childBottom;
+      }
+    }
+
     rootCSS = `.${pageName} {\n`;
     rootCSS += `  position: relative;\n`;
     if (width) rootCSS += `  max-width: ${width}px;\n  width: 100%;\n  margin-left: auto;\n  margin-right: auto;\n`;
-    if (rootHeight) rootCSS += `  height: ${rootHeight}px;\n`;
+    if (maxBottomExtent) rootCSS += `  min-height: ${maxBottomExtent}px;\n`;
     rootCSS += extractPadding(rootNode);
     rootCSS += extractBackground(rootNode);
     rootCSS += overflow;

@@ -35,9 +35,6 @@ import {
 } from '../figma/component-discovery.js';
 import { extractChartMetadata } from '../figma/chart-detection.js';
 import { generateChartCode } from './chart-codegen.js';
-import { isShadcnSupported } from '../shadcn/shadcn-types.js';
-import { generateShadcnInlineComponent } from '../shadcn/shadcn-codegen.js';
-import { detectComponentCategory } from '../figma/component-set-parser.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -218,30 +215,9 @@ export async function generateSingleComponent(
     'Do NOT generate `{state.label}`, `{state.selectedValue}`, or similar dynamic expressions. ' +
     'Copy text VERBATIM from the YAML `text` or `characters` field.\n';
 
-  // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
+  // ── templateMode ON: React + Tailwind direct (no Mitosis, no shadcn for PATH C)
   if (templateMode) {
-    const category = detectComponentCategory(componentName);
-
-    // Try shadcn inline path for recognized components
-    if (isShadcnSupported(formRole) || (category !== 'unknown' && isShadcnSupported(category))) {
-      try {
-        const shadcnRole = isShadcnSupported(formRole) ? formRole : category;
-        const result = await generateShadcnInlineComponent(
-          node, shadcnRole, componentName, llm, yaml,
-        );
-        return {
-          name: componentName,
-          formRole,
-          html: result.html,
-          css: '',
-          success: true,
-          representativeProps: extractVisibleProps(node),
-          representativeTexts: collectOrderedTexts(node),
-        };
-      } catch { /* fall through to React direct */ }
-    }
-
-    // Fallback: React + Tailwind direct (no Mitosis)
+    // React + Tailwind direct (no Mitosis)
     try {
       const reactSystemPrompt = assembleReactSystemPrompt();
       const reactUserPrompt = assembleReactUserPrompt(

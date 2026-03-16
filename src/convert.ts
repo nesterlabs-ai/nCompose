@@ -49,7 +49,7 @@ import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComp
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
 import { isShadcnSupported } from './shadcn/shadcn-types.js';
-import { generateShadcnComponentSet, generateShadcnSingleComponent } from './shadcn/shadcn-codegen.js';
+import { generateShadcnComponentSet } from './shadcn/shadcn-codegen.js';
 import { generateReactDirect } from './compile/react-direct-gen.js';
 
 export interface ConvertCallbacks {
@@ -1429,36 +1429,7 @@ async function convertSingleComponent(
 
   // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
   if (options.templateMode) {
-    const category = hintedCategory ?? detectComponentCategory(rootNode?.name ?? '');
-
-    // Try shadcn path for recognized components
-    if (category && category !== 'unknown' && isShadcnSupported(category)) {
-      try {
-        onStep?.(`[shadcn] Generating single component via shadcn template (${category})...`);
-        const componentName = options.name ?? toPascalCase(rootNode?.name ?? 'Component');
-        const result = await generateShadcnSingleComponent(
-          rootNode, category, componentName, llm, onStep, assets, llmYaml,
-        );
-        const reactPlaceholder = '// shadcn/ui component (React only)';
-        const frameworkOutputs: Record<string, string> = {};
-        for (const fw of options.frameworks) {
-          frameworkOutputs[fw] = fw === 'react' ? result.consumerCode : reactPlaceholder;
-        }
-        return {
-          componentName: result.componentName,
-          mitosisSource: result.consumerCode,
-          frameworkOutputs: frameworkOutputs as Record<Framework, string>,
-          assets,
-          updatedShadcnSource: result.updatedShadcnSource,
-          shadcnComponentName: result.shadcnComponentName,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        onStep?.(`[shadcn] Failed: ${msg} — falling back to React + Tailwind direct`);
-      }
-    }
-
-    // Fallback: React + Tailwind direct (no Mitosis)
+    // React + Tailwind direct (no Mitosis, no shadcn for PATH B)
     onStep?.(`Generating React + Tailwind component via ${llm.name}...`);
     const reactSystemPrompt = assembleReactSystemPrompt();
     const reactUserPrompt = assembleReactUserPrompt(llmYaml, options.name, semanticHint ?? undefined, assetHints);

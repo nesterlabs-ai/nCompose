@@ -95,22 +95,13 @@ Single Figma node
 ```
 Single Figma node
   → same asset collection
-  → isShadcnSupported(category)?
-    ├─ YES → generateShadcnSingleComponent()      ← src/shadcn/shadcn-codegen.ts
-    │         → readShadcnSource()                  read base template
-    │         → extractNodeStyle()                  ← src/shadcn/style-extractor.ts (single node)
-    │         → extractComponentContent()           ← src/shadcn/content-extractor.ts
-    │         → buildShadcnSingleComponentSystemPrompt()   ← src/shadcn/shadcn-prompt-builder.ts
-    │         → buildShadcnSingleComponentUserPrompt()     ← src/shadcn/shadcn-prompt-builder.ts
-    │         → LLM generates TWO code blocks
-    │         → parseTwoCodeBlocks()
-    │
-    └─ NO or FAIL → React direct fallback:
-                     → assembleReactSystemPrompt()         ← src/prompt/assemble.ts
-                     → assembleReactUserPrompt()           ← src/prompt/assemble.ts
-                     → generateReactDirect(llm)            ← src/compile/react-direct-gen.ts
-                                                            (no Mitosis parsing)
+  → assembleReactSystemPrompt()         ← src/prompt/assemble.ts
+  → assembleReactUserPrompt()           ← src/prompt/assemble.ts
+  → generateReactDirect(llm)            ← src/compile/react-direct-gen.ts
+                                          (no Mitosis parsing, no shadcn)
 ```
+
+**Note:** shadcn is NOT used in PATH B. Only React + Tailwind direct generation.
 
 **Output:** React + Tailwind only. No Mitosis intermediate step.
 
@@ -166,20 +157,12 @@ Chart node → extractChartMetadata(llm) → generateChartCode() → determinist
 
 ```
 UI component node
-  → isShadcnSupported(formRole)?
-    ├─ YES → generateShadcnInlineComponent()       ← src/shadcn/shadcn-codegen.ts
-    │         → readShadcnSource()
-    │         → extractNodeStyle()
-    │         → extractComponentContent()
-    │         → buildShadcnInlineComponentSystemPrompt()   ← src/shadcn/shadcn-prompt-builder.ts
-    │         → buildShadcnInlineComponentUserPrompt()     ← src/shadcn/shadcn-prompt-builder.ts
-    │         → LLM generates ONE code block (JSX fragment, no wrapper)
-    │
-    └─ NO or FAIL → React direct fallback:
-                     → assembleReactSystemPrompt()
-                     → assembleReactUserPrompt()
-                     → generateReactDirect()
+  → assembleReactSystemPrompt()
+  → assembleReactUserPrompt()
+  → generateReactDirect()              React + Tailwind (no shadcn, no Mitosis)
 ```
+
+**Note:** shadcn is NOT used for PATH C sub-components. Only React + Tailwind direct.
 
 #### UI Components — templateMode OFF
 
@@ -253,11 +236,9 @@ templateMode OFF:
 | PATH A (Mitosis) | `buildComponentSetSystemPrompt()` | `buildComponentSetUserPrompt()` | `src/figma/variant-prompt-builder.ts` |
 | PATH A (shadcn) | `buildShadcnSystemPrompt()` | `buildShadcnUserPrompt()` | `src/shadcn/shadcn-prompt-builder.ts` |
 | PATH B (Mitosis) | `assembleSystemPrompt()` | `assembleUserPrompt()` | `src/prompt/assemble.ts` |
-| PATH B (shadcn) | `buildShadcnSingleComponentSystemPrompt()` | `buildShadcnSingleComponentUserPrompt()` | `src/shadcn/shadcn-prompt-builder.ts` |
-| PATH B (React fallback) | `assembleReactSystemPrompt()` | `assembleReactUserPrompt()` | `src/prompt/assemble.ts` |
+| PATH B (React direct) | `assembleReactSystemPrompt()` | `assembleReactUserPrompt()` | `src/prompt/assemble.ts` |
 | PATH C sub-components (Mitosis) | `assembleSystemPrompt()` | `assembleUserPrompt()` | `src/prompt/assemble.ts` |
-| PATH C sub-components (shadcn) | `buildShadcnInlineComponentSystemPrompt()` | `buildShadcnInlineComponentUserPrompt()` | `src/shadcn/shadcn-prompt-builder.ts` |
-| PATH C sub-components (React fallback) | `assembleReactSystemPrompt()` | `assembleReactUserPrompt()` | `src/prompt/assemble.ts` |
+| PATH C sub-components (React direct) | `assembleReactSystemPrompt()` | `assembleReactUserPrompt()` | `src/prompt/assemble.ts` |
 | PATH C section layout (Mitosis) | `assemblePageSectionSystemPrompt()` | `assemblePageSectionUserPrompt()` | `src/prompt/assemble.ts` |
 | PATH C section layout (React) | `assembleReactSectionSystemPrompt()` | `assembleReactSectionUserPrompt()` | `src/prompt/assemble.ts` |
 

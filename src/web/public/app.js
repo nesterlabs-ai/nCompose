@@ -177,6 +177,15 @@ window.isVisualEditMode = false;
 let selectedElementInfo = null;
 let visualEditIframeInjected = false;
 
+// ── Auth State ──
+let authEnabled = false;
+let isAuthenticated = false;
+let currentUser = null;
+let authIdToken = null;
+let cognitoUserPool = null;
+let freeTierUsage = { used: 0, limit: 10, remaining: 10 };
+let loginSuccessCallback = null;
+
 /** Explorer icon config: folder, chevron, fileIcons. Loaded from /explorer-icons.config.json; merged with these defaults. */
 const DEFAULT_EXPLORER_ICON_CONFIG = {
   folder: { closed: 'icon-folder-closed', open: 'icon-folder-open' },
@@ -1301,6 +1310,13 @@ function startConversion(skipDuplicateCheck) {
     urlInput.focus();
     return;
   }
+
+  // Auth gate: free tier exhausted → require login
+  if (authEnabled && !isAuthenticated && freeTierUsage.remaining <= 0) {
+    showLoginModal(() => startConversion(skipDuplicateCheck));
+    return;
+  }
+
   if (!figmaToken) {
     if (sidebar.classList.contains('collapsed')) {
       sidebar.classList.remove('collapsed');
@@ -1380,9 +1396,14 @@ function startConversion(skipDuplicateCheck) {
 
   fetch('/api/convert', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body,
   }).then((response) => {
+    if (response.status === 401) {
+      setLoading(false);
+      showLoginModal(() => startConversion(true));
+      return Promise.reject(new Error('__auth_redirect__'));
+    }
     if (!response.ok) {
       return response.json().then((data) => {
         throw new Error(data.error || `Server error: ${response.status}`);
@@ -1420,6 +1441,7 @@ function startConversion(skipDuplicateCheck) {
 
     readStream();
   }).catch((err) => {
+    if (err.message === '__auth_redirect__') return; // handled by login modal
     setLoading(false);
     setStatus('error', 'Error occurred');
     showError(err.message);
@@ -2197,6 +2219,9 @@ function handleComplete(data) {
   setLoading(false);
   setStatus('done', 'Conversion complete');
 
+  // Update free tier after successful conversion
+  if (authEnabled) updateFreeTierDisplay();
+
   // Mark last step done
   const activeItem = progressList.querySelector('.progress-icon--active');
   if (activeItem) {
@@ -2368,7 +2393,7 @@ function sendChatMessage(customText) {
 
   fetch('/api/refine', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body,
   }).then((response) => {
     if (!response.ok) {
@@ -3014,7 +3039,7 @@ codeSaveBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/save-file', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ sessionId: currentSessionId, fileKey: activeFile, content }),
     });
     const data = await res.json();
@@ -3062,9 +3087,35 @@ codeCopyBtn.addEventListener('click', () => {
 });
 
 // ── Download ──
+function performDownload() {
+  if (!currentSessionId) return;
+  fetch(`/api/download/${currentSessionId}`, { headers: authHeaders() })
+    .then((r) => {
+      if (r.status === 401) { showLoginModal(performDownload); return; }
+      if (!r.ok) throw new Error('Download failed');
+      return r.blob();
+    })
+    .then((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${currentComponentName || 'component'}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    })
+    .catch((e) => console.error('Download error:', e));
+}
+
 downloadBtn.addEventListener('click', () => {
   if (!currentSessionId) return;
-  window.location.href = `/api/download/${currentSessionId}`;
+  if (authEnabled && !isAuthenticated) {
+    showLoginModal(performDownload);
+    return;
+  }
+  performDownload();
 });
 
 if (previewReload) {
@@ -3494,7 +3545,13 @@ function initGitHubDialog() {
   closeBtn.addEventListener('click', closeDialog);
 
   if (pushGithubBtn) {
-    pushGithubBtn.addEventListener('click', openDialog);
+    pushGithubBtn.addEventListener('click', () => {
+      if (authEnabled && !isAuthenticated) {
+        showLoginModal(openDialog);
+        return;
+      }
+      openDialog();
+    });
   }
 }
 
@@ -3577,11 +3634,401 @@ if (allProjectsBtn) {
   });
 }
 
+// ── Auth: Cognito Integration ──
+
+function authHeaders() {
+  if (authIdToken) return { Authorization: 'Bearer ' + authIdToken };
+  return {};
+}
+
+async function initAuth() {
+  try {
+    const res = await fetch('/api/auth/config');
+    const cfg = await res.json();
+    authEnabled = cfg.authEnabled;
+    if (!authEnabled) return;
+
+    // Init Cognito UserPool from CDN-loaded SDK
+    if (typeof AmazonCognitoIdentity !== 'undefined' && cfg.userPoolId && cfg.clientId) {
+      cognitoUserPool = new AmazonCognitoIdentity.CognitoUserPool({
+        UserPoolId: cfg.userPoolId,
+        ClientId: cfg.clientId,
+      });
+
+      // Check for existing session
+      const cogUser = cognitoUserPool.getCurrentUser();
+      if (cogUser) {
+        cogUser.getSession((err, session) => {
+          if (!err && session && session.isValid()) {
+            authIdToken = session.getIdToken().getJwtToken();
+            fetchAuthMe();
+          }
+        });
+      }
+    }
+
+    updateFreeTierDisplay();
+  } catch (e) {
+    console.warn('Auth init failed:', e);
+  }
+}
+
+async function fetchAuthMe() {
+  try {
+    const res = await fetch('/api/auth/me', { headers: authHeaders() });
+    const data = await res.json();
+    isAuthenticated = data.authenticated;
+    currentUser = data.user;
+    updateAuthUI();
+  } catch {
+    isAuthenticated = false;
+    currentUser = null;
+    updateAuthUI();
+  }
+}
+
+async function updateFreeTierDisplay() {
+  if (!authEnabled) return;
+  try {
+    const res = await fetch('/api/auth/free-tier');
+    freeTierUsage = await res.json();
+  } catch { /* ignore */ }
+
+  const badge = document.getElementById('free-tier-badge');
+  const text = document.getElementById('free-tier-text');
+  if (!badge || !text) return;
+
+  if (isAuthenticated) {
+    badge.style.display = 'none';
+    return;
+  }
+
+  badge.style.display = 'block';
+  badge.classList.remove('free-tier-badge--warning', 'free-tier-badge--exhausted');
+
+  if (freeTierUsage.remaining <= 0) {
+    text.textContent = 'Free conversions used up — sign in to continue';
+    badge.classList.add('free-tier-badge--exhausted');
+  } else if (freeTierUsage.remaining <= 3) {
+    text.textContent = `${freeTierUsage.remaining} free conversion${freeTierUsage.remaining === 1 ? '' : 's'} remaining`;
+    badge.classList.add('free-tier-badge--warning');
+  } else {
+    text.textContent = `${freeTierUsage.remaining} free conversions remaining`;
+  }
+}
+
+function updateAuthUI() {
+  const userInfo = document.getElementById('sidebar-user-info');
+  const userEmail = document.getElementById('sidebar-user-email');
+  const logoutBtn = document.getElementById('sidebar-logout-btn');
+
+  if (!authEnabled) {
+    if (userInfo) userInfo.style.display = 'none';
+    return;
+  }
+
+  if (isAuthenticated && currentUser) {
+    if (userInfo) userInfo.style.display = 'flex';
+    if (userEmail) userEmail.textContent = currentUser.email || currentUser.name || 'User';
+    if (logoutBtn) {
+      logoutBtn.onclick = () => cognitoSignOut();
+    }
+    // Hide free tier badge for authenticated users
+    const badge = document.getElementById('free-tier-badge');
+    if (badge) badge.style.display = 'none';
+  } else {
+    if (userInfo) userInfo.style.display = 'none';
+  }
+}
+
+function showLoginModal(onSuccess) {
+  loginSuccessCallback = onSuccess || null;
+  const overlay = document.getElementById('login-dialog-overlay');
+  if (!overlay) return;
+
+  // Reset to sign-in view
+  document.getElementById('login-signin-form').style.display = 'flex';
+  document.getElementById('login-signup-form').style.display = 'none';
+  document.getElementById('login-verify-form').style.display = 'none';
+  document.getElementById('login-forgot-form').style.display = 'none';
+  document.getElementById('login-reset-form').style.display = 'none';
+  document.getElementById('login-dialog-title-text').textContent = 'Sign In';
+  document.getElementById('login-error').textContent = '';
+  document.getElementById('signup-error').textContent = '';
+
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.classList.add('visible');
+  document.getElementById('login-email').focus();
+}
+
+function closeLoginModal() {
+  const overlay = document.getElementById('login-dialog-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  overlay.setAttribute('aria-hidden', 'true');
+  loginSuccessCallback = null;
+}
+
+function initLoginModal() {
+  const overlay = document.getElementById('login-dialog-overlay');
+  if (!overlay) return;
+
+  const closeBtn = document.getElementById('login-dialog-close');
+  closeBtn?.addEventListener('click', closeLoginModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeLoginModal(); });
+
+  // Tab switching
+  document.getElementById('login-show-signup')?.addEventListener('click', () => {
+    document.getElementById('login-signin-form').style.display = 'none';
+    document.getElementById('login-signup-form').style.display = 'flex';
+    document.getElementById('login-dialog-title-text').textContent = 'Sign Up';
+  });
+  document.getElementById('login-show-signin')?.addEventListener('click', () => {
+    document.getElementById('login-signup-form').style.display = 'none';
+    document.getElementById('login-signin-form').style.display = 'flex';
+    document.getElementById('login-dialog-title-text').textContent = 'Sign In';
+  });
+
+  // Forgot password
+  document.getElementById('login-forgot-btn')?.addEventListener('click', () => {
+    document.getElementById('login-signin-form').style.display = 'none';
+    document.getElementById('login-forgot-form').style.display = 'flex';
+    document.getElementById('login-dialog-title-text').textContent = 'Reset Password';
+    const forgotEmail = document.getElementById('forgot-email');
+    forgotEmail.value = document.getElementById('login-email').value;
+  });
+  document.getElementById('forgot-back-btn')?.addEventListener('click', () => {
+    document.getElementById('login-forgot-form').style.display = 'none';
+    document.getElementById('login-signin-form').style.display = 'flex';
+    document.getElementById('login-dialog-title-text').textContent = 'Sign In';
+  });
+
+  // Sign In
+  document.getElementById('login-submit-btn')?.addEventListener('click', () => {
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+    const errorEl = document.getElementById('login-error');
+    const spinner = document.getElementById('login-spinner');
+    const btn = document.getElementById('login-submit-btn');
+    if (!email || !password) { errorEl.textContent = 'Email and password are required'; return; }
+    if (!cognitoUserPool) { errorEl.textContent = 'Auth not configured'; return; }
+
+    errorEl.textContent = '';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+
+    const cogUser = new AmazonCognitoIdentity.CognitoUser({ Username: email, Pool: cognitoUserPool });
+    const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({ Username: email, Password: password });
+
+    cogUser.authenticateUser(authDetails, {
+      onSuccess(session) {
+        authIdToken = session.getIdToken().getJwtToken();
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        fetchAuthMe().then(() => {
+          updateFreeTierDisplay();
+          closeLoginModal();
+          if (loginSuccessCallback) { const cb = loginSuccessCallback; loginSuccessCallback = null; cb(); }
+        });
+      },
+      onFailure(err) {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        errorEl.textContent = err.message || 'Sign in failed';
+      },
+    });
+  });
+
+  // Sign Up
+  let pendingSignupEmail = '';
+  let pendingSignupPassword = '';
+
+  document.getElementById('signup-submit-btn')?.addEventListener('click', () => {
+    const email = document.getElementById('signup-email').value.trim();
+    const password = document.getElementById('signup-password').value;
+    const confirm = document.getElementById('signup-confirm').value;
+    const errorEl = document.getElementById('signup-error');
+    const spinner = document.getElementById('signup-spinner');
+    const btn = document.getElementById('signup-submit-btn');
+
+    if (!email || !password) { errorEl.textContent = 'Email and password are required'; return; }
+    if (password !== confirm) { errorEl.textContent = 'Passwords do not match'; return; }
+    if (!cognitoUserPool) { errorEl.textContent = 'Auth not configured'; return; }
+
+    errorEl.textContent = '';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+
+    const emailAttr = new AmazonCognitoIdentity.CognitoUserAttribute({ Name: 'email', Value: email });
+
+    cognitoUserPool.signUp(email, password, [emailAttr], null, (err) => {
+      btn.disabled = false;
+      spinner.style.display = 'none';
+      if (err) {
+        errorEl.textContent = err.message || 'Sign up failed';
+        return;
+      }
+      pendingSignupEmail = email;
+      pendingSignupPassword = password;
+      document.getElementById('login-signup-form').style.display = 'none';
+      document.getElementById('login-verify-form').style.display = 'flex';
+      document.getElementById('login-dialog-title-text').textContent = 'Verify Email';
+    });
+  });
+
+  // Verify
+  document.getElementById('verify-submit-btn')?.addEventListener('click', () => {
+    const code = document.getElementById('verify-code').value.trim();
+    const errorEl = document.getElementById('verify-error');
+    const spinner = document.getElementById('verify-spinner');
+    const btn = document.getElementById('verify-submit-btn');
+
+    if (!code) { errorEl.textContent = 'Enter the verification code'; return; }
+
+    errorEl.textContent = '';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+
+    const cogUser = new AmazonCognitoIdentity.CognitoUser({ Username: pendingSignupEmail, Pool: cognitoUserPool });
+
+    cogUser.confirmRegistration(code, true, (err) => {
+      if (err) {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        errorEl.textContent = err.message || 'Verification failed';
+        return;
+      }
+      // Auto sign-in after verification
+      const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({ Username: pendingSignupEmail, Password: pendingSignupPassword });
+      cogUser.authenticateUser(authDetails, {
+        onSuccess(session) {
+          authIdToken = session.getIdToken().getJwtToken();
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          fetchAuthMe().then(() => {
+            updateFreeTierDisplay();
+            closeLoginModal();
+            if (loginSuccessCallback) { const cb = loginSuccessCallback; loginSuccessCallback = null; cb(); }
+          });
+        },
+        onFailure(authErr) {
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          errorEl.textContent = authErr.message || 'Auto sign-in failed. Please sign in manually.';
+          // Switch back to sign-in form
+          setTimeout(() => {
+            document.getElementById('login-verify-form').style.display = 'none';
+            document.getElementById('login-signin-form').style.display = 'flex';
+            document.getElementById('login-dialog-title-text').textContent = 'Sign In';
+            document.getElementById('login-email').value = pendingSignupEmail;
+          }, 2000);
+        },
+      });
+    });
+  });
+
+  // Forgot Password — send code
+  let forgotPasswordEmail = '';
+  document.getElementById('forgot-submit-btn')?.addEventListener('click', () => {
+    const email = document.getElementById('forgot-email').value.trim();
+    const errorEl = document.getElementById('forgot-error');
+    const spinner = document.getElementById('forgot-spinner');
+    const btn = document.getElementById('forgot-submit-btn');
+
+    if (!email) { errorEl.textContent = 'Email is required'; return; }
+    if (!cognitoUserPool) { errorEl.textContent = 'Auth not configured'; return; }
+
+    errorEl.textContent = '';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+
+    const cogUser = new AmazonCognitoIdentity.CognitoUser({ Username: email, Pool: cognitoUserPool });
+    forgotPasswordEmail = email;
+
+    cogUser.forgotPassword({
+      onSuccess() {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        document.getElementById('login-forgot-form').style.display = 'none';
+        document.getElementById('login-reset-form').style.display = 'flex';
+        document.getElementById('login-dialog-title-text').textContent = 'Reset Password';
+      },
+      onFailure(err) {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        errorEl.textContent = err.message || 'Failed to send code';
+      },
+    });
+  });
+
+  // Reset Password — confirm new password
+  document.getElementById('reset-submit-btn')?.addEventListener('click', () => {
+    const code = document.getElementById('reset-code').value.trim();
+    const newPassword = document.getElementById('reset-password').value;
+    const errorEl = document.getElementById('reset-error');
+    const spinner = document.getElementById('reset-spinner');
+    const btn = document.getElementById('reset-submit-btn');
+
+    if (!code || !newPassword) { errorEl.textContent = 'Code and new password are required'; return; }
+
+    errorEl.textContent = '';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+
+    const cogUser = new AmazonCognitoIdentity.CognitoUser({ Username: forgotPasswordEmail, Pool: cognitoUserPool });
+
+    cogUser.confirmPassword(code, newPassword, {
+      onSuccess() {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        // Switch to sign-in form
+        document.getElementById('login-reset-form').style.display = 'none';
+        document.getElementById('login-signin-form').style.display = 'flex';
+        document.getElementById('login-dialog-title-text').textContent = 'Sign In';
+        document.getElementById('login-email').value = forgotPasswordEmail;
+        document.getElementById('login-error').textContent = '';
+      },
+      onFailure(err) {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        errorEl.textContent = err.message || 'Reset failed';
+      },
+    });
+  });
+}
+
+function cognitoSignOut() {
+  if (cognitoUserPool) {
+    const cogUser = cognitoUserPool.getCurrentUser();
+    if (cogUser) cogUser.signOut();
+  }
+  authIdToken = null;
+  isAuthenticated = false;
+  currentUser = null;
+  updateAuthUI();
+  updateFreeTierDisplay();
+}
+
+// Token refresh interval (every 50 minutes)
+setInterval(() => {
+  if (!cognitoUserPool || !isAuthenticated) return;
+  const cogUser = cognitoUserPool.getCurrentUser();
+  if (!cogUser) return;
+  cogUser.getSession((err, session) => {
+    if (!err && session && session.isValid()) {
+      authIdToken = session.getIdToken().getJwtToken();
+    }
+  });
+}, 50 * 60 * 1000);
+
+initLoginModal();
+
 // ── Init ──
 loadSavedToken();
 loadExplorerIconConfig();
 updateCodeActionsState();
 renderProjectList();
+initAuth();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');

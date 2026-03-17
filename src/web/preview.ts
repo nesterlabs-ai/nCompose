@@ -297,8 +297,30 @@ export function generatePreviewHTML(
 
   // Escape code for embedding inside a JS string literal (used in manual transpile approach)
   // We manually call Babel.transform instead of using type="text/babel" to get error handling.
+  const universalRendererRuntime = `
+function __Render(name, props, children) {
+  var safeProps = props || {};
+  var style = safeProps.style || {};
+  var labelStyle = { fontSize: '10px', color: '#6b7280', marginBottom: '4px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' };
+  var boxStyle = Object.assign({
+    border: '1px dashed rgba(107,114,128,0.45)',
+    background: 'rgba(248,250,252,0.9)',
+    padding: '8px',
+    borderRadius: '10px',
+    display: 'inline-block',
+    maxWidth: '100%',
+  }, style);
+  var wrapperProps = Object.assign({}, safeProps, { style: boxStyle, 'data-component': name });
+  var content = Array.isArray(children) ? children : [children];
+  return React.createElement('div', wrapperProps,
+    React.createElement('div', { style: labelStyle }, name),
+    React.createElement('div', null, content)
+  );
+}
+`;
   const escapedJSX = (
     `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    universalRendererRuntime +
     code + '\n' +
     appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`
@@ -338,7 +360,92 @@ export function generatePreviewHTML(
     };
     try {
       var jsxCode = \`${escapedJSX}\`;
-      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+      // Babel plugin: rewrite unknown custom components (<Foo />) into __Render("Foo", props, children)
+      var universalComponentRendererPlugin = function(babel) {
+        var t = babel.types;
+        function isUppercaseComponentName(name) {
+          return typeof name === 'string' && name.length > 0 && name[0] === name[0].toUpperCase() && /[A-Z]/.test(name[0]);
+        }
+        function buildPropsExpression(attrs) {
+          if (!attrs || attrs.length === 0) return t.nullLiteral();
+          var parts = [];
+          var props = [];
+          attrs.forEach(function(attr) {
+            if (t.isJSXSpreadAttribute(attr)) {
+              if (props.length > 0) {
+                parts.push(t.objectExpression(props));
+                props = [];
+              }
+              parts.push(attr.argument);
+              return;
+            }
+            if (!t.isJSXAttribute(attr)) return;
+            var keyName = t.isJSXIdentifier(attr.name) ? attr.name.name : null;
+            if (!keyName) return;
+            var valueExpr;
+            if (attr.value == null) {
+              valueExpr = t.booleanLiteral(true);
+            } else if (t.isStringLiteral(attr.value)) {
+              valueExpr = attr.value;
+            } else if (t.isJSXExpressionContainer(attr.value)) {
+              valueExpr = attr.value.expression || t.identifier('undefined');
+            } else {
+              valueExpr = t.identifier('undefined');
+            }
+            props.push(t.objectProperty(t.stringLiteral(keyName), valueExpr));
+          });
+          if (props.length > 0) parts.push(t.objectExpression(props));
+          if (parts.length === 0) return t.nullLiteral();
+          if (parts.length === 1) return parts[0];
+          return t.callExpression(t.memberExpression(t.identifier('Object'), t.identifier('assign')), [t.objectExpression([])].concat(parts));
+        }
+        function buildChildrenExpression(children) {
+          if (!children || children.length === 0) return t.nullLiteral();
+          var out = [];
+          children.forEach(function(ch) {
+            if (t.isJSXText(ch)) {
+              var text = ch.value.replace(/\\s+/g, ' ').trim();
+              if (text) out.push(t.stringLiteral(text));
+              return;
+            }
+            if (t.isJSXExpressionContainer(ch)) {
+              if (!t.isJSXEmptyExpression(ch.expression)) out.push(ch.expression);
+              return;
+            }
+            if (t.isJSXElement(ch) || t.isJSXFragment(ch)) {
+              out.push(ch);
+            }
+          });
+          if (out.length === 0) return t.nullLiteral();
+          if (out.length === 1) return out[0];
+          return t.arrayExpression(out);
+        }
+        return {
+          visitor: {
+            JSXElement: function(path) {
+              var opening = path.node.openingElement;
+              if (!opening || !opening.name) return;
+              if (!t.isJSXIdentifier(opening.name)) return; // ignore MemberExpression (<UI.Button />) etc
+              var name = opening.name.name;
+              if (!isUppercaseComponentName(name)) return; // keep intrinsic tags
+
+              var propsExpr = buildPropsExpression(opening.attributes || []);
+              var childrenExpr = buildChildrenExpression(path.node.children || []);
+              var callExpr = t.callExpression(t.identifier('__Render'), [t.stringLiteral(name), propsExpr, childrenExpr]);
+
+              // If used as a JSX child, wrap in expression container; otherwise replace with expression directly.
+              if (t.isJSXElement(path.parent) || t.isJSXFragment(path.parent)) {
+                path.replaceWith(t.jsxExpressionContainer(callExpr));
+              } else {
+                path.replaceWith(callExpr);
+              }
+              path.skip();
+            },
+          },
+        };
+      };
+
+      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: [universalComponentRendererPlugin, 'proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
       var script = document.createElement('script');
       script.textContent = result.code;
       document.body.appendChild(script);

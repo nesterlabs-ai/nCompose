@@ -1,0 +1,54 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [main, working-preview]
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run tests (skip if no test files)
+        run: npx vitest run --passWithNoTests
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync code to server via rsync
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz --delete --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='output' --exclude='web_output' --exclude='.env'
+          path: ./
+          remote_path: /home/ubuntu/app/
+          remote_host: ${{ secrets.LIGHTSAIL_HOST }}
+          remote_user: ubuntu
+          remote_key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+
+      - name: Build and restart app container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ubuntu
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            cd ~/app
+
+            # Build and restart (--remove-orphans stops old Caddy container)
+            docker compose up -d --build --remove-orphans
+
+            # Clean up old images
+            docker image prune -f
+
+            echo "Deployed successfully"

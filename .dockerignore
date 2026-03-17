@@ -1,0 +1,10 @@
+node_modules
+dist
+output
+web_output
+.env
+.git
+.cache
+docs
+*.md
+!README.md

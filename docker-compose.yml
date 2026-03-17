@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - SERVER_OUTPUT_DIR=/app/web_output
+    volumes:
+      - web_output:/app/web_output
+
+volumes:
+  web_output:

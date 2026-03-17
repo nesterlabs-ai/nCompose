@@ -566,13 +566,11 @@ function restoreProject(projectId) {
   // Preview: show loading state, then try server session first, fall back to inline
   previewEmpty.style.display = 'none';
   setPreviewLoading(true, 'Loading preview...');
+  startPreviewForSession(project.frameworks || [], project.chartComponents || []);
+  // If static preview 404s (expired session) fall back to inline preview
   fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
     .then(r => {
-      if (r.ok) {
-        setPreviewReady(`/api/preview/${currentSessionId}`, false, 'Static preview');
-      } else {
-        showInlinePreview(project);
-      }
+      if (!r.ok) showInlinePreview(project);
     })
     .catch(() => showInlinePreview(project));
 
@@ -1535,6 +1533,53 @@ function setPreviewReady(url, isLive, statusText) {
   if (previewReload) previewReload.style.display = 'inline-flex';
 }
 
+/**
+ * Start the best available preview for the current session.
+ * Prefers WebContainer/Vite when supported; falls back to static preview HTML.
+ */
+function startPreviewForSession(frameworks, chartComponents) {
+  webContainerSyncEnabled = false;
+  webContainerLastWritten = {};
+
+  const hasReact = Array.isArray(frameworks) && frameworks.includes('react');
+  const reactCode = currentFrameworkOutputs.react || '';
+
+  if (hasReact && reactCode && !reactCode.startsWith('// Error') && isWebContainerSupported()) {
+    const currentChartComponents = chartComponents || [];
+    return fetch(`/api/session/${currentSessionId}/push-files`)
+      .then((r) => r.json())
+      .then((res) => {
+        const files = res.files || [];
+        const reactFile = files.find((f) => f.name.endsWith('.jsx') && f.name.includes(currentComponentName));
+        const assetFiles = files.filter((f) => f.name.startsWith('assets/'));
+        let componentCode = reactFile?.content || reactCode;
+        let componentCss = '';
+        const styleMatch = componentCode.match(/<style>\{`([\s\S]*?)`\}<\/style>/);
+        if (styleMatch) {
+          componentCss = styleMatch[1];
+          componentCode = componentCode.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
+        }
+        componentCode = componentCode.replace(/\.\/assets\//g, '/assets/');
+        const assets = assetFiles.map((f) => ({ filename: f.name.replace('assets/', ''), content: f.content }));
+        const tree = buildViteProjectTree(currentComponentName, componentCode, componentCss, assets, currentChartComponents);
+        return bootWebContainer(tree);
+      })
+      .then((url) => {
+        setPreviewReady(url, true);
+        webContainerSyncEnabled = true;
+      })
+      .catch((err) => {
+        console.warn('WebContainer failed, using static preview:', err);
+        const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : 'Static preview';
+        setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
+      });
+  }
+
+  const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : '';
+  setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
+  return Promise.resolve();
+}
+
 function setPreviewError(msg) {
   setPreviewLoading(false);
   if (previewStatus) previewStatus.textContent = msg || 'Preview failed';
@@ -2120,45 +2165,8 @@ function handleComplete(data) {
   const pushGithubBtn = document.getElementById('push-github-btn');
   if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
 
-  // Preview: try WebContainer live when React available and supported
-  webContainerSyncEnabled = false;
-  webContainerLastWritten = {};
   const frameworks = data.frameworks || [];
-  const hasReact = frameworks.includes('react');
-  const reactCode = currentFrameworkOutputs.react || '';
-
-  if (hasReact && reactCode && !reactCode.startsWith('// Error') && isWebContainerSupported()) {
-    const currentChartComponents = data.chartComponents || [];
-    fetch(`/api/session/${currentSessionId}/push-files`)
-      .then((r) => r.json())
-      .then((res) => {
-        const files = res.files || [];
-        const reactFile = files.find((f) => f.name.endsWith('.jsx') && f.name.includes(currentComponentName));
-        const assetFiles = files.filter((f) => f.name.startsWith('assets/'));
-        let componentCode = reactFile?.content || reactCode;
-        let componentCss = '';
-        const styleMatch = componentCode.match(/<style>\{`([\s\S]*?)`\}<\/style>/);
-        if (styleMatch) {
-          componentCss = styleMatch[1];
-          componentCode = componentCode.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
-        }
-        componentCode = componentCode.replace(/\.\/assets\//g, '/assets/');
-        const assets = assetFiles.map((f) => ({ filename: f.name.replace('assets/', ''), content: f.content }));
-        const tree = buildViteProjectTree(currentComponentName, componentCode, componentCss, assets, currentChartComponents);
-        return bootWebContainer(tree);
-      })
-      .then((url) => {
-        setPreviewReady(url, true);
-        webContainerSyncEnabled = true;
-      })
-      .catch((err) => {
-        console.warn('WebContainer failed, using static preview:', err);
-        setPreviewReady(`/api/preview/${currentSessionId}`, false, 'Static preview');
-      });
-  } else {
-    const statusText = !hasReact ? 'Static preview' : !isWebContainerSupported() ? 'Static preview (Chrome/Edge for live)' : '';
-    setPreviewReady(`/api/preview/${currentSessionId}`, false, statusText);
-  }
+  startPreviewForSession(frameworks, data.chartComponents || []);
 
   // Save project to history
   const figmaUrl = figmaUrlInput.value.trim() || heroFigmaUrlInput.value.trim();

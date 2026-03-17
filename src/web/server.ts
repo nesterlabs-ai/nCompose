@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import archiver from 'archiver';
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { writeFile } from 'fs/promises';
@@ -17,6 +18,8 @@ import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
+import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, isAuthEnabled } from './auth/index.js';
+import { authRoutes } from './auth/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -193,6 +196,8 @@ setInterval(() => {
 
 // Middleware
 app.use(express.json({ limit: config.server.jsonLimit }));
+app.use(cookieParser());
+app.use(attachUser as any);
 
 // Required for WebContainer (SharedArrayBuffer needs cross-origin isolation)
 app.use((_req: any, res: any, next: any) => {
@@ -204,13 +209,16 @@ app.use((_req: any, res: any, next: any) => {
 // Serve static files
 app.use(express.static(join(__dirname, 'public')));
 
+// Auth routes
+app.use('/api/auth', authRoutes);
+
 /**
  * POST /api/convert — SSE endpoint
  *
  * Accepts JSON body: { figmaUrl, figmaToken, frameworks }
  * Streams progress via Server-Sent Events, then sends completion data.
  */
-app.post('/api/convert', (req: any, res: any) => {
+app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
   const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM, template } = req.body;
 
   // Validate inputs
@@ -267,6 +275,11 @@ app.post('/api/convert', (req: any, res: any) => {
     },
   )
     .then((result) => {
+      // Increment free tier usage for anonymous users
+      if ((req as any)._fingerprint) {
+        incrementFreeTierUsage((req as any)._fingerprint);
+      }
+
       // Store result in session
       const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
       setSession(sessionId, result, llmName, selectedFrameworks);
@@ -497,7 +510,7 @@ app.post('/api/refine', (req: any, res: any) => {
  * If a wired app/ directory exists on disk, ZIPs the full runnable project
  * (Lovable-style). Otherwise falls back to component-only ZIP.
  */
-app.get('/api/download/:sessionId', (req: any, res: any) => {
+app.get('/api/download/:sessionId', requireAuth as any, (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = getSessionWithDiskFallback(sessionId);
 
@@ -704,6 +717,7 @@ app.get('/api/config', (_req: any, res: any) => {
     supabaseUrl: supabaseUrl || null,
     supabaseKey: supabaseKey || null,
     githubPushConfigured: Boolean(supabaseUrl && supabaseKey),
+    authEnabled: isAuthEnabled(),
   });
 });
 

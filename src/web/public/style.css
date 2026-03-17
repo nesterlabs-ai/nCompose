@@ -3098,3 +3098,199 @@ body {
   outline-offset: -2px !important;
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important;
 }
+
+/* ── Login Modal ───────────────────────────────────────────────────── */
+.modal-dialog--login {
+  max-width: 400px;
+}
+
+.login-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.login-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 0;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.login-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.login-field label {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.login-field input {
+  padding: 8px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-body);
+}
+
+.login-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(239, 49, 57, 0.15);
+}
+
+.login-error {
+  color: var(--error);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.login-submit {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.login-submit:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.login-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: center;
+}
+
+.login-toggle:hover {
+  text-decoration: underline;
+}
+
+.login-forgot-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  text-align: right;
+}
+
+.login-forgot-btn:hover {
+  color: var(--accent);
+}
+
+.login-divider {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 4px 0;
+}
+
+/* ── Sidebar user info ─────────────────────────────────────────────── */
+.sidebar__user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.sidebar__user-badge {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__logout-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.sidebar__logout-btn:hover {
+  color: var(--error);
+  background: var(--surface-hover);
+}
+
+.sidebar.collapsed .sidebar__user-info {
+  display: none;
+}
+
+/* ── Free tier badge ───────────────────────────────────────────────── */
+.free-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 12px;
+  margin: 4px 8px;
+}
+
+.free-tier-badge--warning {
+  color: var(--orange);
+}
+
+.free-tier-badge--exhausted {
+  color: var(--error);
+}
+
+.sidebar.collapsed .free-tier-badge {
+  display: none;
+}

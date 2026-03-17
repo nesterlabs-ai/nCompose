@@ -171,6 +171,15 @@
         </div>
       </div>
 
+      <!-- Auth user info (shown when logged in) -->
+      <div class="sidebar__user-info" id="sidebar-user-info" style="display:none;">
+        <span class="sidebar__user-badge" id="sidebar-user-email"></span>
+        <button type="button" class="sidebar__logout-btn" id="sidebar-logout-btn">Sign out</button>
+      </div>
+      <div class="free-tier-badge" id="free-tier-badge" style="display:none;">
+        <span id="free-tier-text"></span>
+      </div>
+
       <!-- Status Footer -->
       <div class="sidebar__footer">
         <span class="status-dot ready" id="status-dot"></span>
@@ -803,6 +812,111 @@
     </div>
   </div>
 
+  <!-- Login Modal -->
+  <div class="modal-overlay" id="login-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="login-dialog-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog--login" id="login-dialog">
+      <div class="modal-header">
+        <h2 class="modal-title" id="login-dialog-title">
+          <svg class="modal-title-icon" width="20" height="20" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.5" />
+            <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          <span id="login-dialog-title-text">Sign In</span>
+        </h2>
+        <button type="button" class="modal-close" id="login-dialog-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- Sign In Form -->
+        <div id="login-signin-form" class="login-form">
+          <div class="login-field">
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="login-field">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+          </div>
+          <div class="login-error" id="login-error"></div>
+          <button type="button" class="login-submit" id="login-submit-btn">
+            <span class="btn-spinner" id="login-spinner" style="display:none;"></span>
+            Sign In
+          </button>
+          <button type="button" class="login-forgot-btn" id="login-forgot-btn">Forgot password?</button>
+          <div class="login-divider">or</div>
+          <button type="button" class="login-toggle" id="login-show-signup">Don't have an account? Sign up</button>
+        </div>
+
+        <!-- Sign Up Form -->
+        <div id="login-signup-form" class="login-form" style="display:none;">
+          <div class="login-field">
+            <label for="signup-email">Email</label>
+            <input type="email" id="signup-email" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="login-field">
+            <label for="signup-password">Password</label>
+            <input type="password" id="signup-password" placeholder="Password (8+ characters)" autocomplete="new-password" />
+          </div>
+          <div class="login-field">
+            <label for="signup-confirm">Confirm Password</label>
+            <input type="password" id="signup-confirm" placeholder="Confirm password" autocomplete="new-password" />
+          </div>
+          <div class="login-error" id="signup-error"></div>
+          <button type="button" class="login-submit" id="signup-submit-btn">
+            <span class="btn-spinner" id="signup-spinner" style="display:none;"></span>
+            Sign Up
+          </button>
+          <button type="button" class="login-toggle" id="login-show-signin">Already have an account? Sign in</button>
+        </div>
+
+        <!-- Verification Form -->
+        <div id="login-verify-form" class="login-form" style="display:none;">
+          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">We sent a verification code to your email. Enter it below to confirm your account.</p>
+          <div class="login-field">
+            <label for="verify-code">Verification Code</label>
+            <input type="text" id="verify-code" placeholder="6-digit code" autocomplete="one-time-code" />
+          </div>
+          <div class="login-error" id="verify-error"></div>
+          <button type="button" class="login-submit" id="verify-submit-btn">
+            <span class="btn-spinner" id="verify-spinner" style="display:none;"></span>
+            Verify &amp; Sign In
+          </button>
+        </div>
+
+        <!-- Forgot Password Form -->
+        <div id="login-forgot-form" class="login-form" style="display:none;">
+          <div class="login-field">
+            <label for="forgot-email">Email</label>
+            <input type="email" id="forgot-email" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="login-error" id="forgot-error"></div>
+          <button type="button" class="login-submit" id="forgot-submit-btn">
+            <span class="btn-spinner" id="forgot-spinner" style="display:none;"></span>
+            Send Reset Code
+          </button>
+          <button type="button" class="login-toggle" id="forgot-back-btn">Back to sign in</button>
+        </div>
+
+        <!-- Reset Password Form -->
+        <div id="login-reset-form" class="login-form" style="display:none;">
+          <div class="login-field">
+            <label for="reset-code">Verification Code</label>
+            <input type="text" id="reset-code" placeholder="6-digit code" autocomplete="one-time-code" />
+          </div>
+          <div class="login-field">
+            <label for="reset-password">New Password</label>
+            <input type="password" id="reset-password" placeholder="New password (8+ characters)" autocomplete="new-password" />
+          </div>
+          <div class="login-error" id="reset-error"></div>
+          <button type="button" class="login-submit" id="reset-submit-btn">
+            <span class="btn-spinner" id="reset-spinner" style="display:none;"></span>
+            Reset Password
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6/dist/amazon-cognito-identity.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.min.js"></script>
   <script src="/app.js"></script>
 </body>

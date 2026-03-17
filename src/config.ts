@@ -119,6 +119,20 @@ export interface PageConfig {
   minChildHeight: number;
 }
 
+// ── Cognito Auth ──────────────────────────────────────────────────────────
+
+export interface CognitoConfig {
+  userPoolId: string;
+  clientId: string;
+  region: string;
+}
+
+// ── Free Tier ─────────────────────────────────────────────────────────────
+
+export interface FreeTierConfig {
+  maxFreeConversions: number;
+}
+
 // ── Preview ────────────────────────────────────────────────────────────────
 
 export interface PreviewConfig {
@@ -203,6 +217,16 @@ export const config = {
     minChildWidthRatio: envFloat('PAGE_MIN_CHILD_WIDTH_RATIO', 0.5),
     minChildHeight: envInt('PAGE_MIN_CHILD_HEIGHT', 60),
   } as PageConfig,
+
+  cognito: {
+    userPoolId: envStr('COGNITO_USER_POOL_ID', ''),
+    clientId: envStr('COGNITO_CLIENT_ID', ''),
+    region: envStr('COGNITO_REGION', 'us-east-1'),
+  } as CognitoConfig,
+
+  freeTier: {
+    maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 10),
+  } as FreeTierConfig,
 
   preview: {
     port: envInt('PREVIEW_PORT', 5173),

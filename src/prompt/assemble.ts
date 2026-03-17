@@ -171,6 +171,7 @@ Fidelity requirements:
 - Every node with visual properties (fills, border, shadows, textStyle, borderRadius, opacity) MUST have corresponding Tailwind classes with those exact values.
 - **TEXT nodes**: Do NOT apply fills as background. Text color is already in textStyle.color — use \`text-[color]\`.
 - **ICON nodes** (type: ICON with assetFile): MUST render as \`<img src="{assetFile}" alt="" />\` with the node's width and height.
+- **Semantic role hints**: Nodes with \`semanticRole: "search-input"\` or \`semanticRole: "text-input"\` MUST render as \`<input type="text" placeholder="{placeholder}" />\` — NOT as a \`<div>\` with text. The \`placeholder\` field contains the placeholder text.
 - Do NOT skip any visual property from the YAML — if it exists, it must appear in the output.
 - Use \`className\` not \`class\`.
 

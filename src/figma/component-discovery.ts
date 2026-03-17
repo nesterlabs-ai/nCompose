@@ -350,6 +350,43 @@ function matchVisualHeuristic(node: any, rawNode?: any): string | null {
   return null;
 }
 
+/**
+ * Detects FRAME (non-INSTANCE) nodes that are interactive UI elements
+ * using the same visual heuristics as matchVisualHeuristic() plus
+ * name-based pattern matching.
+ *
+ * Many Figma designs use raw FRAMEs for inputs, search bars, etc.
+ * instead of component instances. This function applies the same
+ * data-driven detection (dimensions, layout, strokes, children)
+ * that already works for INSTANCE nodes.
+ *
+ * For FRAMEs, input detection takes priority over button detection
+ * because a bordered FRAME with text is far more likely to be an input
+ * than a button (buttons are almost always INSTANCE nodes in Figma).
+ *
+ * Returns a formRole string if matched, null otherwise.
+ */
+function detectFrameBasedWidget(node: any, rawNode?: any): string | null {
+  // First try name-based patterns (same as for INSTANCE nodes)
+  const nameRole = matchComponentPattern(node.name ?? '');
+  if (nameRole && nameRole !== 'component') return nameRole;
+
+  // For FRAMEs, check input heuristic FIRST — a bordered FRAME with
+  // text is almost certainly an input, not a button. Buttons in Figma
+  // are nearly always INSTANCE nodes from a design system.
+  const dims = getNodeDimensions(node) ?? getNodeDimensions(rawNode);
+  if (dims) {
+    const { w, h } = dims;
+    const horiz = isHorizontalLayout(node, rawNode);
+    if (horiz && hasBorder(node) && w > h && hasTextChild(node) && h <= 64) {
+      return 'textInput';
+    }
+  }
+
+  // Fall back to remaining visual heuristics (checkbox, toggle, chip, avatar)
+  return matchVisualHeuristic(node, rawNode);
+}
+
 // ── Discovery logic ─────────────────────────────────────────────────────────
 
 /**
@@ -447,10 +484,34 @@ function walkForComponents(
     }
   }
 
-  // Check if this is a recognizable component INSTANCE
-  if (node.type === 'INSTANCE' && node.name) {
+  const isRoot = path.length === 0;
+
+  // ── FRAME-based widget detection (deepRecurse only) ──────────────────
+  // Some Figma designs use plain FRAMEs (not INSTANCE nodes) for inputs,
+  // search bars, etc. Apply the same name + visual heuristic detection
+  // used for INSTANCE nodes so the LLM renders them semantically.
+  if (deepRecurse && (node.type === 'FRAME' || node.type === 'GROUP') && node.name && !isRoot) {
+    const frameFormRole = detectFrameBasedWidget(node, rawNode);
+    if (frameFormRole && frameFormRole !== 'component') {
+      const key = `frame::${node.name}::${frameFormRole}`;
+      if (!results.has(key)) {
+        results.set(key, { formRole: frameFormRole, componentName: node.name, instances: [] });
+      }
+      results.get(key)!.instances.push({
+        node,
+        props: {},
+        treePath: [...path],
+      });
+      // Don't recurse into recognized frame widgets — they're leaf units
+      return;
+    }
+  }
+
+  // Check if this is a recognizable component INSTANCE.
+  // In deepRecurse mode, skip the root node (depth 0 / empty path) — we're
+  // scanning it FOR sub-components, not classifying the root itself.
+  if (node.type === 'INSTANCE' && node.name && !(deepRecurse && isRoot)) {
     let rawFormRole = matchComponentPattern(node.name);
-    const nameMatched = !!rawFormRole;
     if (!rawFormRole) rawFormRole = matchVisualHeuristic(node, rawNode); // visual fallback
 
     // Option 3: If name and visual heuristics didn't match, check if the
@@ -469,17 +530,32 @@ function walkForComponents(
     if (rawFormRole) {
       const formRole = refineFormRole(rawFormRole, node);
 
-      // In deepRecurse mode, skip collecting and continue recursing when:
-      // 1. formRole is generic 'component' (no specific UI primitive detected), OR
-      // 2. formRole was NOT name-matched — property inference and visual heuristics
-      //    can misclassify container instances (e.g. "list of items" with an
-      //    "Expanded" property gets inferred as 'select'). Name-pattern matching
-      //    is the most reliable signal, so in deepRecurse mode we only trust it
-      //    for stopping recursion. This lets us find actual primitives (radio,
-      //    checkbox, button) nested inside misclassified containers.
-      if (deepRecurse && (formRole === 'component' || !nameMatched)) {
-        // Fall through to child recursion below
+      if (deepRecurse) {
+        // In deepRecurse mode: collect recognized leaf primitives but ALWAYS
+        // continue recursing into children. This handles two cases:
+        //   a) True leaf primitives (Button, Checkbox Field) — collected here
+        //      and children are empty, so recursion is a no-op.
+        //   b) Containers that happen to name-match (e.g. "Dropdown List of
+        //      Items" matches /drop\s*down/ → 'select', "Chip List" matches
+        //      /chip\b/) — collected here but recursion continues to find
+        //      actual primitives nested inside.
+        // Generic 'component' formRole is NOT collected — it's just a container
+        // with no specific UI role.
+        if (formRole !== 'component') {
+          const fingerprint = computeStructuralFingerprint(node);
+          const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
+          if (!results.has(key)) {
+            results.set(key, { formRole, componentName: node.name, instances: [] });
+          }
+          results.get(key)!.instances.push({
+            node,
+            props: extractProps(node),
+            treePath: [...path],
+          });
+        }
+        // Fall through to child recursion below — never stop in deepRecurse
       } else {
+        // Normal mode (PATH C): collect and stop recursion at recognized nodes
         const fingerprint = computeStructuralFingerprint(node);
         const key = fingerprint ? `${node.name}::${fingerprint}` : node.name;
         if (!results.has(key)) {

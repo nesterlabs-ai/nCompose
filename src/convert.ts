@@ -301,6 +301,43 @@ function figmaColorToCSS(c: any, paintOpacity?: number): string {
  */
 const MAX_SERIALIZE_DEPTH = 15;
 
+/**
+ * Detects FRAME nodes that look like text inputs using Figma data:
+ *   - Horizontal layout (layoutMode === 'HORIZONTAL')
+ *   - Has visible strokes (border — inputs always have borders)
+ *   - Wider than tall, h ≤ 64 (input-appropriate dimensions)
+ *   - Has a TEXT child (placeholder / label)
+ *   - ≤ 5 visible children (inputs are simple: icon + text + maybe separator)
+ *
+ * Returns 'search-input' or 'text-input' if matched, null otherwise.
+ */
+function detectInputLikeFrame(node: any): string | null {
+  const w = node.absoluteBoundingBox?.width ?? node.size?.x;
+  const h = node.absoluteBoundingBox?.height ?? node.size?.y;
+  if (!w || !h || h > 64 || w <= h) return null;
+
+  const isHoriz = node.layoutMode === 'HORIZONTAL';
+  if (!isHoriz) return null;
+
+  // Must have visible strokes (border)
+  const hasStrokes = Array.isArray(node.strokes) &&
+    node.strokes.some((s: any) => s.visible !== false && s.color);
+  if (!hasStrokes) return null;
+
+  // Must have a TEXT child and few total children (inputs are simple)
+  const children: any[] = (node.children ?? []).filter((c: any) => c.visible !== false);
+  if (children.length > 5) return null;
+  const textChild = children.find((c: any) => c.type === 'TEXT' && c.characters);
+  if (!textChild) return null;
+
+  // Check if it's a search input — has an icon child whose name
+  // or type suggests search (e.g. MagnifyingGlass, Search icon)
+  const hasSearchIcon = children.some((c: any) =>
+    c.type === 'INSTANCE' && /magnif|search|lens/i.test(c.name ?? '')
+  );
+  return hasSearchIcon ? 'search-input' : 'text-input';
+}
+
 function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<string, string>, parentLayoutDirection?: 'row' | 'column', imageFillMap?: Map<string, string>, parentWidth?: number): any {
   if (!node) return null;
   // Only skip `_` prefixed nodes that are truly meta/utility layers.
@@ -709,6 +746,22 @@ function serializeNodeForPrompt(node: any, depth: number = 0, assetMap?: Map<str
   // ── Blend mode ─────────────────────────────────────────────────────
   if (node.blendMode && node.blendMode !== 'PASS_THROUGH' && node.blendMode !== 'NORMAL') {
     result.blendMode = node.blendMode.toLowerCase().replace(/_/g, '-');
+  }
+
+  // ── Semantic role hints for FRAME-based interactive elements ────────
+  // Some Figma designs use plain FRAMEs for inputs instead of component
+  // instances. Detect using the same data-driven signals as component
+  // discovery (layout, strokes, dimensions, children) and annotate so
+  // the LLM renders <input> not <div>.
+  if ((node.type === 'FRAME' || node.type === 'GROUP') && node.name) {
+    const isInputLike = detectInputLikeFrame(node);
+    if (isInputLike) {
+      const textChild = (node.children ?? []).find((c: any) => c.type === 'TEXT' && c.characters && c.visible !== false);
+      if (textChild) {
+        result.semanticRole = isInputLike;
+        result.placeholder = textChild.characters;
+      }
+    }
   }
 
   // ── INSTANCE variant context ────────────────────────────────────────
@@ -1484,49 +1537,44 @@ async function convertSingleComponent(
 
   // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
   if (options.templateMode) {
-    // shadcn intercept: if recognized component → use shadcn single-component codegen
     const category = hintedCategory ?? detectComponentCategory(rootNode?.name ?? '');
-    if (isShadcnSupported(category)) {
-      try {
-        onStep?.(`[shadcn] Detected "${category}" → using shadcn single-component codegen...`);
-        const shadcnResult = await generateShadcnSingleComponent(
-          rootNode,
-          category,
-          options.name ?? toPascalCase(rootNode?.name ?? 'Component'),
-          llm,
-          onStep,
-          assets,
-          llmYaml,
-        );
 
-        const scFrameworkOutputs: Record<string, string> = {};
-        for (const fw of options.frameworks) {
-          scFrameworkOutputs[fw] = fw === 'react'
-            ? shadcnResult.consumerCode
-            : `// ${shadcnResult.componentName} — shadcn/ui component (React only).\n`;
-        }
-
-        return {
-          componentName: shadcnResult.componentName,
-          mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
-          frameworkOutputs: scFrameworkOutputs as Record<Framework, string>,
-          assets,
-          updatedShadcnSource: shadcnResult.updatedShadcnSource,
-          shadcnComponentName: shadcnResult.shadcnComponentName,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        onStep?.(`[shadcn] Failed: ${msg} — falling back to React + Tailwind direct`);
-      }
-    }
-
-    // ── Composite delegation: scan children for shadcn primitives ──────
+    // ── Step 1: Composite discovery first ──────────────────────────
+    // Always scan children for leaf shadcn primitives (checkbox, radio,
+    // button, input) before trying single-component codegen. This
+    // prevents compound panels named "Dropdown with Columns" from being
+    // misclassified as a single <Select>.
     if (rootNode) {
       // deepRecurse: true — recurse through generic container instances
       // (e.g. "item row", "list of items") to find specific UI primitives
       // (checkbox, radio, button) nested at any depth
       const discovery = discoverComponents(rootNode, undefined, { deepRecurse: true });
-      const shadcnChildren = discovery.components.filter((comp) => isShadcnSupported(comp.formRole));
+      let shadcnChildren = discovery.components.filter((comp) => isShadcnSupported(comp.formRole));
+
+      // In deepRecurse mode, both containers and their nested primitives are
+      // collected. Filter out containers whose children are also present — the
+      // children are more specific. A component is a "container" if any other
+      // discovered component's treePath starts with this component's treePath.
+      if (shadcnChildren.length > 1) {
+        const allPaths = shadcnChildren.flatMap((comp) =>
+          comp.instances.map((inst: any) => ({ comp, path: inst.treePath }))
+        );
+        const containerNames = new Set<string>();
+        for (const a of allPaths) {
+          for (const b of allPaths) {
+            if (a.comp.name === b.comp.name) continue;
+            // Check if a's path is a prefix of b's path (a contains b)
+            if (a.path.length < b.path.length &&
+                a.path.every((v: number, i: number) => v === b.path[i])) {
+              containerNames.add(a.comp.name);
+            }
+          }
+        }
+        if (containerNames.size > 0) {
+          onStep?.(`[shadcn-composite] Filtering out container components: ${[...containerNames].join(', ')}`);
+          shadcnChildren = shadcnChildren.filter((comp) => !containerNames.has(comp.name));
+        }
+      }
 
       if (shadcnChildren.length > 0) {
         // Deduplicate by shadcn type (e.g. 6 buttons → 1 button.tsx)
@@ -1534,6 +1582,8 @@ async function convertSingleComponent(
         // When multiple formRoles map to the same shadcn type (e.g. chip→button,
         // button→button), prefer the component whose formRole matches the shadcn
         // type name directly (e.g. prefer "Button" over "Chip" for button.tsx).
+        // Among same-formRole candidates, prefer the largest (most "default")
+        // instance to avoid baking narrow/edge-case styles into the base.
         const uniqueShadcnTypes = new Map<string, typeof shadcnChildren[0]>();
         const figmaNodeNamesByType = new Map<string, string[]>();
         for (const comp of shadcnChildren) {
@@ -1548,6 +1598,17 @@ async function convertSingleComponent(
               // the shadcn type (e.g. formRole 'button' for shadcn 'button')
               // over an indirect mapping (e.g. formRole 'chip' → shadcn 'button')
               uniqueShadcnTypes.set(shadcnType, comp);
+            } else if (comp.formRole === existing.formRole) {
+              // Same formRole collision: prefer the larger representative node.
+              // A "Primary / Medium" button is a better base than a tiny
+              // "Clear all / Small / Subtle" button for generating button.tsx.
+              const existW = existing.representativeNode?.absoluteBoundingBox?.width ?? 0;
+              const existH = existing.representativeNode?.absoluteBoundingBox?.height ?? 0;
+              const compW = comp.representativeNode?.absoluteBoundingBox?.width ?? 0;
+              const compH = comp.representativeNode?.absoluteBoundingBox?.height ?? 0;
+              if (compW * compH > existW * existH) {
+                uniqueShadcnTypes.set(shadcnType, comp);
+              }
             }
             // Collect unique Figma node names for this shadcn type
             const names = figmaNodeNamesByType.get(shadcnType)!;
@@ -1635,7 +1696,44 @@ async function convertSingleComponent(
       }
     }
 
-    // Fallback: React + Tailwind direct (no shadcn)
+    // ── Step 2: Single-component shadcn (only if no leaf primitives found) ──
+    // This handles true leaf components like a single Button or Input
+    // where there are no child primitives to discover.
+    if (isShadcnSupported(category)) {
+      try {
+        onStep?.(`[shadcn] No leaf primitives found, using single-component codegen for "${category}"...`);
+        const shadcnResult = await generateShadcnSingleComponent(
+          rootNode,
+          category,
+          options.name ?? toPascalCase(rootNode?.name ?? 'Component'),
+          llm,
+          onStep,
+          assets,
+          llmYaml,
+        );
+
+        const scFrameworkOutputs: Record<string, string> = {};
+        for (const fw of options.frameworks) {
+          scFrameworkOutputs[fw] = fw === 'react'
+            ? shadcnResult.consumerCode
+            : `// ${shadcnResult.componentName} — shadcn/ui component (React only).\n`;
+        }
+
+        return {
+          componentName: shadcnResult.componentName,
+          mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
+          frameworkOutputs: scFrameworkOutputs as Record<Framework, string>,
+          assets,
+          updatedShadcnSource: shadcnResult.updatedShadcnSource,
+          shadcnComponentName: shadcnResult.shadcnComponentName,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onStep?.(`[shadcn] Failed: ${msg} — falling back to React + Tailwind direct`);
+      }
+    }
+
+    // ── Step 3: Fallback — React + Tailwind direct (no shadcn) ──
     onStep?.(`Generating React + Tailwind component via ${llm.name}...`);
     const reactSystemPrompt = assembleReactSystemPrompt();
     const reactUserPrompt = assembleReactUserPrompt(llmYaml, options.name, semanticHint ?? undefined);

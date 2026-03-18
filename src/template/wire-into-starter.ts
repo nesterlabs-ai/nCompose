@@ -359,11 +359,11 @@ export function ComponentPreviewPage() {
             {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}.
           </p>
         </header>
-        <div className="grid gap-4 grid-cols-2">
+        <div className="flex flex-wrap gap-4">
           {allVariants.map((v, idx) => (
             <div
               key={idx}
-              className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 overflow-hidden"
+              className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 w-fit"
             >
               <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]">
                 {v.label}

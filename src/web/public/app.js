@@ -2117,6 +2117,8 @@ function getTabKeyToWcPath() {
   };
 }
 
+let _lastInstalledPkgJson = null; // Track last installed package.json to skip redundant npm install
+
 async function bootWebContainer(tree) {
   if (!isWebContainerSupported()) {
     throw new Error('WebContainers require Chrome or Edge.');
@@ -2128,7 +2130,8 @@ async function bootWebContainer(tree) {
     webContainerDevProcess.kill?.();
     webContainerDevProcess = null;
   }
-  if (!webContainerInstance) {
+  const isFirstBoot = !webContainerInstance;
+  if (isFirstBoot) {
     webContainerInstance = await WebContainer.boot();
     webContainerInstance.on('error', (e) => {
       setPreviewError(e.message || 'WebContainer error');
@@ -2136,11 +2139,20 @@ async function bootWebContainer(tree) {
   }
   setPreviewLoading(true, 'Mounting project...');
   await webContainerInstance.mount(tree);
-  setPreviewLoading(true, 'Installing dependencies...');
-  const installProc = await webContainerInstance.spawn('npm', ['install']);
-  const installExit = await installProc.exit;
-  if (installExit !== 0) throw new Error('npm install failed');
-  setPreviewLoading(true, 'Starting Vite...');
+
+  // Extract current package.json content for comparison
+  const currentPkgJson = tree['package.json']?.file?.contents ?? null;
+  const needsInstall = isFirstBoot || !_lastInstalledPkgJson || _lastInstalledPkgJson !== currentPkgJson;
+
+  if (needsInstall) {
+    setPreviewLoading(true, 'Installing dependencies...');
+    const installProc = await webContainerInstance.spawn('npm', ['install']);
+    const installExit = await installProc.exit;
+    if (installExit !== 0) throw new Error('npm install failed');
+    _lastInstalledPkgJson = currentPkgJson;
+  }
+
+  setPreviewLoading(true, 'Starting preview...');
   const devProc = await webContainerInstance.spawn('npm', ['run', 'dev']);
   webContainerDevProcess = devProc;
   devProc.output.pipeTo(new WritableStream({ write() { } }));
@@ -2232,13 +2244,16 @@ function handleComplete(data) {
   buildTabs(data);
   generatedTabsData = tabsData.map((t) => ({ ...t }));
 
-  // When template was wired, show "Generated | Wired app" toggle and fetch wired app files
+  // When template was wired, show toggle and fetch wired app files, then auto-switch to Project view
   if (templateWired && codeViewModeEl) {
     codeViewModeEl.style.display = 'flex';
     fetch(`/api/session/${currentSessionId}/wired-app-files`)
       .then((r) => (r.ok ? r.json() : { files: {} }))
       .then((res) => {
         wiredAppFiles = res.files || {};
+        if (Object.keys(wiredAppFiles).length > 0) {
+          switchCodeViewMode('wired');
+        }
       })
       .catch(() => { });
   } else if (codeViewModeEl) {
@@ -2910,7 +2925,7 @@ function buildTabs(data) {
   openFiles = firstKey ? [firstKey] : [];
   activeFile = firstKey;
 
-  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Generated Files';
+  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Components';
   buildExplorer();
   buildEditorTabs();
 
@@ -2938,7 +2953,7 @@ function switchCodeViewMode(mode) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
   if (explorerSectionTitle) {
-    explorerSectionTitle.textContent = mode === 'wired' ? 'Wired app' : 'Generated Files';
+    explorerSectionTitle.textContent = mode === 'wired' ? 'Project' : 'Components';
   }
   if (mode === 'wired') {
     const paths = Object.keys(wiredAppFiles).sort();
@@ -2971,7 +2986,7 @@ explorerToggle.addEventListener('click', () => {
   requestAnimationFrame(layoutMonaco);
 });
 
-// ── Code view mode (Generated | Wired app) ──
+// ── Code view mode (Components | Project) ──
 document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const mode = btn.dataset.mode;

@@ -285,14 +285,36 @@ function buildShadcnInlineDefs(
   // Provide a minimal cn() utility (merges className strings)
   defs.push('function cn(...args) { return args.filter(Boolean).join(" "); }');
 
-  // Provide a minimal cva() stub (returns base class, ignores variants in preview)
+  // Provide a cva() stub that handles base, variants, compoundVariants, and defaultVariants
   defs.push(`function cva(base, config) {
   return function(props) {
-    let classes = base || "";
-    if (config && config.variants && props) {
-      for (const [key, values] of Object.entries(config.variants)) {
-        const val = props[key] || (config.defaultVariants && config.defaultVariants[key]);
-        if (val && values[val]) classes += " " + values[val];
+    var classes = base || "";
+    if (!config) return classes;
+    var resolved = Object.assign({}, config.defaultVariants || {}, props || {});
+    // Apply simple variants
+    if (config.variants) {
+      for (var key in config.variants) {
+        var val = resolved[key];
+        if (val != null && config.variants[key][val] != null) {
+          classes += " " + config.variants[key][val];
+        }
+      }
+    }
+    // Apply compoundVariants
+    if (config.compoundVariants) {
+      for (var i = 0; i < config.compoundVariants.length; i++) {
+        var cv = config.compoundVariants[i];
+        var match = true;
+        for (var cvKey in cv) {
+          if (cvKey === "className" || cvKey === "class") continue;
+          var cvVal = cv[cvKey];
+          var resolvedVal = resolved[cvKey];
+          if (Array.isArray(cvVal)) {
+            if (cvVal.indexOf(resolvedVal) === -1) { match = false; break; }
+          } else if (cvVal !== resolvedVal) { match = false; break; }
+        }
+        if (match && cv.className) classes += " " + cv.className;
+        if (match && cv.class) classes += " " + cv.class;
       }
     }
     return classes;
@@ -367,14 +389,36 @@ export function generatePreviewHTML(
   // and makes it available as a global (e.g. Button, Card, Input).
   const shadcnInlineDefs = buildShadcnInlineDefs(shadcnSubComponents);
 
+  // When shadcn components are present, they use Tailwind utility classes
+  // (including arbitrary values like w-[240px], bg-[#hex]). The Tailwind CDN
+  // Play script compiles these classes to CSS in the browser at runtime.
+  const usesTailwind = (shadcnSubComponents && shadcnSubComponents.length > 0)
+    || /\b(?:bg|text|border|w|h|p|m|gap|rounded|flex|grid|items|justify|self)-\[/.test(reactCode);
+  const tailwindScript = usesTailwind
+    ? '\n  <script src="https://cdn.tailwindcss.com"></script>'
+    : '';
+
   // Load Google Fonts used in the component CSS
   const fontFamilies = collectFontFamilies(css);
   const fontLink = buildGoogleFontsLink(fontFamilies);
 
   // Escape code for embedding inside a JS string literal (used in manual transpile approach)
   // We manually call Babel.transform instead of using type="text/babel" to get error handling.
+  const universalRendererRuntime = `
+function __Render(name, props, children) {
+  var safeProps = props || {};
+  var style = safeProps.style || {};
+  // Minimal wrapper: keep a debug hook without affecting layout.
+  // display: contents makes the wrapper visually disappear in layout.
+  var wrapperStyle = Object.assign({ display: 'contents' }, style);
+  var wrapperProps = Object.assign({}, safeProps, { style: wrapperStyle, 'data-component': name });
+  var content = Array.isArray(children) ? children : [children];
+  return React.createElement('div', wrapperProps, content);
+}
+`;
   const escapedJSX = (
     `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    universalRendererRuntime +
     shadcnInlineDefs +
     code + '\n' +
     appCode + '\n' +
@@ -401,6 +445,7 @@ export function generatePreviewHTML(
     .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
     ${css}
   </style>
+  ${tailwindScript}
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>${rechartsScript}
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -415,7 +460,92 @@ export function generatePreviewHTML(
     };
     try {
       var jsxCode = \`${escapedJSX}\`;
-      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+      // Babel plugin: rewrite unknown custom components (<Foo />) into __Render("Foo", props, children)
+      var universalComponentRendererPlugin = function(babel) {
+        var t = babel.types;
+        function isUppercaseComponentName(name) {
+          return typeof name === 'string' && name.length > 0 && name[0] === name[0].toUpperCase() && /[A-Z]/.test(name[0]);
+        }
+        function buildPropsExpression(attrs) {
+          if (!attrs || attrs.length === 0) return t.nullLiteral();
+          var parts = [];
+          var props = [];
+          attrs.forEach(function(attr) {
+            if (t.isJSXSpreadAttribute(attr)) {
+              if (props.length > 0) {
+                parts.push(t.objectExpression(props));
+                props = [];
+              }
+              parts.push(attr.argument);
+              return;
+            }
+            if (!t.isJSXAttribute(attr)) return;
+            var keyName = t.isJSXIdentifier(attr.name) ? attr.name.name : null;
+            if (!keyName) return;
+            var valueExpr;
+            if (attr.value == null) {
+              valueExpr = t.booleanLiteral(true);
+            } else if (t.isStringLiteral(attr.value)) {
+              valueExpr = attr.value;
+            } else if (t.isJSXExpressionContainer(attr.value)) {
+              valueExpr = attr.value.expression || t.identifier('undefined');
+            } else {
+              valueExpr = t.identifier('undefined');
+            }
+            props.push(t.objectProperty(t.stringLiteral(keyName), valueExpr));
+          });
+          if (props.length > 0) parts.push(t.objectExpression(props));
+          if (parts.length === 0) return t.nullLiteral();
+          if (parts.length === 1) return parts[0];
+          return t.callExpression(t.memberExpression(t.identifier('Object'), t.identifier('assign')), [t.objectExpression([])].concat(parts));
+        }
+        function buildChildrenExpression(children) {
+          if (!children || children.length === 0) return t.nullLiteral();
+          var out = [];
+          children.forEach(function(ch) {
+            if (t.isJSXText(ch)) {
+              var text = ch.value.replace(/\\s+/g, ' ').trim();
+              if (text) out.push(t.stringLiteral(text));
+              return;
+            }
+            if (t.isJSXExpressionContainer(ch)) {
+              if (!t.isJSXEmptyExpression(ch.expression)) out.push(ch.expression);
+              return;
+            }
+            if (t.isJSXElement(ch) || t.isJSXFragment(ch)) {
+              out.push(ch);
+            }
+          });
+          if (out.length === 0) return t.nullLiteral();
+          if (out.length === 1) return out[0];
+          return t.arrayExpression(out);
+        }
+        return {
+          visitor: {
+            JSXElement: function(path) {
+              var opening = path.node.openingElement;
+              if (!opening || !opening.name) return;
+              if (!t.isJSXIdentifier(opening.name)) return; // ignore MemberExpression (<UI.Button />) etc
+              var name = opening.name.name;
+              if (!isUppercaseComponentName(name)) return; // keep intrinsic tags
+
+              var propsExpr = buildPropsExpression(opening.attributes || []);
+              var childrenExpr = buildChildrenExpression(path.node.children || []);
+              var callExpr = t.callExpression(t.identifier('__Render'), [t.stringLiteral(name), propsExpr, childrenExpr]);
+
+              // If used as a JSX child, wrap in expression container; otherwise replace with expression directly.
+              if (t.isJSXElement(path.parent) || t.isJSXFragment(path.parent)) {
+                path.replaceWith(t.jsxExpressionContainer(callExpr));
+              } else {
+                path.replaceWith(callExpr);
+              }
+              path.skip();
+            },
+          },
+        };
+      };
+
+      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: [universalComponentRendererPlugin, 'proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
       var script = document.createElement('script');
       script.textContent = result.code;
       document.body.appendChild(script);

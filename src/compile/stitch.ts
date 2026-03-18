@@ -26,6 +26,8 @@ export interface SectionOutput {
   chartComponentName?: string;
   /** Chart components discovered within this section (stored here for reliable section-to-chart mapping) */
   sectionChartComponents?: import('../types/index.js').ChartComponent[];
+  /** shadcn sub-components discovered within this section */
+  sectionShadcnSubComponents?: import('../types/index.js').ShadcnSubComponent[];
 }
 
 export interface StitchedPage {

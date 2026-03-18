@@ -810,6 +810,64 @@ function rewriteAssetsToDataURIs(code, css, assetMap) {
   return { code: newCode, css: newCss };
 }
 
+/**
+ * Build inline JavaScript definitions for shadcn sub-components so the
+ * offline preview can render them without a module bundler.
+ * Client-side port of preview.ts buildShadcnInlineDefs().
+ */
+function buildClientShadcnInlineDefs(shadcnSubComponents) {
+  if (!shadcnSubComponents || shadcnSubComponents.length === 0) return '';
+
+  const defs = [];
+
+  // Minimal cn() utility
+  defs.push('function cn(...args) { return args.filter(Boolean).join(" "); }');
+
+  // Minimal cva() stub
+  defs.push(`function cva(base, config) {
+  return function(props) {
+    let classes = base || "";
+    if (config && config.variants && props) {
+      for (const [key, values] of Object.entries(config.variants)) {
+        const val = props[key] || (config.defaultVariants && config.defaultVariants[key]);
+        if (val && values[val]) classes += " " + values[val];
+      }
+    }
+    return classes;
+  };
+}`);
+
+  // Minimal Slot stub
+  defs.push('function Slot({ children, ...props }) { return children; }');
+
+  for (const sub of shadcnSubComponents) {
+    let source = sub.updatedShadcnSource;
+    // Strip import lines
+    source = source.replace(/^\s*import\s+.*$/gm, '');
+    // Strip "use client"
+    source = source.replace(/^\s*["']use client["'];?\s*$/gm, '');
+    // Strip export { ... }
+    source = source.replace(/export\s*\{[^}]*\};?\s*/g, '');
+    // export const → const
+    source = source.replace(/export\s+const\s+/g, 'const ');
+    // Strip export interface blocks
+    source = source.replace(/export\s+interface\s+[\s\S]*?\n\}/gm, '');
+    // Strip TypeScript generics on React.forwardRef
+    source = source.replace(/React\.forwardRef<[^>]*>/g, 'React.forwardRef');
+    // Strip type assertions
+    source = source.replace(/\)\s+as\s+\w+/g, ')');
+    // Strip VariantProps type params
+    source = source.replace(/,\s*type\s+VariantProps\b[^)]*\)/g, ')');
+    // Strip standalone type aliases
+    source = source.replace(/^type\s+\w+\s*=\s*.*$/gm, '');
+    // Strip interface blocks
+    source = source.replace(/^interface\s+\w+[\s\S]*?\n\}/gm, '');
+    defs.push(source.trim());
+  }
+
+  return defs.join('\n\n') + '\n\n';
+}
+
 function showInlinePreview(project) {
   const reactCode = (project.frameworkOutputs || {}).react;
   if (!reactCode) {
@@ -930,8 +988,12 @@ function showInlinePreview(project) {
     <\/script>
   `;
 
+  // Inline shadcn sub-component definitions for offline preview
+  const shadcnDefs = buildClientShadcnInlineDefs(project.shadcnSubComponents);
+
   // Build JSX source for manual Babel.transform (with error handling)
   const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    shadcnDefs +
     code + '\n' +
     appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`;
@@ -2200,6 +2262,7 @@ function handleComplete(data) {
     assets: data.assets || [],
     templateWired: Boolean(data.templateWired),
     chartComponents: data.chartComponents || [],
+    shadcnSubComponents: data.shadcnSubComponents || null,
   });
 
   // Initialize chat for iterative refinement

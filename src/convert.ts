@@ -827,6 +827,14 @@ export async function convertFigmaToCode(
   callbacks?: ConvertCallbacks,
 ): Promise<ConversionResult> {
   const onStep = callbacks?.onStep;
+  const _t0 = Date.now();
+  let _tPrev = _t0;
+  const _timings: Array<{ stage: string; ms: number; at: number }> = [];
+  const _markSplit = (stage: string) => {
+    const now = Date.now();
+    _timings.push({ stage, ms: now - _tPrev, at: now - _t0 });
+    _tPrev = now;
+  };
 
   // Step 1: Parse URL
   onStep?.('Parsing Figma URL...');
@@ -846,6 +854,7 @@ export async function convertFigmaToCode(
   const rawData = nodeId
     ? await client.getNode(fileKey, nodeId, options.depth)
     : await client.getFile(fileKey, options.depth);
+  _markSplit('Figma API fetch');
 
   // Step 3: Extract complete design data (preserves ALL properties)
   onStep?.('Extracting complete design data...');
@@ -858,12 +867,36 @@ export async function convertFigmaToCode(
 
   // Convert to YAML for diagnostics / LLM
   const yamlContent = dump(enhanced, { lineWidth: 120, noRefs: true });
+  _markSplit('Design extraction');
 
   // Raw Figma document node — preserves arcData, paddingTop, etc. that
   // extractCompleteDesign strips. Used by PATH C and Recharts codegen for chart detection.
   const rawDocumentNode = nodeId
     ? (rawData as any)?.nodes?.[nodeId]?.document ?? enhanced?.nodes?.[0] ?? enhanced
     : enhanced?.nodes?.[0] ?? enhanced;
+
+  // --- Path detection ---
+  const isCompSet = isComponentSet(enhanced);
+  const isPage = !isCompSet && isMultiSectionPage(enhanced);
+  const isChart = !isCompSet && !isPage && isChartSection(rawDocumentNode);
+  const selectedPath = isCompSet
+    ? (rawDocumentNode?.children?.[0] && isChartSection(rawDocumentNode.children[0]) ? 'A-Chart' : 'A')
+    : isPage ? 'C' : isChart ? 'Chart' : 'B';
+  const pathLabels: Record<string, string> = {
+    'A': 'A (COMPONENT_SET — variant-aware)',
+    'A-Chart': 'A-Chart (COMPONENT_SET — chart variants)',
+    'B': 'B (Single component)',
+    'C': 'C (Multi-section page)',
+    'Chart': 'Chart (Recharts codegen)',
+  };
+  const nodeName = enhanced?.nodes?.[0]?.name ?? rawDocumentNode?.name ?? 'unknown';
+  const nodeType = enhanced?.nodes?.[0]?.type ?? rawDocumentNode?.type ?? 'unknown';
+  const templateLabel = options.templateMode ? ' + template' : '';
+
+  console.log(`[convert] PATH: ${pathLabels[selectedPath] ?? selectedPath}${templateLabel}`);
+  console.log(`[convert] URL: ${figmaUrl}`);
+  console.log(`[convert] Node: "${nodeName}" (${nodeType}) | LLM: ${options.llm ?? 'default'}`);
+  _markSplit('Path detection');
 
   // --- PATH A: Component Set (variant-aware) ---
   // If the default variant is a chart/graph, use Recharts codegen
@@ -966,7 +999,7 @@ export async function convertFigmaToCode(
         frameworkOutputs[fw] = fw === 'react' ? reactCode : placeholder;
       }
 
-      return {
+      const _chartResult = {
         componentName: primaryComponentName,
         mitosisSource: `// Chart component set — generated via Recharts codegen (Recharts codegen).\n${reactCode}`,
         frameworkOutputs: frameworkOutputs as Record<Framework, string>,
@@ -974,6 +1007,8 @@ export async function convertFigmaToCode(
         css: fullCss,
         chartComponents: allChartComponents,
       };
+      _logDone(_chartResult);
+      return _chartResult;
     }
 
     // --- shadcn intercept: if button (or other shadcn type) + templateMode → shadcn codegen ---
@@ -1028,7 +1063,7 @@ export async function convertFigmaToCode(
               : `// ${csComponentName} — shadcn/ui component (React only).\n`;
           }
 
-          return {
+          const _shadcnCsResult = {
             componentName: csComponentName,
             mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
             frameworkOutputs: csFrameworkOutputs as Record<Framework, string>,
@@ -1038,6 +1073,8 @@ export async function convertFigmaToCode(
             updatedShadcnSource: shadcnResult.updatedShadcnSource,
             shadcnComponentName: shadcnResult.shadcnComponentName,
           };
+          _logDone(_shadcnCsResult);
+          return _shadcnCsResult;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           (callbacks?.onStep ?? (() => {}))(`[shadcn] Failed: ${msg} — falling back to standard codegen`);
@@ -1045,12 +1082,15 @@ export async function convertFigmaToCode(
       }
     }
 
-    return convertComponentSet(enhanced, yamlContent, fileKey, client, options, callbacks);
+    _markSplit('shadcn COMPONENT_SET codegen');
+    return convertComponentSet(enhanced, yamlContent, fileKey, client, options, callbacks)
+      .then((r) => { _logDone(r); return r; });
   }
 
   // --- PATH C: Multi-section page ---
   if (isMultiSectionPage(enhanced)) {
-    return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode);
+    return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode)
+      .then((r) => { _logDone(r); return r; });
   }
 
   // --- PATH B: Single Component (LLM → Mitosis → framework generators) ---
@@ -1058,10 +1098,22 @@ export async function convertFigmaToCode(
   // Standalone chart nodes that aren't part of a multi-section page
   // are handled by PATH B (single component) as a fallback.
   if (isChartSection(rawDocumentNode)) {
-    return convertChart(rawDocumentNode, options, callbacks);
+    return convertChart(rawDocumentNode, options, callbacks)
+      .then((r) => { _logDone(r); return r; });
   }
 
-  return convertSingleComponent(enhanced, yamlContent, fileKey, client, options, callbacks);
+  return convertSingleComponent(enhanced, yamlContent, fileKey, client, options, callbacks)
+    .then((r) => { _logDone(r); return r; });
+
+  /** Print latency breakdown after conversion completes */
+  function _logDone(r: ConversionResult) {
+    _markSplit('Code generation + compilation');
+    const totalSec = ((Date.now() - _t0) / 1000).toFixed(1);
+    console.log(`[convert] Done: ${r.componentName} via ${selectedPath} — ${totalSec}s total`);
+    for (const t of _timings) {
+      console.log(`[convert]   ${t.stage}: ${(t.ms / 1000).toFixed(1)}s (at ${(t.at / 1000).toFixed(1)}s)`);
+    }
+  }
 }
 
 /**

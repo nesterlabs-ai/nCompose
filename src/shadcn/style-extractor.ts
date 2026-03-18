@@ -29,10 +29,13 @@ export interface ExtractedStyle {
   innerBorderColor?: string;
   innerBorderWidth?: number;
   innerBorderRadius?: number;
+  innerWidth?: number;
   innerHeight?: number;
   innerPaddingH?: number;
   innerPaddingV?: number;
   innerShadow?: string;
+  /** How the inner element sizes itself: 'FILL' (stretch to parent), 'FIXED', or 'HUG' */
+  innerWidthSizing?: string;
   /** Label text color (separate from input text) */
   labelColor?: string;
   /** Placeholder / helper text color */
@@ -407,6 +410,14 @@ function getNodeTraits(node: any): string[] {
   else if (node.layoutAlign === 'MIN') traits.push('self-start');
   else if (node.layoutAlign === 'MAX') traits.push('self-end');
 
+  // Layout sizing mode (how this node sizes within its parent's auto-layout)
+  const hSizing = node.layoutSizingHorizontal ?? (node.layoutGrow === 1 ? 'FILL' : undefined);
+  const vSizing = node.layoutSizingVertical;
+  if (hSizing === 'FILL') traits.push('w:fill-parent');
+  else if (hSizing === 'HUG') traits.push('w:hug-contents');
+  if (vSizing === 'FILL') traits.push('h:fill-parent');
+  else if (vSizing === 'HUG') traits.push('h:hug-contents');
+
   // Text alignment from Figma
   if (node.type === 'TEXT') {
     const textAlign = node.style?.textAlignHorizontal ?? node.textAlignHorizontal;
@@ -498,10 +509,15 @@ export function extractNodeStyle(node: any): ExtractedStyle {
     result.innerBorderColor = innerStroke.color;
     result.innerBorderWidth = innerStroke.width;
     result.innerBorderRadius = mainEl.cornerRadius ?? mainEl.rectangleCornerRadii?.[0];
+    result.innerWidth = innerDim.width;
     result.innerHeight = innerDim.height;
     result.innerPaddingH = innerPad.left ?? innerPad.right;
     result.innerPaddingV = innerPad.top ?? innerPad.bottom;
     result.innerShadow = extractShadow(mainEl);
+
+    // Capture how the inner element sizes itself (FILL = stretch to parent width)
+    const hSizing = mainEl.layoutSizingHorizontal ?? (mainEl.layoutGrow === 1 ? 'FILL' : undefined);
+    if (hSizing) result.innerWidthSizing = hSizing;
 
     // Override text color from the inner element's text if different
     if (innerText) {
@@ -706,7 +722,9 @@ function fmtStyle(s: ExtractedStyle): string {
   if (s.innerBg) p.push(`  inner-background: ${s.innerBg}`);
   if (s.innerBorderColor) p.push(`  inner-border: ${s.innerBorderWidth ?? 1}px ${s.innerBorderColor}`);
   if (s.innerBorderRadius !== undefined) p.push(`  inner-border-radius: ${s.innerBorderRadius}px`);
+  if (s.innerWidth) p.push(`  inner-width: ${s.innerWidth}px`);
   if (s.innerHeight) p.push(`  inner-height: ${s.innerHeight}px`);
+  if (s.innerWidthSizing) p.push(`  inner-width-sizing: ${s.innerWidthSizing.toLowerCase()}`);
   if (s.innerPaddingH !== undefined) p.push(`  inner-padding-horizontal: ${s.innerPaddingH}px`);
   if (s.innerPaddingV !== undefined) p.push(`  inner-padding-vertical: ${s.innerPaddingV}px`);
   if (s.innerShadow) p.push(`  inner-box-shadow: ${s.innerShadow}`);

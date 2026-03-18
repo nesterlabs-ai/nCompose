@@ -113,6 +113,7 @@ Your task: Take a base shadcn component source and customize it with design data
 11. **Each variant must look visually distinct**: When the Figma component has multiple variant values (e.g. Success, Warning, Danger), each MUST render with different colors/icons as shown in the Figma data. If the background, border, or icon colors differ across variants, those differences must be reflected in CVA variant styles or compoundVariants — NOT collapsed into a single shared style.
 
 12. **Pixel dimensions → Tailwind arbitrary values**: All dimensions in the structure tree are in \`px\`. Convert them to Tailwind arbitrary values: \`16px×16px\` → \`h-[16px] w-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px/8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`. Do NOT drop the \`px\` unit — \`h-16\` in Tailwind means 64px, not 16px.
+   - **Layout sizing modes from Figma**: The tree includes \`w:fill-parent\` (= stretch to parent width → use \`w-full\`), \`h:fill-parent\` (→ \`h-full\`), \`w:hug-contents\` (= shrink to content → use \`w-fit\`), \`h:hug-contents\` (→ \`h-fit\`). Nodes with \`self-stretch\` should use \`self-stretch\` in a flex context. When \`inner-width-sizing: fill\` appears in the style data, the inner element must use \`w-full\` to fill its parent — do NOT let it shrink to content width.
 
 13. **Derive semantic HTML from Figma node names and structure**: Read node names, child names, and componentProperties to determine the correct HTML element. Nodes marked \`[hidden]\` are visually hidden but semantically important (e.g. dropdown options). Never approximate semantic elements with generic divs.
 
@@ -273,6 +274,7 @@ Your task: Take a base shadcn component source and customize it with design data
    - Use default export
 
 7. **Pixel dimensions → Tailwind arbitrary values**: \`16px\` → \`h-[16px]\`, \`gap:12px\` → \`gap-[12px]\`, \`pad:8px/16px\` → \`py-[8px] px-[16px]\`, \`radius:4px\` → \`rounded-[4px]\`.
+   - **Layout sizing from Figma**: \`w:fill-parent\` → \`w-full\`, \`h:fill-parent\` → \`h-full\`, \`w:hug-contents\` → \`w-fit\`, \`self-stretch\` → \`self-stretch\`. When \`inner-width-sizing: fill\` appears, the inner element must use \`w-full\`.
 
 8. **Dimensions**: Read the exact width and height from the Figma tree for each node. If a node has a specific height in Figma, set \`h-[Npx]\` to match it exactly — do NOT rely on padding alone to produce the correct height, as padding + content + line-height often adds up to more than the Figma value. Use \`items-center\` to vertically center content within the explicit height. Only omit explicit height on nodes that use \`auto-layout\` with \`hug-contents\` (the tree will show no fixed height). Always match the Figma dimensions.
 
@@ -319,6 +321,9 @@ export function buildShadcnSingleComponentUserPrompt(ctx: ShadcnSingleComponentP
   if (style.placeholderColor) styleLines.push(`- Placeholder color: ${style.placeholderColor}`);
   if (style.errorColor) styleLines.push(`- Error color: ${style.errorColor}`);
   if (style.iconColor) styleLines.push(`- Icon color: ${style.iconColor}`);
+  if (style.innerWidth) styleLines.push(`- Inner element width: ${style.innerWidth}px`);
+  if (style.innerHeight) styleLines.push(`- Inner element height: ${style.innerHeight}px`);
+  if (style.innerWidthSizing) styleLines.push(`- Inner element width sizing: ${style.innerWidthSizing.toLowerCase()} (fill = use w-full)`);
   if (style.structure) {
     styleLines.push('');
     styleLines.push('COMPONENT TREE:');
@@ -402,7 +407,7 @@ Your task: Generate a self-contained React JSX fragment for a UI component, usin
 4. **Follow the shadcn template structure** but with the exact colors, sizes, and content from the Figma data.
 5. **No imports needed** — the output is inlined into a parent component.
 6. **Static content only** — no hooks, state, or event handlers.
-7. **Dimensions are bounding boxes**: Do NOT hardcode \`h-[Npx]\` on container elements — let flex layout size them naturally.
+7. **Dimensions are bounding boxes**: Do NOT hardcode \`h-[Npx]\` on container elements — let flex layout size them naturally. **Layout sizing from Figma**: \`w:fill-parent\` → \`w-full\`, \`h:fill-parent\` → \`h-full\`, \`w:hug-contents\` → \`w-fit\`, \`self-stretch\` → \`self-stretch\`.
 8. **Derive semantic HTML from Figma node names and structure**: Read node names and children to determine the correct element. Nodes marked \`[hidden]\` contain semantic data (e.g. dropdown options).
 9. **Icons must come from Figma data only**: Only render SVGs explicitly provided or present as VECTOR nodes for that specific element. Never copy SVGs between elements.
 10. **PRESERVE the core HTML element from the shadcn template**: The template already contains the correct semantic HTML element. Keep that same element — NEVER replace it with a \`<div>\`. Figma "Value" or "Placeholder" text nodes should map to native element attributes (e.g. \`placeholder\`), NOT rendered as \`<div>\` text. The output must be **functional**, not just visual.

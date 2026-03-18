@@ -334,7 +334,14 @@ export async function generateCompoundSection(
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
   // ── Step 1: Discover components (including charts) ─────────────────────
-  const discovery = discoverComponents(sectionNode, rawSectionNode);
+  // When templateMode is ON, use deepRecurse to also detect frame-based
+  // widgets (plain FRAMEs used as inputs, buttons, etc. in Figma designs
+  // that don't use component instances). These are then routed through
+  // shadcn codegen instead of being rendered as raw <div>s.
+  const discovery = discoverComponents(
+    sectionNode, rawSectionNode,
+    templateMode ? { deepRecurse: true } : undefined,
+  );
 
   if (discovery.components.length === 0) {
     // No recognizable components — fall back to monolithic section generation

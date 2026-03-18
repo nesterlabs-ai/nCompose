@@ -2161,6 +2161,10 @@ async function convertPage(
           && compoundResult.discovery.components.length === 1
           && compoundResult.discovery.components[0].formRole === 'chart';
 
+        // Propagate shadcn sub-components from compound result to section output
+        const sectionShadcn = compoundResult.shadcnSubComponents.length > 0
+          ? compoundResult.shadcnSubComponents : undefined;
+
         if (isChartOnlySection) {
           return {
             output: {
@@ -2171,6 +2175,7 @@ async function convertPage(
               isChart: true,
               chartComponentName: compoundResult.chartComponents[0].name,
               sectionChartComponents: sectionCharts,
+              sectionShadcnSubComponents: sectionShadcn,
             } as SectionOutput,
             assets: sectionAssets,
           };
@@ -2182,6 +2187,7 @@ async function convertPage(
               css: compoundResult.css,
               failed: !compoundResult.success,
               sectionChartComponents: sectionCharts,
+              sectionShadcnSubComponents: sectionShadcn,
             } as SectionOutput,
             assets: sectionAssets,
           };
@@ -2264,8 +2270,24 @@ async function convertPage(
     }
   }
 
+  // Collect and deduplicate shadcn sub-components across all sections.
+  // Keep the first occurrence per shadcnComponentName (deterministic section order).
+  const allShadcnSubComponents: import('./types/index.js').ShadcnSubComponent[] = [];
+  const seenShadcnNames = new Set<string>();
+  for (const section of sectionOutputs) {
+    const subs = section.sectionShadcnSubComponents;
+    if (!subs || subs.length === 0) continue;
+    for (const sub of subs) {
+      if (!seenShadcnNames.has(sub.shadcnComponentName)) {
+        seenShadcnNames.add(sub.shadcnComponentName);
+        allShadcnSubComponents.push(sub);
+      }
+    }
+  }
+
   const successCount = sectionOutputs.filter((s) => !s.failed).length;
-  onStep?.(`Generated ${successCount}/${sections.length} sections successfully.`);
+  onStep?.(`Generated ${successCount}/${sections.length} sections successfully.` +
+    (allShadcnSubComponents.length > 0 ? ` (${allShadcnSubComponents.length} shadcn sub-components)` : ''));
 
   // Step C3: Stitch into one page component
   onStep?.('Stitching sections into page component...');
@@ -2332,6 +2354,41 @@ async function convertPage(
             chartDefinitions.join('\n\n') + '\n\n' + reactCode;
         }
 
+        // Inject shadcn/ui imports (same pattern as recharts imports above)
+        // Scan the stitched code for all named exports used from each shadcn module
+        // (e.g., Card, CardContent, CardHeader from card.tsx)
+        if (allShadcnSubComponents.length > 0) {
+          const shadcnImports = allShadcnSubComponents.map((sc) => {
+            // Extract all exported names from the shadcn source
+            const exportMatch = sc.updatedShadcnSource.match(/export\s*\{([^}]+)\}/);
+            const allExports: string[] = [];
+            if (exportMatch) {
+              allExports.push(...exportMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean));
+            }
+            // Also catch "export const X" patterns
+            const exportConstMatches = sc.updatedShadcnSource.matchAll(/export\s+const\s+(\w+)/g);
+            for (const m of exportConstMatches) {
+              if (!allExports.includes(m[1])) allExports.push(m[1]);
+            }
+
+            // Filter to only those actually used in the stitched code
+            const usedExports = allExports.filter((name) => {
+              // Check for JSX usage: <Name or <Name> or {Name} or Name(
+              const usageRe = new RegExp(`<${name}[\\s/>]|\\{${name}\\}|\\b${name}\\(`, 'm');
+              return usageRe.test(reactCode);
+            });
+
+            // Fallback: if no exports found or none used, import the PascalCase base name
+            if (usedExports.length === 0) {
+              const pascal = sc.shadcnComponentName.charAt(0).toUpperCase() + sc.shadcnComponentName.slice(1);
+              usedExports.push(pascal);
+            }
+
+            return `import { ${usedExports.join(', ')} } from "@/components/ui/${sc.shadcnComponentName}";`;
+          }).join('\n');
+          reactCode = shadcnImports + '\n' + reactCode;
+        }
+
         frameworkOutputs[fw] = mergedCSS
           ? injectCSS(reactCode, prependFontImport(mergedCSS), fw)
           : reactCode;
@@ -2354,6 +2411,7 @@ async function convertPage(
       assets: dedupedAssets,
       css: mergedCSS,
       chartComponents: allChartComponents.length > 0 ? allChartComponents : undefined,
+      shadcnSubComponents: allShadcnSubComponents.length > 0 ? allShadcnSubComponents : undefined,
     };
   }
 

@@ -267,6 +267,76 @@ ${variantBuildJS}
 }
 
 /**
+ * Build inline JavaScript definitions for shadcn sub-components so the
+ * CDN-based preview can render them without a module bundler.
+ *
+ * Strategy: strip imports/exports from each shadcn .tsx source, replace
+ * `cn(...)` calls with a simple template-literal className joiner, and
+ * convert `React.forwardRef` components into plain function components
+ * that the preview's Babel can transpile.
+ */
+function buildShadcnInlineDefs(
+  shadcnSubComponents?: Array<{ shadcnComponentName: string; updatedShadcnSource: string }>,
+): string {
+  if (!shadcnSubComponents || shadcnSubComponents.length === 0) return '';
+
+  const defs: string[] = [];
+
+  // Provide a minimal cn() utility (merges className strings)
+  defs.push('function cn(...args) { return args.filter(Boolean).join(" "); }');
+
+  // Provide a minimal cva() stub (returns base class, ignores variants in preview)
+  defs.push(`function cva(base, config) {
+  return function(props) {
+    let classes = base || "";
+    if (config && config.variants && props) {
+      for (const [key, values] of Object.entries(config.variants)) {
+        const val = props[key] || (config.defaultVariants && config.defaultVariants[key]);
+        if (val && values[val]) classes += " " + values[val];
+      }
+    }
+    return classes;
+  };
+}`);
+
+  // Provide a minimal Slot stub (just renders children)
+  defs.push(`function Slot({ children, ...props }) {
+  return children;
+}`);
+
+  for (const sub of shadcnSubComponents) {
+    let source = sub.updatedShadcnSource;
+
+    // Strip import lines
+    source = source.replace(/^\s*import\s+.*$/gm, '');
+    // Strip "use client" directives
+    source = source.replace(/^\s*["']use client["'];?\s*$/gm, '');
+    // Strip export statements but keep the definitions
+    source = source.replace(/export\s+\{[^}]*\};?\s*/g, '');
+    // Convert "export const X = ..." → "const X = ..."
+    source = source.replace(/export\s+const\s+/g, 'const ');
+    // Convert "export interface ..." lines → strip them (TypeScript, not needed)
+    source = source.replace(/export\s+interface\s+[\s\S]*?\n\}/gm, '');
+    // Strip TypeScript type annotations that Babel preset-react can't handle:
+    // - Generic type params on React.forwardRef<Type, Type>
+    source = source.replace(/React\.forwardRef<[^>]*>/g, 'React.forwardRef');
+    // - Type assertions with "as Type"
+    source = source.replace(/\)\s+as\s+\w+/g, ')');
+    // - `: Type` annotations on const declarations — e.g. `: VariantProps<typeof X>`
+    // Only strip after closing paren in function params, not inside objects
+    source = source.replace(/,\s*type\s+VariantProps\b[^)]*\)/g, ')');
+    // Strip standalone "type X = ..." lines
+    source = source.replace(/^type\s+\w+\s*=\s*.*$/gm, '');
+    // Strip interface blocks (non-exported)
+    source = source.replace(/^interface\s+\w+[\s\S]*?\n\}/gm, '');
+
+    defs.push(source.trim());
+  }
+
+  return defs.join('\n\n') + '\n\n';
+}
+
+/**
  * Generate a standalone HTML page that renders the React component.
  * If componentPropertyDefinitions is provided, renders a full variant grid.
  */
@@ -276,6 +346,7 @@ export function generatePreviewHTML(
   sessionId: string,
   componentPropertyDefinitions?: Record<string, any>,
   chartComponents?: Array<{ name: string; reactCode: string; css: string }>,
+  shadcnSubComponents?: Array<{ shadcnComponentName: string; updatedShadcnSource: string }>,
 ): string {
   const { code, css } = transformReactCode(reactCode, componentName, sessionId);
   const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions);
@@ -291,6 +362,11 @@ export function generatePreviewHTML(
       ComposedChart, ReferenceLine, Brush } = Recharts;`
     : '';
 
+  // Inline shadcn sub-component definitions so the preview can render them
+  // without a module bundler. Extracts the component function from the .tsx source
+  // and makes it available as a global (e.g. Button, Card, Input).
+  const shadcnInlineDefs = buildShadcnInlineDefs(shadcnSubComponents);
+
   // Load Google Fonts used in the component CSS
   const fontFamilies = collectFontFamilies(css);
   const fontLink = buildGoogleFontsLink(fontFamilies);
@@ -299,6 +375,7 @@ export function generatePreviewHTML(
   // We manually call Babel.transform instead of using type="text/babel" to get error handling.
   const escapedJSX = (
     `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    shadcnInlineDefs +
     code + '\n' +
     appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`

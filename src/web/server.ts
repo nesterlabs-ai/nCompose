@@ -134,6 +134,26 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
   // Read chart components
   const chartComponents: Array<{ name: string; reactCode: string; css: string }> = [];
 
+  // Read shadcn sub-components from disk (written as {name}.tsx files at root level)
+  const shadcnSubComponents: Array<{ shadcnComponentName: string; updatedShadcnSource: string }> = [];
+  try {
+    const allFiles = readdirSync(matchDir);
+    for (const f of allFiles) {
+      // shadcn sub-components are .tsx files at root level that are NOT the main component
+      // They have lowercase names like "button.tsx", "card.tsx", "input.tsx"
+      if (f.endsWith('.tsx') && f !== `${componentName}.lite.tsx` && f !== `${componentName}.tsx`) {
+        const name = f.slice(0, -4); // strip .tsx
+        // Only include lowercase-named files (shadcn convention)
+        if (name === name.toLowerCase() && name.length > 0) {
+          try {
+            const source = readFileSync(join(matchDir, f), 'utf-8');
+            shadcnSubComponents.push({ shadcnComponentName: name, updatedShadcnSource: source });
+          } catch { /* skip */ }
+        }
+      }
+    }
+  } catch { /* skip */ }
+
   return {
     componentName,
     mitosisSource,
@@ -141,6 +161,7 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     assets,
     componentPropertyDefinitions,
     chartComponents,
+    shadcnSubComponents: shadcnSubComponents.length > 0 ? shadcnSubComponents : undefined,
   } as ConversionResult;
 }
 
@@ -773,6 +794,7 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
     sessionId,
     result.componentPropertyDefinitions,
     result.chartComponents,
+    result.shadcnSubComponents,
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);

@@ -301,21 +301,12 @@ export function generatePreviewHTML(
 function __Render(name, props, children) {
   var safeProps = props || {};
   var style = safeProps.style || {};
-  var labelStyle = { fontSize: '10px', color: '#6b7280', marginBottom: '4px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' };
-  var boxStyle = Object.assign({
-    border: '1px dashed rgba(107,114,128,0.45)',
-    background: 'rgba(248,250,252,0.9)',
-    padding: '8px',
-    borderRadius: '10px',
-    display: 'inline-block',
-    maxWidth: '100%',
-  }, style);
-  var wrapperProps = Object.assign({}, safeProps, { style: boxStyle, 'data-component': name });
+  // Minimal wrapper: keep a debug hook without affecting layout.
+  // display: contents makes the wrapper visually disappear in layout.
+  var wrapperStyle = Object.assign({ display: 'contents' }, style);
+  var wrapperProps = Object.assign({}, safeProps, { style: wrapperStyle, 'data-component': name });
   var content = Array.isArray(children) ? children : [children];
-  return React.createElement('div', wrapperProps,
-    React.createElement('div', { style: labelStyle }, name),
-    React.createElement('div', null, content)
-  );
+  return React.createElement('div', wrapperProps, content);
 }
 `;
   const escapedJSX = (

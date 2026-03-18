@@ -76,6 +76,18 @@ export interface ChartComponent {
 }
 
 /**
+ * A shadcn sub-component generated from a child node within a composite component.
+ * Used when PATH B detects recognized shadcn primitives (button, input, etc.) inside
+ * a composite component that itself is not a shadcn component.
+ */
+export interface ShadcnSubComponent {
+  /** shadcn component name (e.g. "button", "input") */
+  shadcnComponentName: string;
+  /** LLM-customized shadcn component source (.tsx with CVA variants) */
+  updatedShadcnSource: string;
+}
+
+/**
  * Output of the full pipeline for a single component.
  */
 export interface ConversionResult {
@@ -101,6 +113,8 @@ export interface ConversionResult {
   updatedShadcnSource?: string;
   /** shadcn component name (e.g. "button") */
   shadcnComponentName?: string;
+  /** shadcn sub-components generated from child nodes in a composite component */
+  shadcnSubComponents?: ShadcnSubComponent[];
 }
 
 /**

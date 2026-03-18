@@ -166,6 +166,7 @@ let generatedTabsData = [];
 let templateWired = false;
 let currentUpdatedShadcnSource = null;
 let currentShadcnComponentName = null;
+let currentShadcnSubComponents = null;
 let currentComponentPropertyDefs = null;
 let currentVariantMetadata = null;
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
@@ -807,6 +808,64 @@ function rewriteAssetsToDataURIs(code, css, assetMap) {
   return { code: newCode, css: newCss };
 }
 
+/**
+ * Build inline JavaScript definitions for shadcn sub-components so the
+ * offline preview can render them without a module bundler.
+ * Client-side port of preview.ts buildShadcnInlineDefs().
+ */
+function buildClientShadcnInlineDefs(shadcnSubComponents) {
+  if (!shadcnSubComponents || shadcnSubComponents.length === 0) return '';
+
+  const defs = [];
+
+  // Minimal cn() utility
+  defs.push('function cn(...args) { return args.filter(Boolean).join(" "); }');
+
+  // Minimal cva() stub
+  defs.push(`function cva(base, config) {
+  return function(props) {
+    let classes = base || "";
+    if (config && config.variants && props) {
+      for (const [key, values] of Object.entries(config.variants)) {
+        const val = props[key] || (config.defaultVariants && config.defaultVariants[key]);
+        if (val && values[val]) classes += " " + values[val];
+      }
+    }
+    return classes;
+  };
+}`);
+
+  // Minimal Slot stub
+  defs.push('function Slot({ children, ...props }) { return children; }');
+
+  for (const sub of shadcnSubComponents) {
+    let source = sub.updatedShadcnSource;
+    // Strip import lines
+    source = source.replace(/^\s*import\s+.*$/gm, '');
+    // Strip "use client"
+    source = source.replace(/^\s*["']use client["'];?\s*$/gm, '');
+    // Strip export { ... }
+    source = source.replace(/export\s*\{[^}]*\};?\s*/g, '');
+    // export const → const
+    source = source.replace(/export\s+const\s+/g, 'const ');
+    // Strip export interface blocks
+    source = source.replace(/export\s+interface\s+[\s\S]*?\n\}/gm, '');
+    // Strip TypeScript generics on React.forwardRef
+    source = source.replace(/React\.forwardRef<[^>]*>/g, 'React.forwardRef');
+    // Strip type assertions
+    source = source.replace(/\)\s+as\s+\w+/g, ')');
+    // Strip VariantProps type params
+    source = source.replace(/,\s*type\s+VariantProps\b[^)]*\)/g, ')');
+    // Strip standalone type aliases
+    source = source.replace(/^type\s+\w+\s*=\s*.*$/gm, '');
+    // Strip interface blocks
+    source = source.replace(/^interface\s+\w+[\s\S]*?\n\}/gm, '');
+    defs.push(source.trim());
+  }
+
+  return defs.join('\n\n') + '\n\n';
+}
+
 function showInlinePreview(project) {
   const reactCode = (project.frameworkOutputs || {}).react;
   if (!reactCode) {
@@ -927,8 +986,12 @@ function showInlinePreview(project) {
     <\/script>
   `;
 
+  // Inline shadcn sub-component definitions for offline preview
+  const shadcnDefs = buildClientShadcnInlineDefs(project.shadcnSubComponents);
+
   // Build JSX source for manual Babel.transform (with error handling)
   const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+    shadcnDefs +
     code + '\n' +
     appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`;
@@ -1654,29 +1717,39 @@ export default App;
 
   const hasCharts = (chartComponents && chartComponents.length > 0) ||
     /from ['"]recharts['"]/.test(componentCode);
+  const hasShadcnSub = !!(currentShadcnSubComponents && currentShadcnSubComponents.length);
+  const needsShadcnDeps = hasShadcn || hasShadcnSub;
   const deps = { react: '^18.3.1', 'react-dom': '^18.3.1' };
   if (hasCharts) deps['recharts'] = '^2.12.0';
-  if (hasShadcn) {
+  if (needsShadcnDeps) {
     deps['class-variance-authority'] = '^0.7.0';
     deps['clsx'] = '^2.1.0';
     deps['tailwind-merge'] = '^2.2.0';
     deps['@radix-ui/react-slot'] = '^1.0.2';
     // Scan generated shadcn source for @radix-ui/* imports and add them dynamically
-    if (currentUpdatedShadcnSource) {
-      const radixMatches = currentUpdatedShadcnSource.matchAll(/@radix-ui\/[\w-]+/g);
-      for (const m of radixMatches) {
-        if (!deps[m[0]]) deps[m[0]] = '^1.0.0';
+    const allShadcnSources = [currentUpdatedShadcnSource || ''];
+    if (currentShadcnSubComponents) {
+      for (const sub of currentShadcnSubComponents) {
+        allShadcnSources.push(sub.updatedShadcnSource || '');
+      }
+    }
+    for (const src of allShadcnSources) {
+      if (src) {
+        const radixMatches = src.matchAll(/@radix-ui\/[\w-]+/g);
+        for (const m of radixMatches) {
+          if (!deps[m[0]]) deps[m[0]] = '^1.0.0';
+        }
       }
     }
     // Also scan consumer code for any additional imports
-    const allCode = componentCode + (currentUpdatedShadcnSource || '');
+    const allCode = componentCode + allShadcnSources.join('');
     if (/lucide-react/.test(allCode)) deps['lucide-react'] = '^0.460.0';
     if (/react-day-picker/.test(allCode)) deps['react-day-picker'] = '^8.10.0';
     if (/date-fns/.test(allCode)) deps['date-fns'] = '^3.6.0';
   }
 
   // Vite config — add @/ path alias for shadcn imports
-  const viteConfig = hasShadcn
+  const viteConfig = needsShadcnDeps
     ? 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; import path from "path"; export default defineConfig({ plugins: [react()], resolve: { alias: { "@": path.resolve(__dirname, "./src") } } });'
     : 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });';
 
@@ -1810,6 +1883,17 @@ export default App;
   if (hasShadcn) {
     files[`src/components/ui/${currentShadcnComponentName}.tsx`] = currentUpdatedShadcnSource;
     files['src/lib/utils.ts'] = 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n';
+  }
+
+  // Add shadcn sub-components (composite delegation)
+  if (currentShadcnSubComponents && currentShadcnSubComponents.length) {
+    for (const sub of currentShadcnSubComponents) {
+      files[`src/components/ui/${sub.shadcnComponentName}.tsx`] = sub.updatedShadcnSource;
+    }
+    // Ensure cn() utility is present even if no single shadcn component
+    if (!hasShadcn) {
+      files['src/lib/utils.ts'] = 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n';
+    }
   }
 
   // Chart components are inlined into the main React JSX — no separate files needed.
@@ -2140,6 +2224,7 @@ function handleComplete(data) {
   templateWired = Boolean(data.templateWired);
   currentUpdatedShadcnSource = data.updatedShadcnSource || null;
   currentShadcnComponentName = data.shadcnComponentName || null;
+  currentShadcnSubComponents = data.shadcnSubComponents || null;
   currentComponentPropertyDefs = data.componentPropertyDefinitions || null;
   currentVariantMetadata = data.variantMetadata || null;
 
@@ -2185,6 +2270,7 @@ function handleComplete(data) {
     assets: data.assets || [],
     templateWired: Boolean(data.templateWired),
     chartComponents: data.chartComponents || [],
+    shadcnSubComponents: data.shadcnSubComponents || null,
   });
 
   // Initialize chat for iterative refinement

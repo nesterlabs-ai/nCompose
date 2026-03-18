@@ -35,6 +35,9 @@ import {
 } from '../figma/component-discovery.js';
 import { extractChartMetadata } from '../figma/chart-detection.js';
 import { generateChartCode } from './chart-codegen.js';
+import { isShadcnSupported, getShadcnComponentType } from '../shadcn/shadcn-types.js';
+import { generateShadcnSingleComponent } from '../shadcn/shadcn-codegen.js';
+import type { ShadcnSubComponent } from '../types/index.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -70,6 +73,8 @@ export interface CompoundSectionResult {
   discovery: ComponentDiscoveryResult;
   /** Chart components discovered and generated (Recharts code) */
   chartComponents: ChartComponent[];
+  /** shadcn sub-components generated for this section (templateMode only) */
+  shadcnSubComponents: import('../types/index.js').ShadcnSubComponent[];
 }
 
 // ── Form role → semantic hint mapping ───────────────────────────────────────
@@ -421,13 +426,106 @@ export async function generateCompoundSection(
     }
   }
 
+  // ── Split UI components into shadcn vs non-shadcn (templateMode only) ──
+  const shadcnSubComponents: ShadcnSubComponent[] = [];
+  const availableShadcn: Array<{ name: string; importPath: string; source: string; figmaNodeNames?: string[] }> = [];
+  let regularUiComps = uiComps;
+
+  if (templateMode) {
+    const shadcnComps = uiComps.filter((c) => isShadcnSupported(c.formRole));
+    regularUiComps = uiComps.filter((c) => !isShadcnSupported(c.formRole));
+
+    if (shadcnComps.length > 0) {
+      // Deduplicate by shadcn type (e.g. 6 buttons → 1 button.tsx)
+      // Same logic as PATH B composite discovery in convert.ts
+      const uniqueShadcnTypes = new Map<string, typeof shadcnComps[0]>();
+      const figmaNodeNamesByType = new Map<string, string[]>();
+      for (const comp of shadcnComps) {
+        const shadcnType = getShadcnComponentType(comp.formRole);
+        if (shadcnType) {
+          const existing = uniqueShadcnTypes.get(shadcnType);
+          if (!existing) {
+            uniqueShadcnTypes.set(shadcnType, comp);
+            figmaNodeNamesByType.set(shadcnType, []);
+          } else if (comp.formRole === shadcnType && existing.formRole !== shadcnType) {
+            uniqueShadcnTypes.set(shadcnType, comp);
+          } else if (comp.formRole === existing.formRole) {
+            const existW = existing.representativeNode?.absoluteBoundingBox?.width ?? 0;
+            const existH = existing.representativeNode?.absoluteBoundingBox?.height ?? 0;
+            const compW = comp.representativeNode?.absoluteBoundingBox?.width ?? 0;
+            const compH = comp.representativeNode?.absoluteBoundingBox?.height ?? 0;
+            if (compW * compH > existW * existH) {
+              uniqueShadcnTypes.set(shadcnType, comp);
+            }
+          }
+          const names = figmaNodeNamesByType.get(shadcnType)!;
+          if (!names.includes(comp.name)) {
+            names.push(comp.name);
+          }
+        }
+      }
+
+      // Generate each unique shadcn type
+      for (const [shadcnType, comp] of uniqueShadcnTypes) {
+        try {
+          const pascal = comp.name
+            .replace(/[^a-zA-Z0-9\s]/g, ' ')
+            .split(/\s+/).filter(Boolean)
+            .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join('');
+          onStep?.(`  [shadcn] Generating ${shadcnType} from "${comp.name}"...`);
+          const subResult = await generateShadcnSingleComponent(
+            comp.representativeNode,
+            comp.formRole,
+            pascal,
+            llm,
+            onStep,
+          );
+
+          // Sanitize: strip extra content after first export { ... }
+          let cleanSource = subResult.updatedShadcnSource;
+          const firstExportMatch = cleanSource.match(/^export\s*\{[^}]+\};?\s*$/m);
+          if (firstExportMatch) {
+            const exportEnd = cleanSource.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
+            const trailing = cleanSource.slice(exportEnd).trim();
+            if (trailing.length > 0) {
+              onStep?.(`  [shadcn] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
+              cleanSource = cleanSource.slice(0, exportEnd).trimEnd() + '\n';
+            }
+          }
+
+          shadcnSubComponents.push({
+            shadcnComponentName: subResult.shadcnComponentName,
+            updatedShadcnSource: cleanSource,
+          });
+
+          availableShadcn.push({
+            name: subResult.shadcnComponentName,
+            importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+            source: cleanSource,
+            figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
+          });
+          onStep?.(`  [shadcn] ${shadcnType} → OK`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          onStep?.(`  [shadcn] Failed to generate ${shadcnType}: ${msg} — falling back to raw HTML`);
+          // Move failed shadcn component back to regular pipeline
+          regularUiComps.push(comp);
+        }
+      }
+
+      // Remove shadcn-handled components from the YAML substitution pipeline:
+      // they'll be referenced via imports in the section JSX, not COMPONENT_REF
+    }
+  }
+
   // Generate UI components via LLM (PATH 1 — concurrency-limited)
   // Limit concurrency to avoid rate limiting from LLM providers (e.g. DeepSeek 429s).
   const MAX_CONCURRENCY = 3;
   const generatedComponents: GeneratedComponent[] = [];
 
-  for (let batch = 0; batch < uiComps.length; batch += MAX_CONCURRENCY) {
-    const batchComps = uiComps.slice(batch, batch + MAX_CONCURRENCY);
+  for (let batch = 0; batch < regularUiComps.length; batch += MAX_CONCURRENCY) {
+    const batchComps = regularUiComps.slice(batch, batch + MAX_CONCURRENCY);
     const batchResults = await Promise.all(batchComps.map(async (comp) => {
       const suffix = bemSuffixes.get(comp.variantKey) ?? '';
       const displayName = comp.variantKey !== comp.name
@@ -455,7 +553,8 @@ export async function generateCompoundSection(
 
   const successCount = generatedComponents.filter((g) => g.success).length;
   onStep?.(
-    `  Pass 1 complete: ${successCount}/${discovery.components.length} components generated`,
+    `  Pass 1 complete: ${successCount}/${discovery.components.length} components generated` +
+    (shadcnSubComponents.length > 0 ? ` (+ ${shadcnSubComponents.length} shadcn)` : ''),
   );
 
   // ── Step 2.5: Fix class name collisions ────────────────────────────────
@@ -502,7 +601,7 @@ export async function generateCompoundSection(
     : assemblePageSectionSystemPrompt(templateMode);
 
   const baseUserPrompt = templateMode
-    ? assembleReactSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx)
+    ? assembleReactSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx, availableShadcn.length > 0 ? availableShadcn : undefined)
     : assemblePageSectionUserPrompt(sectionYaml, sectionName, sectionIndex, totalSections, ctx, templateMode);
 
   // Insert component references before the YAML block
@@ -522,6 +621,7 @@ export async function generateCompoundSection(
         generatedComponents,
         discovery,
         chartComponents,
+        shadcnSubComponents,
       };
     }
 
@@ -541,6 +641,7 @@ export async function generateCompoundSection(
       generatedComponents,
       discovery,
       chartComponents,
+      shadcnSubComponents,
     };
   } catch (err) {
     console.error(`  [PATH 2] Section "${sectionName}" error:`, err instanceof Error ? err.message : err);
@@ -551,6 +652,7 @@ export async function generateCompoundSection(
       generatedComponents,
       discovery,
       chartComponents,
+      shadcnSubComponents,
     };
   }
 }
@@ -1078,6 +1180,7 @@ async function fallbackMonolithicGeneration(
         generatedComponents: [],
         discovery,
         chartComponents: [],
+        shadcnSubComponents: [],
       };
     }
 
@@ -1114,6 +1217,7 @@ async function fallbackMonolithicGeneration(
     generatedComponents: [],
     discovery,
     chartComponents: [],
+    shadcnSubComponents: [],
   };
 }
 

@@ -493,6 +493,9 @@ app.post('/api/refine', (req: any, res: any) => {
 
 /**
  * GET /api/download/:sessionId — Zip download
+ *
+ * If a wired app/ directory exists on disk, ZIPs the full runnable project
+ * (Lovable-style). Otherwise falls back to component-only ZIP.
  */
 app.get('/api/download/:sessionId', (req: any, res: any) => {
   const { sessionId } = req.params;
@@ -503,8 +506,44 @@ app.get('/api/download/:sessionId', (req: any, res: any) => {
     return;
   }
 
-  const zipName = `${result.componentName}.zip`;
+  // Try to find the wired app/ directory on disk
+  let appDir: string | undefined;
+  const primaryDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`, 'app');
+  if (existsSync(primaryDir)) {
+    appDir = primaryDir;
+  } else {
+    // Disk fallback: scan for directory ending with -sessionId
+    try {
+      const dirs = readdirSync(config.server.outputDir, { withFileTypes: true });
+      for (const d of dirs) {
+        if (d.isDirectory() && d.name.endsWith(`-${sessionId}`)) {
+          const candidate = join(config.server.outputDir, d.name, 'app');
+          if (existsSync(candidate)) { appDir = candidate; break; }
+        }
+      }
+    } catch { /* fall through */ }
+  }
 
+  // Full project ZIP when app/ directory exists
+  if (appDir) {
+    const zipName = `${result.componentName}-project.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.pipe(res);
+    // Add all files from app/ (skip node_modules), flatten into ZIP root
+    archive.directory(appDir, false, (entry: any) => {
+      // Skip node_modules directory entries
+      if (entry.name.startsWith('node_modules/') || entry.name === 'node_modules') return false;
+      return entry;
+    });
+    archive.finalize();
+    return;
+  }
+
+  // Fallback: component-only ZIP (no wired app available)
+  const zipName = `${result.componentName}.zip`;
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
 
@@ -525,8 +564,6 @@ app.get('/api/download/:sessionId', (req: any, res: any) => {
       });
     }
   }
-
-  // Chart components are inlined into the main React JSX — no separate files needed.
 
   // Add SVG assets
   if (result.assets) {

@@ -366,10 +366,19 @@ function matchVisualHeuristic(node: any, rawNode?: any): string | null {
  *
  * Returns a formRole string if matched, null otherwise.
  */
+// Container formRoles that should NOT be detected from plain FRAMEs.
+// These are structural wrappers whose children contain the actual
+// interactive primitives (inputs, buttons, checkboxes). Detecting them
+// as leaf widgets would stop recursion and miss the children.
+const CONTAINER_FORM_ROLES = new Set([
+  'form', 'card', 'dialog', 'toast', 'tab',
+  'stepper',
+]);
+
 function detectFrameBasedWidget(node: any, rawNode?: any): string | null {
   // First try name-based patterns (same as for INSTANCE nodes)
   const nameRole = matchComponentPattern(node.name ?? '');
-  if (nameRole && nameRole !== 'component') return nameRole;
+  if (nameRole && nameRole !== 'component' && !CONTAINER_FORM_ROLES.has(nameRole)) return nameRole;
 
   // For FRAMEs, check input heuristic FIRST — a bordered FRAME with
   // text is almost certainly an input, not a button. Buttons in Figma

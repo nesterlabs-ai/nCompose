@@ -116,7 +116,9 @@ Your task: Take a base shadcn component source and customize it with design data
 
 13. **Derive semantic HTML from Figma node names and structure**: Read node names, child names, and componentProperties to determine the correct HTML element. Nodes marked \`[hidden]\` are visually hidden but semantically important (e.g. dropdown options). Never approximate semantic elements with generic divs.
 
-14. **No extra explanations** — just the two code blocks.
+14. **PRESERVE the core HTML element from the base shadcn source**: The base source you receive already contains the correct semantic HTML element. You MUST keep that same element in your output — NEVER replace it with a \`<div>\`. The Figma tree shows visual frames/containers that represent LAYOUT around the core element, not a replacement for it. Figma "Value" or "Placeholder" text nodes should map to native element attributes (e.g. \`placeholder\` on \`<input>\`), NOT rendered as \`<div>\` text. The component must be **functional** — users must be able to interact with it (type, click, select). Forward \`ref\` and spread \`...props\` exactly as the base source does.
+
+15. **No extra explanations** — just the two code blocks.
 `;
 }
 
@@ -278,7 +280,9 @@ Your task: Take a base shadcn component source and customize it with design data
 
 10. **Icons must come from Figma data only**: Only render SVG icons that are explicitly provided in the Icon Assets section or that appear as VECTOR nodes in the component tree for THAT specific element. Never copy an SVG path from one element and paste it into a different element. If no icon asset is listed for a button or slot, render it without any icon.
 
-11. **No extra explanations** — just the two code blocks.
+11. **PRESERVE the core HTML element from the base shadcn source**: The base source you receive already contains the correct semantic HTML element. You MUST keep that same element in your output — NEVER replace it with a \`<div>\`. The Figma tree shows visual frames/containers that represent LAYOUT around the core element, not a replacement for it. Figma "Value" or "Placeholder" text nodes should map to native element attributes (e.g. \`placeholder\` on \`<input>\`), NOT rendered as \`<div>\` text. The component must be **functional** — users must be able to interact with it. Forward \`ref\` and spread \`...props\` exactly as the base source does.
+
+12. **No extra explanations** — just the two code blocks.
 `;
 }
 
@@ -401,7 +405,8 @@ Your task: Generate a self-contained React JSX fragment for a UI component, usin
 7. **Dimensions are bounding boxes**: Do NOT hardcode \`h-[Npx]\` on container elements — let flex layout size them naturally.
 8. **Derive semantic HTML from Figma node names and structure**: Read node names and children to determine the correct element. Nodes marked \`[hidden]\` contain semantic data (e.g. dropdown options).
 9. **Icons must come from Figma data only**: Only render SVGs explicitly provided or present as VECTOR nodes for that specific element. Never copy SVGs between elements.
-10. **No extra explanations** — just the code block.
+10. **PRESERVE the core HTML element from the shadcn template**: The template already contains the correct semantic HTML element. Keep that same element — NEVER replace it with a \`<div>\`. Figma "Value" or "Placeholder" text nodes should map to native element attributes (e.g. \`placeholder\`), NOT rendered as \`<div>\` text. The output must be **functional**, not just visual.
+11. **No extra explanations** — just the code block.
 `;
 }
 

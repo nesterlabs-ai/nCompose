@@ -108,6 +108,45 @@ export function assembleReactSystemPrompt(): string {
 }
 
 /**
+ * Builds the shadcn sub-component import/usage instructions block for LLM prompts.
+ * Shared between PATH B (assembleReactUserPrompt) and PATH C (assembleReactSectionUserPrompt).
+ */
+function buildShadcnPromptBlock(
+  availableShadcnComponents?: Array<{ name: string; importPath: string; source: string; figmaNodeNames?: string[] }>,
+): string {
+  if (!availableShadcnComponents || availableShadcnComponents.length === 0) return '';
+
+  const entries = availableShadcnComponents.map((comp) => {
+    const sourceLines = comp.source.split('\n');
+    const truncated = sourceLines.slice(0, 80).join('\n');
+    const suffix = sourceLines.length > 80 ? '\n// ... (truncated)' : '';
+    const pascalName = comp.name.charAt(0).toUpperCase() + comp.name.slice(1);
+    const nodeMapping = comp.figmaNodeNames && comp.figmaNodeNames.length > 0
+      ? `\n**Figma nodes that MUST use this component:** ${comp.figmaNodeNames.map(n => `"${n}"`).join(', ')}`
+      : '';
+    return `### ${pascalName} — import { ${pascalName} } from "${comp.importPath}"${nodeMapping}
+\`\`\`tsx
+${truncated}${suffix}
+\`\`\``;
+  }).join('\n\n');
+
+  return `
+## Available shadcn/ui Components — MANDATORY
+
+You MUST import and use ALL of the following pre-built components. Do NOT recreate them as raw HTML.
+
+${entries}
+
+RULES:
+- You MUST import and render EVERY component listed above — do NOT skip any
+- Any Figma node listed under "Figma nodes that MUST use this component" MUST be rendered using that shadcn component, NOT as raw HTML <button>, <input>, <select>, etc.
+- Pass appropriate props (variant, size, className, etc.) based on the Figma design
+- Use className overrides on shadcn components for pixel-perfect Figma styling (colors, spacing, fonts)
+- ONLY use standard Tailwind HTML for nodes that are NOT mapped to any available component above
+`;
+}
+
+/**
  * Assembles the user prompt for React + Tailwind direct generation.
  * Same structure as assembleUserPrompt() but targets React output.
  */
@@ -116,6 +155,7 @@ export function assembleReactUserPrompt(
   componentName?: string,
   semanticHint?: string,
   assetHints?: string,
+  availableShadcnComponents?: Array<{ name: string; importPath: string; source: string; figmaNodeNames?: string[] }>,
 ): string {
   const nameHint = componentName
     ? `\nComponent name: ${componentName}\n`
@@ -127,8 +167,10 @@ export function assembleReactUserPrompt(
 
   const assetBlock = assetHints || '';
 
+  const shadcnBlock = buildShadcnPromptBlock(availableShadcnComponents);
+
   return `Convert the following Figma design to a React component with Tailwind CSS:
-${nameHint}${semanticBlock}${assetBlock}
+${nameHint}${semanticBlock}${assetBlock}${shadcnBlock}
 Fidelity requirements:
 - **PIXEL PERFECT** — every CSS value must match the YAML data exactly. Use Tailwind arbitrary values (e.g. \`bg-[#hex]\`, \`text-[14px]\`) to match Figma exactly.
 - Preserve exact text content from Figma; do NOT replace with placeholders.
@@ -136,6 +178,7 @@ Fidelity requirements:
 - Every node with visual properties (fills, border, shadows, textStyle, borderRadius, opacity) MUST have corresponding Tailwind classes with those exact values.
 - **TEXT nodes**: Do NOT apply fills as background. Text color is already in textStyle.color — use \`text-[color]\`.
 - **ICON nodes** (type: ICON with assetFile): MUST render as \`<img src="{assetFile}" alt="" />\` with the node's width and height.
+- **Semantic role hints**: Nodes with \`semanticRole: "search-input"\` or \`semanticRole: "text-input"\` MUST render as \`<input type="text" placeholder="{placeholder}" />\` — NOT as a \`<div>\` with text. The \`placeholder\` field contains the placeholder text.
 - Do NOT skip any visual property from the YAML — if it exists, it must appear in the output.
 - Use \`className\` not \`class\`.
 
@@ -165,6 +208,7 @@ export function assembleReactSectionUserPrompt(
   sectionIndex: number,
   totalSections: number,
   ctx?: PageSectionContext,
+  availableShadcnComponents?: Array<{ name: string; importPath: string; source: string; figmaNodeNames?: string[] }>,
 ): string {
   const contextLines: string[] = [];
   if (ctx) {
@@ -215,6 +259,8 @@ export function assembleReactSectionUserPrompt(
     ? `\n**Page context:**\n${contextLines.join('\n')}\n`
     : '';
 
+  const shadcnBlock = buildShadcnPromptBlock(availableShadcnComponents);
+
   const yamlBlock = '```yaml\n' + yamlContent.trim() + '\n```';
 
   return 'Convert the following Figma section to a static React component with Tailwind CSS.\n\n' +
@@ -228,7 +274,8 @@ export function assembleReactSectionUserPrompt(
     '- **TEXT nodes**: Do NOT apply fills as background. Text color is already in textStyle.color.\n' +
     '- **ICON nodes** (type: ICON with assetFile): MUST render as `<img src="{assetFile}" alt="" />` with the node\'s width and height.\n' +
     '- Use `className` not `class`.\n' +
-    '- Output purely static content — no useState, no event handlers, no dynamic expressions.\n\n' +
+    '- Output purely static content — no useState, no event handlers, no dynamic expressions.\n' +
+    shadcnBlock + '\n' +
     yamlBlock;
 }
 

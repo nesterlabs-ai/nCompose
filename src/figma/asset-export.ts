@@ -234,7 +234,7 @@ export function collectAssetNodes(
   parentDimensions?: { width: number; height: number },
   parentName?: string,
 ): { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] {
-  if (!node) return result;
+  if (!node || node.visible === false) return result;
 
   // Extract dimensions from this node (could be in layout.dimensions or node.dimensions)
   let nodeDimensions = parentDimensions;

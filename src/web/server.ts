@@ -892,13 +892,30 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
 
+  // Build shadcn sub-components for preview inlining.
+  // PATH A shadcn sets updatedShadcnSource + shadcnComponentName but NOT shadcnSubComponents.
+  // PATH B composite sets shadcnSubComponents directly.
+  // Merge both sources so the preview always has all shadcn component definitions.
+  let previewShadcnSubs = result.shadcnSubComponents ? [...result.shadcnSubComponents] : [];
+  if (result.updatedShadcnSource && result.shadcnComponentName) {
+    const alreadyIncluded = previewShadcnSubs.some(
+      (s) => s.shadcnComponentName === result.shadcnComponentName,
+    );
+    if (!alreadyIncluded) {
+      previewShadcnSubs.push({
+        shadcnComponentName: result.shadcnComponentName,
+        updatedShadcnSource: result.updatedShadcnSource,
+      });
+    }
+  }
+
   const html = generatePreviewHTML(
     reactCode,
     result.componentName,
     sessionId,
     result.componentPropertyDefinitions,
     result.chartComponents,
-    result.shadcnSubComponents,
+    previewShadcnSubs.length > 0 ? previewShadcnSubs : undefined,
   );
   res.setHeader('Content-Type', 'text/html');
   res.send(html);

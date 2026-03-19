@@ -34,6 +34,9 @@ const FORM_ROLE_TO_SHADCN: Record<string, string> = {
   card: 'card',
   progress: 'progress',
   progressBar: 'progress',
+  sidebar: 'sidebar',
+  table: 'table',
+  dataTable: 'table',
 };
 
 /** Also map ComponentCategory values that differ from formRole */
@@ -79,6 +82,13 @@ const CATEGORY_TO_SHADCN: Record<string, string> = {
   card: 'card',
   progress: 'progress',
   'progress-bar': 'progress',
+  sidebar: 'sidebar',
+  'side-bar': 'sidebar',
+  'nav-bar': 'sidebar',
+  'navigation': 'sidebar',
+  table: 'table',
+  'data-table': 'table',
+  'data-grid': 'table',
 };
 
 const SUPPORTED = new Set([

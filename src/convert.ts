@@ -52,9 +52,9 @@ import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComp
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
 import { isShadcnSupported, getShadcnComponentType } from './shadcn/shadcn-types.js';
-import { generateShadcnComponentSet, generateShadcnSingleComponent } from './shadcn/shadcn-codegen.js';
+import { generateShadcnComponentSet, generateShadcnSingleComponent, generateShadcnStructuralComponent } from './shadcn/shadcn-codegen.js';
 import { generateReactDirect } from './compile/react-direct-gen.js';
-import { discoverComponents } from './figma/component-discovery.js';
+import { discoverComponents, matchComponentPattern } from './figma/component-discovery.js';
 
 export interface ConvertCallbacks {
   onStep?: (step: string) => void;
@@ -877,15 +877,30 @@ export async function convertFigmaToCode(
 
   // --- Path detection ---
   const isCompSet = isComponentSet(enhanced);
-  const isPage = !isCompSet && isMultiSectionPage(enhanced);
-  const isChart = !isCompSet && !isPage && isChartSection(rawDocumentNode);
+  // Structural shadcn check: if the root node's name matches a structural
+  // component (sidebar, table), skip isMultiSectionPage to avoid misclassifying
+  // it as a multi-section page (e.g. SideNav children "Large Nav", "Small Nav"
+  // would falsely match SECTION_PATTERNS).
+  const STRUCTURAL_SHADCN_ROLES_TOP = new Set(['sidebar', 'table']);
+  const _rootName = enhanced?.nodes?.[0]?.name ?? rawDocumentNode?.name ?? '';
+  const rootNameFormRole = !isCompSet
+    ? matchComponentPattern(_rootName)
+    : null;
+  console.log(`[convert] Structural check: rootName="${_rootName}", formRole=${rootNameFormRole}, templateMode=${!!options.templateMode}`);
+  const isStructuralShadcn = !isCompSet && options.templateMode
+    && rootNameFormRole != null && STRUCTURAL_SHADCN_ROLES_TOP.has(rootNameFormRole)
+    && isShadcnSupported(rootNameFormRole);
+  console.log(`[convert] isStructuralShadcn=${isStructuralShadcn}`);
+  const isPage = !isCompSet && !isStructuralShadcn && isMultiSectionPage(enhanced);
+  const isChart = !isCompSet && !isPage && !isStructuralShadcn && isChartSection(rawDocumentNode);
   const selectedPath = isCompSet
     ? (rawDocumentNode?.children?.[0] && isChartSection(rawDocumentNode.children[0]) ? 'A-Chart' : 'A')
-    : isPage ? 'C' : isChart ? 'Chart' : 'B';
+    : isStructuralShadcn ? 'B-Structural' : isPage ? 'C' : isChart ? 'Chart' : 'B';
   const pathLabels: Record<string, string> = {
     'A': 'A (COMPONENT_SET — variant-aware)',
     'A-Chart': 'A-Chart (COMPONENT_SET — chart variants)',
     'B': 'B (Single component)',
+    'B-Structural': 'B-Structural (shadcn structural component)',
     'C': 'C (Multi-section page)',
     'Chart': 'Chart (Recharts codegen)',
   };
@@ -1590,6 +1605,45 @@ async function convertSingleComponent(
   // ── templateMode ON: React + Tailwind direct (no Mitosis) ─────────────
   if (options.templateMode) {
     const category = hintedCategory ?? detectComponentCategory(rootNode?.name ?? '');
+
+    // ── Step 0: Structural shadcn components (sidebar, table) ──────
+    // These are layout-heavy components that should be composed from
+    // shadcn sub-components as a whole, not decomposed into leaf widgets.
+    const STRUCTURAL_SHADCN_ROLES = new Set(['sidebar', 'table']);
+    const nameFormRole = matchComponentPattern(rootNode?.name ?? '');
+    if (nameFormRole && STRUCTURAL_SHADCN_ROLES.has(nameFormRole) && isShadcnSupported(nameFormRole)) {
+      try {
+        onStep?.(`[shadcn-structural] Detected "${nameFormRole}" by name — using structural codegen...`);
+        const structResult = await generateShadcnStructuralComponent(
+          rootNode,
+          nameFormRole,
+          options.name ?? toPascalCase(rootNode?.name ?? 'Component'),
+          llm,
+          onStep,
+          assets,
+          llmYaml,
+        );
+
+        const structFrameworkOutputs: Record<string, string> = {};
+        for (const fw of options.frameworks) {
+          structFrameworkOutputs[fw] = fw === 'react'
+            ? structResult.consumerCode
+            : `// ${structResult.componentName} — shadcn/ui structural component (React only).\n`;
+        }
+
+        return {
+          componentName: structResult.componentName,
+          mitosisSource: `// shadcn/ui codegen — see React output.\n${structResult.consumerCode}`,
+          frameworkOutputs: structFrameworkOutputs as Record<Framework, string>,
+          assets,
+          updatedShadcnSource: structResult.updatedShadcnSource,
+          shadcnComponentName: structResult.shadcnComponentName,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onStep?.(`[shadcn-structural] Failed: ${msg} — falling back to composite discovery`);
+      }
+    }
 
     // ── Step 1: Composite discovery first ──────────────────────────
     // Always scan children for leaf shadcn primitives (checkbox, radio,

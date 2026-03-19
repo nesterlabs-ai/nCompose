@@ -264,9 +264,14 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
   res.flushHeaders();
 
   // Guard against writes to dead sockets (prevents Node.js crash)
+  // IMPORTANT: Only listen on `res` events, NOT `req.on('close')`.
+  // For POST requests, `req.on('close')` fires as soon as the request body
+  // is fully received — which is almost immediately. This was setting
+  // clientGone=true before the SSE stream even started, silently dropping
+  // ALL subsequent events → ERR_INCOMPLETE_CHUNKED_ENCODING on the client.
   let clientGone = false;
   res.on('error', () => { clientGone = true; });
-  req.on('close', () => { clientGone = true; });
+  res.on('close', () => { clientGone = true; });
 
   const sendEvent = (event: string, data: Record<string, unknown>) => {
     if (clientGone || res.writableEnded || res.destroyed) return;
@@ -451,10 +456,10 @@ app.post('/api/refine', (req: any, res: any) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  // Guard against writes to dead sockets
+  // Guard against writes to dead sockets (same fix as /api/convert — no req.on('close'))
   let clientGone = false;
   res.on('error', () => { clientGone = true; });
-  req.on('close', () => { clientGone = true; });
+  res.on('close', () => { clientGone = true; });
 
   const sendEvent = (event: string, data: Record<string, unknown>) => {
     if (clientGone || res.writableEnded || res.destroyed) return;

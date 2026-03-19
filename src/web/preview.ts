@@ -112,6 +112,7 @@ function toCamelCase(str: string): string {
 function buildVariantGridApp(
   componentName: string,
   propDefs?: Record<string, any>,
+  shadcnMode?: boolean,
 ): string {
   if (!propDefs) {
     // No property definitions — render a single instance
@@ -166,6 +167,10 @@ function buildVariantGridApp(
   if (stateAxis) {
     const entries = stateAxis.values.map((val) => {
       const lower = val.toLowerCase();
+      if (shadcnMode) {
+        // shadcn components expect state as a string prop (e.g. state="hover")
+        return `    { label: '${val}', props: { ${stateAxis.camel}: '${lower}' } }`;
+      }
       if (lower === 'default') {
         return `    { label: '${val}', props: {} }`;
       }
@@ -191,13 +196,17 @@ function buildVariantGridApp(
     : `  const baseProps = {};`;
 
   // Determine how prop axes map to component props.
-  // Convention: first axis → "variant", second → "size", rest → camelCase of axis name
   const propMappings = propAxes.map((axis) => {
-    // Use the axis camelCase name directly as the prop name
-    // But for "Style" → "variant" is the common convention
-    const propName = axis.name.toLowerCase() === 'style' ? 'variant'
-                   : axis.name.toLowerCase() === 'type' ? 'variant'
-                   : axis.camel;
+    let propName: string;
+    if (shadcnMode) {
+      // shadcn components use axis names directly (style, size, etc.)
+      propName = axis.camel;
+    } else {
+      // Mitosis convention: "Style"/"Type" → "variant", rest → camelCase
+      propName = axis.name.toLowerCase() === 'style' ? 'variant'
+               : axis.name.toLowerCase() === 'type' ? 'variant'
+               : axis.camel;
+    }
     return { axis, propName };
   });
 
@@ -372,7 +381,8 @@ export function generatePreviewHTML(
   shadcnSubComponents?: Array<{ shadcnComponentName: string; updatedShadcnSource: string }>,
 ): string {
   const { code, css } = transformReactCode(reactCode, componentName, sessionId);
-  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions);
+  const hasShadcn = shadcnSubComponents && shadcnSubComponents.length > 0;
+  const appCode = buildVariantGridApp(componentName, componentPropertyDefinitions, hasShadcn);
 
   // Detect recharts usage in main code (chart code is now inlined into reactCode)
   const usesRecharts = /from ['"]recharts['"]/.test(reactCode);
@@ -393,8 +403,20 @@ export function generatePreviewHTML(
   // When shadcn components are present, they use Tailwind utility classes
   // (including arbitrary values like w-[240px], bg-[#hex]). The Tailwind CDN
   // Play script compiles these classes to CSS in the browser at runtime.
-  const usesTailwind = (shadcnSubComponents && shadcnSubComponents.length > 0)
+  const usesTailwind = hasShadcn
     || /\b(?:bg|text|border|w|h|p|m|gap|rounded|flex|grid|items|justify|self)-\[/.test(reactCode);
+
+  // When shadcn components are present, they define all their own components
+  // (Button, Slot, etc.) so the universalComponentRendererPlugin must be SKIPPED.
+  // That plugin rewrites <Button> → __Render("Button",...) which:
+  //   1. Calls path.skip(), preventing Babel's react preset from transpiling
+  //      child <span>/<svg> elements → SyntaxError: Unexpected token '<'
+  //   2. Loses all component logic (cva variants, forwardRef, icons)
+  // Without the plugin, the react preset correctly converts JSX to
+  // React.createElement(Button,...) which calls the actual component functions.
+  const babelPlugins = hasShadcn
+    ? `['proposal-optional-chaining', 'proposal-nullish-coalescing-operator']`
+    : `[universalComponentRendererPlugin, 'proposal-optional-chaining', 'proposal-nullish-coalescing-operator']`;
   const tailwindScript = usesTailwind
     ? '\n  <script src="https://cdn.tailwindcss.com"></script>'
     : '';
@@ -546,7 +568,7 @@ function __Render(name, props, children) {
         };
       };
 
-      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: [universalComponentRendererPlugin, 'proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+      var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ${babelPlugins} });
       var script = document.createElement('script');
       script.textContent = result.code;
       document.body.appendChild(script);

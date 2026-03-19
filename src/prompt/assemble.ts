@@ -116,17 +116,42 @@ function buildShadcnPromptBlock(
 ): string {
   if (!availableShadcnComponents || availableShadcnComponents.length === 0) return '';
 
+  // Structural component types whose sub-components must all be visible to the LLM
+  const STRUCTURAL_TYPES = new Set(['sidebar', 'table']);
+
   const entries = availableShadcnComponents.map((comp) => {
+    const isStructural = STRUCTURAL_TYPES.has(comp.name);
+
+    // Extract all exported names from the source (e.g. Table, TableRow, TableCell, ...)
+    const exportNames: string[] = [];
+    const exportBlockMatch = comp.source.match(/export\s*\{([^}]+)\}/);
+    if (exportBlockMatch) {
+      exportBlockMatch[1].split(',').forEach((s: string) => {
+        const name = s.trim().split(/\s+/)[0]; // handle "Foo as Bar"
+        if (name && /^[A-Z]/.test(name)) exportNames.push(name);
+      });
+    }
+
+    // For structural components: show full source so LLM sees all sub-components.
+    // For leaf widgets: truncate at 80 lines to save prompt space.
     const sourceLines = comp.source.split('\n');
-    const truncated = sourceLines.slice(0, 80).join('\n');
-    const suffix = sourceLines.length > 80 ? '\n// ... (truncated)' : '';
+    const displaySource = isStructural
+      ? comp.source
+      : (sourceLines.slice(0, 80).join('\n') + (sourceLines.length > 80 ? '\n// ... (truncated)' : ''));
+
     const pascalName = comp.name.charAt(0).toUpperCase() + comp.name.slice(1);
+    const importList = exportNames.length > 1
+      ? exportNames.join(', ')
+      : pascalName;
     const nodeMapping = comp.figmaNodeNames && comp.figmaNodeNames.length > 0
       ? `\n**Figma nodes that MUST use this component:** ${comp.figmaNodeNames.map(n => `"${n}"`).join(', ')}`
       : '';
-    return `### ${pascalName} — import { ${pascalName} } from "${comp.importPath}"${nodeMapping}
+    const structuralNote = isStructural
+      ? `\n**This is a STRUCTURAL component.** Use ALL exported sub-components (${exportNames.join(', ')}) to compose the layout. Do NOT use raw <div>s for table rows, cells, headers, menu items, etc.`
+      : '';
+    return `### ${pascalName} — import { ${importList} } from "${comp.importPath}"${nodeMapping}${structuralNote}
 \`\`\`tsx
-${truncated}${suffix}
+${displaySource}
 \`\`\``;
   }).join('\n\n');
 

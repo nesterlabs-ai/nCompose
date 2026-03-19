@@ -30,13 +30,14 @@ import {
 import {
   discoverComponents,
   computeStructuralFingerprint,
+  STRUCTURAL_FORM_ROLES,
   type DiscoveredComponent,
   type ComponentDiscoveryResult,
 } from '../figma/component-discovery.js';
 import { extractChartMetadata } from '../figma/chart-detection.js';
 import { generateChartCode } from './chart-codegen.js';
 import { isShadcnSupported, getShadcnComponentType } from '../shadcn/shadcn-types.js';
-import { generateShadcnSingleComponent } from '../shadcn/shadcn-codegen.js';
+import { generateShadcnSingleComponent, generateShadcnStructuralComponent } from '../shadcn/shadcn-codegen.js';
 import type { ShadcnSubComponent } from '../types/index.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -444,7 +445,6 @@ export async function generateCompoundSection(
 
     if (shadcnComps.length > 0) {
       // Deduplicate by shadcn type (e.g. 6 buttons → 1 button.tsx)
-      // Same logic as PATH B composite discovery in convert.ts
       const uniqueShadcnTypes = new Map<string, typeof shadcnComps[0]>();
       const figmaNodeNamesByType = new Map<string, string[]>();
       for (const comp of shadcnComps) {
@@ -472,14 +472,48 @@ export async function generateCompoundSection(
         }
       }
 
-      // Generate each unique shadcn type
+      // Two-pass generation: leaf widgets first, then structural components.
+      // Structural components (table, sidebar) receive leaf widget info so they
+      // can compose <Checkbox>, <Switch>, <Badge> inside their cells/slots.
+      const leafEntries: Array<[string, typeof shadcnComps[0]]> = [];
+      const structuralEntries: Array<[string, typeof shadcnComps[0]]> = [];
       for (const [shadcnType, comp] of uniqueShadcnTypes) {
+        if (STRUCTURAL_FORM_ROLES.has(comp.formRole)) {
+          structuralEntries.push([shadcnType, comp]);
+        } else {
+          leafEntries.push([shadcnType, comp]);
+        }
+      }
+
+      // Helper to sanitize source: strip extra content after first export { ... }
+      function sanitizeShadcnSource(source: string, shadcnType: string): string {
+        const firstExportMatch = source.match(/^export\s*\{[^}]+\};?\s*$/m);
+        if (firstExportMatch) {
+          const exportEnd = source.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
+          const trailing = source.slice(exportEnd).trim();
+          if (trailing.length > 0) {
+            onStep?.(`  [shadcn] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
+            return source.slice(0, exportEnd).trimEnd() + '\n';
+          }
+        }
+        return source;
+      }
+
+      // Helper to convert comp name to PascalCase
+      function toPascal(name: string): string {
+        return name
+          .replace(/[^a-zA-Z0-9\s]/g, ' ')
+          .split(/\s+/).filter(Boolean)
+          .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join('');
+      }
+
+      // ── Pass 1: Generate leaf widgets ──────────────────────────────
+      const generatedLeafInfo: Array<{ name: string; importPath: string; source: string }> = [];
+
+      for (const [shadcnType, comp] of leafEntries) {
         try {
-          const pascal = comp.name
-            .replace(/[^a-zA-Z0-9\s]/g, ' ')
-            .split(/\s+/).filter(Boolean)
-            .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-            .join('');
+          const pascal = toPascal(comp.name);
           onStep?.(`  [shadcn] Generating ${shadcnType} from "${comp.name}"...`);
           const subResult = await generateShadcnSingleComponent(
             comp.representativeNode,
@@ -489,22 +523,70 @@ export async function generateCompoundSection(
             onStep,
           );
 
-          // Sanitize: strip extra content after first export { ... }
-          let cleanSource = subResult.updatedShadcnSource;
-          const firstExportMatch = cleanSource.match(/^export\s*\{[^}]+\};?\s*$/m);
-          if (firstExportMatch) {
-            const exportEnd = cleanSource.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
-            const trailing = cleanSource.slice(exportEnd).trim();
-            if (trailing.length > 0) {
-              onStep?.(`  [shadcn] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
-              cleanSource = cleanSource.slice(0, exportEnd).trimEnd() + '\n';
-            }
-          }
+          const cleanSource = sanitizeShadcnSource(subResult.updatedShadcnSource, shadcnType);
 
           shadcnSubComponents.push({
             shadcnComponentName: subResult.shadcnComponentName,
             updatedShadcnSource: cleanSource,
           });
+          availableShadcn.push({
+            name: subResult.shadcnComponentName,
+            importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+            source: cleanSource,
+            figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
+          });
+          generatedLeafInfo.push({
+            name: subResult.shadcnComponentName,
+            importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+            source: cleanSource,
+          });
+          onStep?.(`  [shadcn] ${shadcnType} → OK`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          onStep?.(`  [shadcn] Failed to generate ${shadcnType}: ${msg} — falling back to raw HTML`);
+          regularUiComps.push(comp);
+        }
+      }
+
+      // ── Pass 2: Generate structural components with leaf widget context ──
+      for (const [shadcnType, comp] of structuralEntries) {
+        try {
+          const pascal = toPascal(comp.name);
+          onStep?.(`  [shadcn] Generating ${shadcnType} from "${comp.name}" (structural, with ${generatedLeafInfo.length} leaf components)...`);
+
+          const nodeYaml = dump(serializeNode(comp.representativeNode), { lineWidth: 120, noRefs: true });
+          const subResult = await generateShadcnStructuralComponent(
+            comp.representativeNode,
+            comp.formRole,
+            pascal,
+            llm,
+            onStep,
+            undefined,  // assets
+            nodeYaml,
+            generatedLeafInfo,  // pass leaf widget info
+          );
+
+          const cleanSource = sanitizeShadcnSource(subResult.updatedShadcnSource, shadcnType);
+
+          shadcnSubComponents.push({
+            shadcnComponentName: subResult.shadcnComponentName,
+            updatedShadcnSource: cleanSource,
+          });
+
+          // Store the structural consumer JSX as a pre-built component in the cache
+          // so the section LLM can reference it as <PolicyTable /> instead of
+          // re-generating the table from scratch.
+          const consumerHtml = subResult.consumerCode;
+          if (consumerHtml) {
+            componentCache.set(comp.variantKey, {
+              name: comp.name,
+              formRole: comp.formRole,
+              html: consumerHtml,
+              css: '',
+              success: true,
+            });
+            onStep?.(`  [shadcn] ${shadcnType} → OK (stored as pre-built component "${comp.name}")`);
+          }
 
           availableShadcn.push({
             name: subResult.shadcnComponentName,
@@ -512,17 +594,12 @@ export async function generateCompoundSection(
             source: cleanSource,
             figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
           });
-          onStep?.(`  [shadcn] ${shadcnType} → OK`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          onStep?.(`  [shadcn] Failed to generate ${shadcnType}: ${msg} — falling back to raw HTML`);
-          // Move failed shadcn component back to regular pipeline
+          onStep?.(`  [shadcn] Failed to generate structural ${shadcnType}: ${msg} — falling back to raw HTML`);
           regularUiComps.push(comp);
         }
       }
-
-      // Remove shadcn-handled components from the YAML substitution pipeline:
-      // they'll be referenced via imports in the section JSX, not COMPONENT_REF
     }
   }
 

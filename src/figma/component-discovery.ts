@@ -41,6 +41,8 @@ const COMPONENT_PATTERNS: Array<{ pattern: RegExp; formRole: string }> = [
   { pattern: /calendar|date\s*picker/i, formRole: 'calendar' },
   { pattern: /\bform\b|form\s*field|form\s*group/i, formRole: 'form' },
   { pattern: /\bcard\b/i, formRole: 'card' },
+  { pattern: /\bsidebar\b|side\s*bar|side\s*nav\b|sidenav\b|nav\s*bar|nav\s*panel|nav\s*drawer|nav\s*menu|side\s*menu|left\s*nav|left\s*panel|app\s*nav|main\s*nav|app\s*sidebar|navigation\s*panel|navigation\s*menu/i, formRole: 'sidebar' },
+  { pattern: /\btable\b|data\s*table|data\s*grid|data\s*list|list\s*view|grid\s*view|table\s*view|record\s*list|spreadsheet/i, formRole: 'table' },
 ];
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -375,10 +377,21 @@ const CONTAINER_FORM_ROLES = new Set([
   'stepper',
 ]);
 
+// Structural formRoles that should be BOTH detected from plain FRAMEs
+// AND allow recursion into children (in deepRecurse mode).
+// Unlike CONTAINER_FORM_ROLES (which are pure wrappers), these are
+// meaningful components that should use their shadcn template while
+// their children (checkboxes, switches, badges) are also discovered.
+export const STRUCTURAL_FORM_ROLES = new Set([
+  'sidebar', 'table',
+]);
+
 function detectFrameBasedWidget(node: any, rawNode?: any): string | null {
   // First try name-based patterns (same as for INSTANCE nodes)
   const nameRole = matchComponentPattern(node.name ?? '');
-  if (nameRole && nameRole !== 'component' && !CONTAINER_FORM_ROLES.has(nameRole)) return nameRole;
+  if (nameRole && nameRole !== 'component'
+      && !CONTAINER_FORM_ROLES.has(nameRole)
+      && !STRUCTURAL_FORM_ROLES.has(nameRole)) return nameRole;
 
   // For FRAMEs, check input heuristic FIRST — a bordered FRAME with
   // text is almost certainly an input, not a button. Buttons in Figma
@@ -402,7 +415,7 @@ function detectFrameBasedWidget(node: any, rawNode?: any): string | null {
  * Matches a node name against known UI component patterns.
  * Returns the formRole if matched, null otherwise.
  */
-function matchComponentPattern(name: string): string | null {
+export function matchComponentPattern(name: string): string | null {
   for (const { pattern, formRole } of COMPONENT_PATTERNS) {
     if (pattern.test(name)) return formRole;
   }
@@ -500,19 +513,38 @@ function walkForComponents(
   // search bars, etc. Apply the same name + visual heuristic detection
   // used for INSTANCE nodes so the LLM renders them semantically.
   if (deepRecurse && (node.type === 'FRAME' || node.type === 'GROUP') && node.name && !isRoot) {
-    const frameFormRole = detectFrameBasedWidget(node, rawNode);
-    if (frameFormRole && frameFormRole !== 'component') {
-      const key = `frame::${node.name}::${frameFormRole}`;
+    // First check for structural components (sidebar, table) by name.
+    // These are collected AND recursion continues into their children
+    // so leaf widgets inside (checkboxes, switches, badges) are also found.
+    const structNameRole = matchComponentPattern(node.name ?? '');
+    if (structNameRole && STRUCTURAL_FORM_ROLES.has(structNameRole)) {
+      const key = `frame::${node.name}::${structNameRole}`;
       if (!results.has(key)) {
-        results.set(key, { formRole: frameFormRole, componentName: node.name, instances: [] });
+        results.set(key, { formRole: structNameRole, componentName: node.name, instances: [] });
       }
       results.get(key)!.instances.push({
         node,
         props: {},
         treePath: [...path],
       });
-      // Don't recurse into recognized frame widgets — they're leaf units
-      return;
+      // Fall through — DO NOT return. Continue recursing into children
+      // to find leaf widgets (checkboxes, switches, etc.) inside the table/sidebar.
+    } else {
+      // Leaf widget detection (button, input, checkbox, etc.)
+      const frameFormRole = detectFrameBasedWidget(node, rawNode);
+      if (frameFormRole && frameFormRole !== 'component') {
+        const key = `frame::${node.name}::${frameFormRole}`;
+        if (!results.has(key)) {
+          results.set(key, { formRole: frameFormRole, componentName: node.name, instances: [] });
+        }
+        results.get(key)!.instances.push({
+          node,
+          props: {},
+          treePath: [...path],
+        });
+        // Don't recurse into recognized frame widgets — they're leaf units
+        return;
+      }
     }
   }
 

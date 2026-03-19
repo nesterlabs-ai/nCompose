@@ -24,6 +24,18 @@ import { authRoutes } from './auth/index.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ── Process-level error handlers ─────────────────────────────────────────
+// Prevent the Node.js process from crashing on unhandled errors.
+// Without these, any unhandled promise rejection or exception in the
+// shadcn/template pipeline kills the process, Docker restarts it,
+// and all active SSE connections get ERR_INCOMPLETE_CHUNKED_ENCODING.
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception (process kept alive):', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled rejection (process kept alive):', reason);
+});
+
 const app = express();
 const PORT = config.server.port;
 
@@ -296,101 +308,108 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
     .then((result) => {
       clearInterval(heartbeat);
 
-      // Increment free tier usage for anonymous users
-      if ((req as any)._fingerprint) {
-        incrementFreeTierUsage((req as any)._fingerprint);
-      }
-
-      // Store result in session
-      const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
-      setSession(sessionId, result, llmName, selectedFrameworks);
-
-      // Write output files to disk (same as CLI)
-      const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
       try {
-        writeOutputFiles({
-          outputDir: componentOutputDir,
-          componentName: result.componentName,
-          mitosisSource: result.mitosisSource,
-          frameworkOutputs: result.frameworkOutputs,
-          assets: result.assets,
-          componentPropertyDefinitions: result.componentPropertyDefinitions,
-          variantMetadata: result.variantMetadata,
-          fidelityReport: result.fidelityReport,
-          chartComponents: result.chartComponents,
-          updatedShadcnSource: result.updatedShadcnSource,
-          shadcnComponentName: result.shadcnComponentName,
-          shadcnSubComponents: result.shadcnSubComponents,
-        });
-        sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
-      } catch (writeErr) {
-        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
-        sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
-      }
+        // Increment free tier usage for anonymous users
+        if ((req as any)._fingerprint) {
+          incrementFreeTierUsage((req as any)._fingerprint);
+        }
 
-      // Wire into starter template when requested (same behavior as CLI --template)
-      let templateWired = false;
-      if (template) {
-        const projectRoot = join(__dirname, '..'); // points to src/
-        const starterDir = join(projectRoot, 'figma-to-code-starter-main');
-        if (existsSync(starterDir)) {
-          try {
-            // Build figmaVariantNames from variant metadata for filtering non-existent combos
-            const figmaVariantNames = result.variantMetadata?.variants?.map((v: { props: Record<string, string> }) =>
-              Object.entries(v.props).map(([k, val]) => `${k}=${val}`).join(', ')
-            );
-            wireIntoStarter({
-              componentOutputDir,
-              componentName: result.componentName,
-              starterDir,
-              componentPropertyDefinitions: result.componentPropertyDefinitions,
-              updatedShadcnSource: result.updatedShadcnSource,
-              shadcnComponentName: result.shadcnComponentName,
-              figmaVariantNames,
-              shadcnSubComponents: result.shadcnSubComponents,
-            });
-            templateWired = true;
-            sendEvent('step', {
-              message: `Template wired: runnable app in app/ (see Wired app in code view)`,
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            sendEvent('step', { message: `Template wiring failed: ${msg}` });
+        // Store result in session
+        const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
+        setSession(sessionId, result, llmName, selectedFrameworks);
+
+        // Write output files to disk (same as CLI)
+        const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
+        try {
+          writeOutputFiles({
+            outputDir: componentOutputDir,
+            componentName: result.componentName,
+            mitosisSource: result.mitosisSource,
+            frameworkOutputs: result.frameworkOutputs,
+            assets: result.assets,
+            componentPropertyDefinitions: result.componentPropertyDefinitions,
+            variantMetadata: result.variantMetadata,
+            fidelityReport: result.fidelityReport,
+            chartComponents: result.chartComponents,
+            updatedShadcnSource: result.updatedShadcnSource,
+            shadcnComponentName: result.shadcnComponentName,
+            shadcnSubComponents: result.shadcnSubComponents,
+          });
+          sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
+        } catch (writeErr) {
+          const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
+        }
+
+        // Wire into starter template when requested (same behavior as CLI --template)
+        let templateWired = false;
+        if (template) {
+          const projectRoot = join(__dirname, '..'); // points to src/
+          const starterDir = join(projectRoot, 'figma-to-code-starter-main');
+          if (existsSync(starterDir)) {
+            try {
+              // Build figmaVariantNames from variant metadata for filtering non-existent combos
+              const figmaVariantNames = result.variantMetadata?.variants?.map((v: { props: Record<string, string> }) =>
+                Object.entries(v.props).map(([k, val]) => `${k}=${val}`).join(', ')
+              );
+              wireIntoStarter({
+                componentOutputDir,
+                componentName: result.componentName,
+                starterDir,
+                componentPropertyDefinitions: result.componentPropertyDefinitions,
+                updatedShadcnSource: result.updatedShadcnSource,
+                shadcnComponentName: result.shadcnComponentName,
+                figmaVariantNames,
+                shadcnSubComponents: result.shadcnSubComponents,
+              });
+              templateWired = true;
+              sendEvent('step', {
+                message: `Template wired: runnable app in app/ (see Wired app in code view)`,
+              });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              sendEvent('step', { message: `Template wiring failed: ${msg}` });
+            }
           }
         }
+
+        // Send framework outputs for code display
+        sendEvent('complete', {
+          sessionId,
+          componentName: result.componentName,
+          frameworks: selectedFrameworks,
+          frameworkOutputs: result.frameworkOutputs,
+          mitosisSource: result.mitosisSource,
+          templateWired,
+          assetCount: result.assets?.length ?? 0,
+          assets: (result.assets || []).filter(a => a.content).map(a => ({ filename: a.filename, content: a.content })),
+          chartComponents: result.chartComponents?.map((c) => ({
+            name: c.name,
+            reactCode: c.reactCode,
+            css: c.css,
+          })) ?? [],
+          fidelity: result.fidelityReport
+            ? {
+              overallPassed: result.fidelityReport.overallPassed,
+              checks: Object.fromEntries(
+                Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
+              ),
+            }
+            : undefined,
+          updatedShadcnSource: result.updatedShadcnSource ?? undefined,
+          shadcnComponentName: result.shadcnComponentName ?? undefined,
+          shadcnSubComponents: result.shadcnSubComponents ?? undefined,
+          componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
+          variantMetadata: result.variantMetadata ?? undefined,
+        });
+      } catch (thenErr) {
+        console.error('[convert] Error in post-conversion handler:', thenErr);
+        sendEvent('error', {
+          message: thenErr instanceof Error ? thenErr.message : String(thenErr),
+        });
       }
 
-      // Send framework outputs for code display
-      sendEvent('complete', {
-        sessionId,
-        componentName: result.componentName,
-        frameworks: selectedFrameworks,
-        frameworkOutputs: result.frameworkOutputs,
-        mitosisSource: result.mitosisSource,
-        templateWired,
-        assetCount: result.assets?.length ?? 0,
-        assets: (result.assets || []).filter(a => a.content).map(a => ({ filename: a.filename, content: a.content })),
-        chartComponents: result.chartComponents?.map((c) => ({
-          name: c.name,
-          reactCode: c.reactCode,
-          css: c.css,
-        })) ?? [],
-        fidelity: result.fidelityReport
-          ? {
-            overallPassed: result.fidelityReport.overallPassed,
-            checks: Object.fromEntries(
-              Object.entries(result.fidelityReport.checks).map(([k, v]) => [k, v?.passed ?? false]),
-            ),
-          }
-          : undefined,
-        updatedShadcnSource: result.updatedShadcnSource ?? undefined,
-        shadcnComponentName: result.shadcnComponentName ?? undefined,
-        shadcnSubComponents: result.shadcnSubComponents ?? undefined,
-        componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
-        variantMetadata: result.variantMetadata ?? undefined,
-      });
-
-      res.end();
+      if (!res.writableEnded) res.end();
     })
     .catch((err) => {
       clearInterval(heartbeat);
@@ -917,6 +936,14 @@ app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
   }
 
   res.status(404).send('Asset not found');
+});
+
+// Global Express error handler — catches any unhandled errors in route handlers
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error('[express] Unhandled route error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Start server

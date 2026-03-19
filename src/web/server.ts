@@ -251,9 +251,23 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
+  // Guard against writes to dead sockets (prevents Node.js crash)
+  let clientGone = false;
+  res.on('error', () => { clientGone = true; });
+  req.on('close', () => { clientGone = true; });
+
   const sendEvent = (event: string, data: Record<string, unknown>) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    if (clientGone || res.writableEnded || res.destroyed) return;
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch { clientGone = true; }
   };
+
+  // SSE heartbeat — keeps TCP alive through NAT/firewall idle timeouts
+  const heartbeat = setInterval(() => {
+    if (clientGone || res.writableEnded || res.destroyed) return;
+    try { res.write(':keepalive\n\n'); } catch { clientGone = true; }
+  }, 15_000);
 
   const sessionId = generateSessionId();
 
@@ -280,6 +294,8 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
     },
   )
     .then((result) => {
+      clearInterval(heartbeat);
+
       // Increment free tier usage for anonymous users
       if ((req as any)._fingerprint) {
         incrementFreeTierUsage((req as any)._fingerprint);
@@ -377,16 +393,12 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
       res.end();
     })
     .catch((err) => {
+      clearInterval(heartbeat);
       const message = err instanceof Error ? err.message : String(err);
       sendEvent('error', { message });
-      res.end();
+      if (!res.writableEnded) res.end();
     })
     ;
-
-  // Handle client disconnect
-  req.on('close', () => {
-    // Client disconnected — pipeline continues but events stop
-  });
 });
 
 /**
@@ -420,9 +432,23 @@ app.post('/api/refine', (req: any, res: any) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
+  // Guard against writes to dead sockets
+  let clientGone = false;
+  res.on('error', () => { clientGone = true; });
+  req.on('close', () => { clientGone = true; });
+
   const sendEvent = (event: string, data: Record<string, unknown>) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    if (clientGone || res.writableEnded || res.destroyed) return;
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch { clientGone = true; }
   };
+
+  // SSE heartbeat
+  const heartbeat = setInterval(() => {
+    if (clientGone || res.writableEnded || res.destroyed) return;
+    try { res.write(':keepalive\n\n'); } catch { clientGone = true; }
+  }, 15_000);
 
   sendEvent('step', { message: 'Starting refinement...' });
 
@@ -459,6 +485,7 @@ app.post('/api/refine', (req: any, res: any) => {
     onStep: (step) => sendEvent('step', { message: step }),
   })
     .then((refined) => {
+      clearInterval(heartbeat);
       // Safety net: if LLM dropped CSS during refinement, re-inject the original CSS
       if (!refined.css && currentCSS) {
         console.log(`[refine] LLM dropped CSS — re-injecting original CSS (${currentCSS.length} chars)`);
@@ -499,14 +526,11 @@ app.post('/api/refine', (req: any, res: any) => {
       res.end();
     })
     .catch((err) => {
+      clearInterval(heartbeat);
       const message = err instanceof Error ? err.message : String(err);
       sendEvent('error', { message });
-      res.end();
+      if (!res.writableEnded) res.end();
     });
-
-  req.on('close', () => {
-    // Client disconnected
-  });
 });
 
 /**

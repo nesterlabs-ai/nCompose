@@ -335,10 +335,40 @@ function buildShadcnInlineDefs(
   return children;
 }`);
 
+  // Collect all imports across all shadcn sources to generate stubs
+  const namespaceImports = new Set<string>(); // e.g. SelectPrimitive, DialogPrimitive
+  const namedImports = new Set<string>();     // e.g. ChevronDown, Check, X
+
   for (const sub of shadcnSubComponents) {
     let source = sub.updatedShadcnSource;
 
-    // Strip import lines
+    // Detect namespace imports: import * as FooPrimitive from "@radix-ui/..."
+    // These need Proxy-based stubs so FooPrimitive.Root, .Trigger etc. work
+    const nsMatches = source.matchAll(/import\s+\*\s+as\s+(\w+)\s+from\s+["'][^"']+["']/g);
+    for (const m of nsMatches) {
+      const name = m[1];
+      if (name !== 'React') namespaceImports.add(name);
+    }
+
+    // Detect named imports from external packages (not relative paths or @/ alias)
+    // e.g. import { ChevronDown, Check } from "lucide-react"
+    const namedMatches = source.matchAll(/import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']/g);
+    for (const m of namedMatches) {
+      const pkg = m[2];
+      // Skip relative imports and @/ alias — those are local files
+      if (pkg.startsWith('.') || pkg.startsWith('@/')) continue;
+      // Skip packages we already stub (cn, cva, Slot)
+      if (pkg === 'class-variance-authority' || pkg === '@radix-ui/react-slot') continue;
+      const names = m[1].split(',').map((n) => n.trim().replace(/\s+as\s+\w+/, ''));
+      for (const n of names) {
+        const clean = n.replace(/^type\s+/, ''); // skip "type Foo" imports
+        if (clean && !clean.startsWith('type ') && /^[A-Z]/.test(clean)) {
+          namedImports.add(clean);
+        }
+      }
+    }
+
+    // Strip all import lines (after collecting what we need)
     source = source.replace(/^\s*import\s+.*$/gm, '');
     // Strip "use client" directives
     source = source.replace(/^\s*["']use client["'];?\s*$/gm, '');
@@ -346,23 +376,55 @@ function buildShadcnInlineDefs(
     source = source.replace(/export\s+\{[^}]*\};?\s*/g, '');
     // Convert "export const X = ..." → "const X = ..."
     source = source.replace(/export\s+const\s+/g, 'const ');
-    // Convert "export interface ..." lines → strip them (TypeScript, not needed)
+    // Convert "export default ..." → strip
+    source = source.replace(/export\s+default\s+/g, '');
+    // Convert "export interface/type ..." → strip entirely
     source = source.replace(/export\s+interface\s+[\s\S]*?\n\}/gm, '');
-    // Strip TypeScript type annotations that Babel preset-react can't handle:
-    // - Generic type params on React.forwardRef<...> (handles multi-line + nested <> like
-    //   React.forwardRef<React.ElementRef<typeof X>, React.ComponentPropsWithoutRef<typeof X>>)
-    source = source.replace(/React\.forwardRef<[^(]*?>\s*(?=\()/gs, 'React.forwardRef');
-    // - Type assertions with "as Type"
-    source = source.replace(/\)\s+as\s+\w+/g, ')');
-    // - `: Type` annotations on const declarations — e.g. `: VariantProps<typeof X>`
-    // Only strip after closing paren in function params, not inside objects
-    source = source.replace(/,\s*type\s+VariantProps\b[^)]*\)/g, ')');
+    source = source.replace(/export\s+type\s+.*$/gm, '');
     // Strip standalone "type X = ..." lines
     source = source.replace(/^type\s+\w+\s*=\s*.*$/gm, '');
-    // Strip interface blocks (non-exported)
+    // Strip interface blocks
     source = source.replace(/^interface\s+\w+[\s\S]*?\n\}/gm, '');
 
     defs.push(source.trim());
+  }
+
+  // Generate Proxy-based stubs for namespace imports (e.g. SelectPrimitive, DialogPrimitive)
+  // Every property access returns a pass-through React component that renders children
+  if (namespaceImports.size > 0) {
+    defs.unshift(`var __makeStubPrimitive = function() {
+  var handler = {
+    get: function(target, prop) {
+      if (typeof prop !== 'string') return undefined;
+      if (target[prop]) return target[prop];
+      var comp = React.forwardRef(function(props, ref) {
+        var p = Object.assign({}, props, ref ? { ref: ref } : {});
+        delete p.asChild;
+        return React.createElement('div', Object.assign({ style: { display: 'contents' } }, p), props.children);
+      });
+      comp.displayName = 'Stub.' + prop;
+      target[prop] = comp;
+      return comp;
+    }
+  };
+  return new Proxy({}, handler);
+};`);
+    for (const name of namespaceImports) {
+      defs.unshift(`var ${name} = __makeStubPrimitive();`);
+    }
+    // Move __makeStubPrimitive before the variable declarations
+    const mkIdx = defs.indexOf(defs.find((d) => d.startsWith('var __makeStubPrimitive')) || '');
+    if (mkIdx > 0) {
+      const [mk] = defs.splice(mkIdx, 1);
+      defs.unshift(mk);
+    }
+  }
+
+  // Generate stub components for named icon/component imports (e.g. ChevronDown, Check)
+  for (const name of namedImports) {
+    defs.unshift(`var ${name} = React.forwardRef(function(props, ref) {
+  return React.createElement('span', Object.assign({ ref: ref, 'aria-hidden': 'true', style: { display: 'inline-flex', width: '1em', height: '1em' } }, props));
+});`);
   }
 
   return defs.join('\n\n') + '\n\n';

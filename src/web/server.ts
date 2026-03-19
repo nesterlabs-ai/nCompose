@@ -200,9 +200,14 @@ app.use(cookieParser());
 app.use(attachUser as any);
 
 // Required for WebContainer (SharedArrayBuffer needs cross-origin isolation)
-app.use((_req: any, res: any, next: any) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+// Only set on HTTPS or localhost — browsers ignore these headers on plain HTTP
+app.use((req: any, res: any, next: any) => {
+  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+  if (isSecure || isLocalhost) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  }
   next();
 });
 
@@ -891,7 +896,12 @@ app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n  Figma → Code Web UI`);
   console.log(`  http://localhost:${PORT}\n`);
 });
+
+// Increase timeouts for long-running SSE connections (LLM calls can take minutes)
+server.keepAliveTimeout = 10 * 60 * 1000;  // 10 minutes
+server.headersTimeout = 10 * 60 * 1000 + 1000;  // slightly more than keepAliveTimeout
+server.requestTimeout = 0;  // disable request timeout for SSE streams

@@ -1027,7 +1027,7 @@ window.onerror = function(msg, src, line, col, err) {
 };
 try {
   var jsxCode = \`${escapedJSX}\`;
-  var result = Babel.transform(jsxCode, { presets: ['react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
+  var result = Babel.transform(jsxCode, { filename: 'component.tsx', presets: ['typescript', 'react'], plugins: ['proposal-optional-chaining', 'proposal-nullish-coalescing-operator'] });
   var script = document.createElement('script');
   script.textContent = result.code;
   document.body.appendChild(script);

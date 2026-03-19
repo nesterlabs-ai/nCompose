@@ -568,7 +568,7 @@ function __Render(name, props, children) {
         };
       };
 
-      var result = Babel.transform(jsxCode, { presets: ['typescript', 'react'], plugins: ${babelPlugins} });
+      var result = Babel.transform(jsxCode, { filename: 'component.tsx', presets: ['typescript', 'react'], plugins: ${babelPlugins} });
       var script = document.createElement('script');
       script.textContent = result.code;
       document.body.appendChild(script);

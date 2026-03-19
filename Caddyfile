@@ -1,15 +1,4 @@
-# HTTP-only reverse proxy (no domain yet).
-# Access via http://<your-lightsail-ip>
-#
-# To add HTTPS later, buy a domain and replace with:
-#   yourdomain.com {
-#     reverse_proxy app:3000 {
-#       flush_interval -1
-#     }
-#   }
-# Caddy will auto-provision a Let's Encrypt certificate.
-
-:80 {
+compose.nesterlabs.com {
 	reverse_proxy app:3000 {
 		flush_interval -1
 	}

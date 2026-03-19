@@ -340,8 +340,9 @@ function buildShadcnInlineDefs(
     // Convert "export interface ..." lines → strip them (TypeScript, not needed)
     source = source.replace(/export\s+interface\s+[\s\S]*?\n\}/gm, '');
     // Strip TypeScript type annotations that Babel preset-react can't handle:
-    // - Generic type params on React.forwardRef<Type, Type>
-    source = source.replace(/React\.forwardRef<[^>]*>/g, 'React.forwardRef');
+    // - Generic type params on React.forwardRef<...> (handles multi-line + nested <> like
+    //   React.forwardRef<React.ElementRef<typeof X>, React.ComponentPropsWithoutRef<typeof X>>)
+    source = source.replace(/React\.forwardRef<[^(]*?>\s*(?=\()/gs, 'React.forwardRef');
     // - Type assertions with "as Type"
     source = source.replace(/\)\s+as\s+\w+/g, ')');
     // - `: Type` annotations on const declarations — e.g. `: VariantProps<typeof X>`

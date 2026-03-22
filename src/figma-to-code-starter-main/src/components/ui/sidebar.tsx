@@ -102,7 +102,7 @@ function Sidebar({
     return (
       <div
         className={cn(
-          "flex h-full w-[var(--sidebar-width)] flex-col bg-sidebar text-sidebar-foreground",
+          "flex h-full w-[var(--sidebar-width)] bg-sidebar text-sidebar-foreground",
           className
         )}
         {...props}

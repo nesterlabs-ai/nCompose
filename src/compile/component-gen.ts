@@ -30,6 +30,7 @@ import {
 import {
   discoverComponents,
   computeStructuralFingerprint,
+  matchComponentPattern,
   STRUCTURAL_FORM_ROLES,
   type DiscoveredComponent,
   type ComponentDiscoveryResult,
@@ -573,19 +574,18 @@ export async function generateCompoundSection(
             updatedShadcnSource: cleanSource,
           });
 
-          // Store the structural consumer JSX as a pre-built component in the cache
-          // so the section LLM can reference it as <PolicyTable /> instead of
-          // re-generating the table from scratch.
-          const consumerHtml = subResult.consumerCode;
-          if (consumerHtml) {
+          // Store the structural consumer JSX body in componentCache so the
+          // section LLM embeds it directly instead of re-generating the table/sidebar.
+          const consumerBody = extractJSXReturnBody(subResult.consumerCode);
+          if (consumerBody) {
             componentCache.set(comp.variantKey, {
               name: comp.name,
               formRole: comp.formRole,
-              html: consumerHtml,
+              html: consumerBody,
               css: '',
               success: true,
             });
-            onStep?.(`  [shadcn] ${shadcnType} → OK (stored as pre-built component "${comp.name}")`);
+            onStep?.(`  [shadcn] ${shadcnType} → OK (stored as pre-built, ${consumerBody.length} chars)`);
           }
 
           availableShadcn.push({
@@ -774,6 +774,33 @@ function substituteComponents(
           formRole: 'chart',
           props: {},
           generatedHTML: generated.html,
+        };
+        if (node.absoluteBoundingBox?.width) {
+          ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
+        }
+        if (node.absoluteBoundingBox?.height) {
+          ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
+        }
+        return ref;
+      }
+    }
+  }
+
+  // Check if this is a recognized structural FRAME component (table, sidebar)
+  // stored in componentCache via structural codegen. These are plain FRAMEs,
+  // not INSTANCEs, so they need their own substitution path.
+  if ((node.type === 'FRAME' || node.type === 'GROUP') && node.name) {
+    const formRole = matchComponentPattern(node.name) ?? '';
+    if (formRole && STRUCTURAL_FORM_ROLES.has(formRole)) {
+      const frameKey = `frame::${node.name}::${formRole}`;
+      const frameGenerated = cache.get(frameKey);
+      if (frameGenerated && frameGenerated.success) {
+        const ref: any = {
+          name: node.name,
+          type: 'COMPONENT_REF',
+          formRole: frameGenerated.formRole,
+          props: {},
+          generatedHTML: frameGenerated.html,
         };
         if (node.absoluteBoundingBox?.width) {
           ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
@@ -1083,6 +1110,72 @@ function buildComponentReferenceBlock(
  * Injects the component reference block into the user prompt,
  * right before the YAML block.
  */
+/**
+ * Extract the JSX return body from a full React component source.
+ * Strips imports, function declaration, export, return().
+ */
+/**
+ * Extract the function body from a full React component source.
+ * Keeps variable declarations (data arrays, constants) that the JSX depends on,
+ * and the return JSX. Strips: import lines, function declaration, export.
+ *
+ * The result is meant to be embedded INSIDE another function component,
+ * so all local variables and JSX are preserved.
+ */
+function extractJSXReturnBody(code: string): string | null {
+  if (!code) return null;
+
+  const lines = code.split('\n');
+  const bodyLines: string[] = [];
+  let insideFunction = false;
+  let braceDepth = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Skip import lines
+    if (trimmed.startsWith('import ')) continue;
+    // Skip "use client" directives
+    if (/^["']use client["'];?$/.test(trimmed)) continue;
+
+    // Detect function start: "export default function X() {" or "const X = () => {"
+    if (!insideFunction) {
+      if (/^export\s+default\s+function\s/.test(trimmed) ||
+          /^function\s/.test(trimmed) ||
+          /^const\s+\w+\s*=\s*\(/.test(trimmed)) {
+        insideFunction = true;
+        // Don't include the function declaration line itself
+        // Count the opening brace
+        if (trimmed.includes('{')) braceDepth = 1;
+        continue;
+      }
+      continue; // Skip lines before the function
+    }
+
+    // Track brace depth to know when the function ends
+    for (const ch of trimmed) {
+      if (ch === '{') braceDepth++;
+      else if (ch === '}') braceDepth--;
+    }
+
+    // Skip the final closing brace of the function
+    if (braceDepth <= 0) continue;
+
+    // Keep everything inside the function body:
+    // - variable declarations (const policyNames = [...])
+    // - return statement with JSX
+    bodyLines.push(line);
+  }
+
+  // Strip standalone "export default ComponentName;" if present
+  const result = bodyLines
+    .filter((l) => !/^\s*export\s+default\s+\w+;?\s*$/.test(l.trim()))
+    .join('\n')
+    .trim();
+
+  return result.length > 20 ? result : null;
+}
+
 function injectComponentReferences(userPrompt: string, refBlock: string): string {
   if (!refBlock) return userPrompt;
 

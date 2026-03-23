@@ -86,7 +86,29 @@ const modeCodeBtn = document.getElementById('mode-code');
 const viewPreview = document.getElementById('view-preview');
 const viewCode = document.getElementById('view-code');
 const previewEmpty = document.getElementById('preview-empty');
-const previewFrame = document.getElementById('preview-frame');
+let previewFrame = document.getElementById('preview-frame');
+
+// Replace the preview iframe with a fresh one (gives full isolated JS context).
+function replacePreviewIframe(url) {
+  try {
+    const container = previewFrame.parentNode;
+    const newFrame = document.createElement('iframe');
+    newFrame.className = previewFrame.className || 'preview-frame';
+    newFrame.id = 'preview-frame';
+    newFrame.sandbox = previewFrame.getAttribute('sandbox') || 'allow-scripts allow-same-origin';
+    newFrame.style.display = previewFrame.style.display || 'block';
+    newFrame.src = url;
+    // Replace old iframe in DOM
+    container.replaceChild(newFrame, previewFrame);
+    // Update the reference
+    previewFrame = newFrame;
+    return newFrame;
+  } catch (e) {
+    // Fallback: try to set src on existing frame
+    try { previewFrame.src = url; } catch (er) { /* ignore */ }
+    return previewFrame;
+  }
+}
 const downloadBtn = document.getElementById('download-btn');
 const codeExplorer = document.getElementById('code-explorer');
 const explorerBody = document.getElementById('explorer-body');
@@ -496,6 +518,13 @@ function restoreProject(projectId) {
   currentSessionId = project.sessionId || project.id;
   currentComponentName = project.name || '';
   currentFrameworkOutputs = project.frameworkOutputs || {};
+  // Restore shadcn + variant metadata (used by the preview project-tree builder).
+  // Older saved projects may not have these; we rehydrate from the wired session output if needed.
+  currentUpdatedShadcnSource = project.updatedShadcnSource || null;
+  currentShadcnComponentName = project.shadcnComponentName || null;
+  currentShadcnSubComponents = project.shadcnSubComponents || null;
+  currentComponentPropertyDefs = project.componentPropertyDefinitions || null;
+  currentVariantMetadata = project.variantMetadata || null;
 
   // Switch to split view
   mainHero.classList.add('hidden');
@@ -566,8 +595,9 @@ function restoreProject(projectId) {
 
   // Preview: show loading state, then try server session first, fall back to inline
   previewEmpty.style.display = 'none';
+  const chartComponents = project.chartComponents || [];
   setPreviewLoading(true, 'Loading preview...');
-  startPreviewForSession(project.frameworks || [], project.chartComponents || []);
+  startPreviewForSession(frameworks, chartComponents);
   // If static preview 404s (expired session) fall back to inline preview
   fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
     .then(r => {
@@ -1060,7 +1090,7 @@ function resetToHero() {
   switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
-  previewFrame.src = 'about:blank';
+  replacePreviewIframe('about:blank');
   if (previewHeader) previewHeader.style.display = 'none';
   if (previewLoading) previewLoading.style.display = 'none';
   downloadBtn.style.display = 'none';
@@ -1349,7 +1379,7 @@ function startConversion(skipDuplicateCheck) {
   switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
-  previewFrame.src = 'about:blank';
+  replacePreviewIframe('about:blank');
   if (previewHeader) previewHeader.style.display = 'none';
   if (previewLoading) previewLoading.style.display = 'none';
   webContainerSyncEnabled = false;
@@ -1589,7 +1619,7 @@ function setPreviewReady(url, isLive, statusText) {
   setPreviewLoading(false);
   previewEmpty.style.display = 'none';
   previewFrame.style.display = 'block';
-  previewFrame.src = url;
+  replacePreviewIframe(url);
   if (previewHeader) previewHeader.style.display = 'flex';
   if (previewLiveBadge) previewLiveBadge.style.display = isLive ? 'inline-block' : 'none';
   if (previewStatus) previewStatus.textContent = isLive ? 'Live Vite preview' : (statusText || '');
@@ -2286,6 +2316,10 @@ function handleComplete(data) {
     templateWired: Boolean(data.templateWired),
     chartComponents: data.chartComponents || [],
     shadcnSubComponents: data.shadcnSubComponents || null,
+    // Needed to rebuild the webcontainer preview project-tree without reusing stale shadcn code.
+    updatedShadcnSource: currentUpdatedShadcnSource,
+    shadcnComponentName: currentShadcnComponentName,
+    variantMetadata: currentVariantMetadata,
   });
 
   // Initialize chat for iterative refinement
@@ -2524,18 +2558,18 @@ function handleRefineComplete(data) {
       }).then(() => {
         // Force reload after Vite processes file changes
         setTimeout(() => {
-          if (previewFrame && webContainerPreviewUrl) {
+            if (previewFrame && webContainerPreviewUrl) {
             const url = webContainerPreviewUrl;
-            previewFrame.src = 'about:blank';
-            setTimeout(() => { previewFrame.src = url; }, 150);
+            replacePreviewIframe('about:blank');
+            setTimeout(() => { replacePreviewIframe(url); }, 150);
           }
         }, 2000);
       }).catch(() => {
-        previewFrame.src = staticUrl;
+        replacePreviewIframe(staticUrl);
       });
     } else {
       // Static preview path: reload iframe
-      previewFrame.src = staticUrl;
+      replacePreviewIframe(staticUrl);
     }
   }
 }
@@ -3070,7 +3104,7 @@ downloadBtn.addEventListener('click', () => {
 if (previewReload) {
   previewReload.addEventListener('click', () => {
     if (previewFrame.src && previewFrame.src !== 'about:blank') {
-      previewFrame.src = previewFrame.src;
+      replacePreviewIframe(previewFrame.src);
     }
   });
 }

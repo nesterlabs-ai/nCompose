@@ -47,6 +47,7 @@ import { generateCompoundSection, deduplicateSiblingNames } from './compile/comp
 import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
+import { injectDataVeIds } from './compile/element-mapping.js';
 import { config } from './config.js';
 import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent, ShadcnSubComponent } from './types/index.js';
 import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
@@ -1254,9 +1255,10 @@ async function convertComponentSet(
 
   const componentName = options.name ?? promptData.componentName;
 
-  // Step A5: Compile to target frameworks via Mitosis
+  // Step A5: Inject element IDs for visual edit, then compile to target frameworks
   onStep?.(`Compiling to: ${options.frameworks.join(', ')}...`);
-  const rawFrameworkOutputs = generateFrameworkCode(parseResult.component, options.frameworks);
+  const { component: componentWithIds, elementMap } = injectDataVeIds(parseResult.component);
+  const rawFrameworkOutputs = generateFrameworkCode(componentWithIds, options.frameworks);
 
   // Step A6: Inject variant CSS into each framework output
   onStep?.('Injecting variant CSS...');
@@ -1318,6 +1320,7 @@ async function convertComponentSet(
     css: variantCSS,
     variantMetadata,
     fidelityReport,
+    elementMap,
   };
 }
 
@@ -1900,9 +1903,10 @@ async function convertSingleComponent(
 
   const componentName = options.name ?? parseResult.component.name ?? 'Component';
 
-  // Compile to target frameworks
+  // Inject element IDs for visual edit, then compile to target frameworks
   onStep?.(`Compiling to: ${options.frameworks.join(', ')}...`);
-  const frameworkOutputs = generateFrameworkCode(parseResult.component, options.frameworks);
+  const { component: componentWithIds, elementMap } = injectDataVeIds(parseResult.component);
+  const frameworkOutputs = generateFrameworkCode(componentWithIds, options.frameworks);
 
   // Inject extracted CSS into each framework output (same as PATH A)
   if (parseResult.css) {
@@ -1934,6 +1938,7 @@ async function convertSingleComponent(
     assets,
     css: parseResult.css,
     fidelityReport,
+    elementMap,
   };
 }
 
@@ -2534,9 +2539,10 @@ async function convertPage(
     );
   }
 
-  // Step C5: Compile to target frameworks
+  // Step C5: Inject element IDs for visual edit, then compile to target frameworks
   onStep?.(`Compiling page to: ${options.frameworks.join(', ')}...`);
-  const rawFrameworkOutputs = generateFrameworkCode(pageParseResult.component, options.frameworks);
+  const { component: pageComponentWithIds, elementMap } = injectDataVeIds(pageParseResult.component);
+  const rawFrameworkOutputs = generateFrameworkCode(pageComponentWithIds, options.frameworks);
 
   // Step C6: Inject merged CSS into each framework output
   onStep?.('Injecting page CSS...');
@@ -2682,5 +2688,6 @@ async function convertPage(
     css: mergedCSS,
     fidelityReport,
     chartComponents: allChartComponents.length > 0 ? allChartComponents : undefined,
+    elementMap,
   };
 }

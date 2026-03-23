@@ -125,12 +125,14 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     try { frameworkOutputs[fw] = readFileSync(fwPath, 'utf-8'); } catch { /* skip */ }
   }
 
-  // Read meta.json for componentPropertyDefinitions
+  // Read meta.json for componentPropertyDefinitions and elementMap
   let componentPropertyDefinitions: Record<string, any> | undefined;
+  let elementMap: Record<string, any> | undefined;
   const metaPath = join(matchDir, `${componentName}.meta.json`);
   try {
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
     componentPropertyDefinitions = meta.componentPropertyDefinitions;
+    elementMap = meta.elementMap;
   } catch { /* optional */ }
 
   // Read assets
@@ -178,6 +180,7 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     componentPropertyDefinitions,
     chartComponents,
     shadcnSubComponents: shadcnSubComponents.length > 0 ? shadcnSubComponents : undefined,
+    elementMap,
   } as ConversionResult;
 }
 
@@ -360,6 +363,7 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
             updatedShadcnSource: result.updatedShadcnSource,
             shadcnComponentName: result.shadcnComponentName,
             shadcnSubComponents: result.shadcnSubComponents,
+            elementMap: result.elementMap,
           });
           sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
         } catch (writeErr) {
@@ -406,6 +410,7 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
           frameworks: selectedFrameworks,
           frameworkOutputs: result.frameworkOutputs,
           mitosisSource: result.mitosisSource,
+          elementMap: result.elementMap,
           templateWired,
           assetCount: result.assets?.length ?? 0,
           assets: (result.assets || []).filter(a => a.content).map(a => ({ filename: a.filename, content: a.content })),
@@ -453,7 +458,7 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', (req: any, res: any) => {
-  const { sessionId, prompt, chatHistory } = req.body;
+  const { sessionId, prompt, selectedElement, chatHistory } = req.body;
 
   if (!sessionId || typeof sessionId !== 'string') {
     res.status(400).json({ error: 'sessionId is required' });
@@ -542,6 +547,8 @@ app.post('/api/refine', (req: any, res: any) => {
     llmProvider,
     frameworks: session.frameworks,
     componentName: session.result.componentName,
+    selectedElement: selectedElement && typeof selectedElement === 'object' ? selectedElement : undefined,
+    elementMap: session.result.elementMap,
     onStep: (step) => sendEvent('step', { message: step }),
   })
     .then((refined) => {
@@ -565,6 +572,7 @@ app.post('/api/refine', (req: any, res: any) => {
         session.result.frameworkOutputs[fw as Framework] = code;
       }
       session.result.css = refined.css || session.result.css;
+      if (refined.elementMap) session.result.elementMap = refined.elementMap;
 
       // Append to conversation history
       session.conversation.push(
@@ -582,6 +590,7 @@ app.post('/api/refine', (req: any, res: any) => {
       sendEvent('complete', {
         frameworkOutputs: session.result.frameworkOutputs,
         mitosisSource: session.result.mitosisSource,
+        elementMap: session.result.elementMap,
       });
       res.end();
     })

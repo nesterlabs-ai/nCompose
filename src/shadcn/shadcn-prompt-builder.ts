@@ -514,6 +514,8 @@ Your task: Given a Figma node tree and a shadcn component library, compose the l
 8. **Do NOT restructure the library**: Block 1 should be the library source mostly unchanged. Your job is to USE the library in Block 2, not to rewrite it.
 
 9. **No extra explanations** — just the two code blocks.
+
+10. **Sidebar components**: The consumer component MUST wrap \`<Sidebar>\` inside \`<SidebarProvider>\`. Import \`SidebarProvider\` from \`@/components/ui/sidebar\`. Without it, the \`useSidebar()\` context hook will throw a runtime error.
 `;
 }
 

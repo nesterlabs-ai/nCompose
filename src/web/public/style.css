@@ -432,6 +432,14 @@ body {
   font-size: 11px;
   color: var(--text-muted);
 }
+.sidebar__project-item.converting .sidebar__project-date {
+  color: var(--accent);
+  animation: pulse-text 1.5s ease-in-out infinite;
+}
+@keyframes pulse-text {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 
 .sidebar__project-delete {
   opacity: 0;

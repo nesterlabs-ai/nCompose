@@ -2027,7 +2027,7 @@ export default App;
     'tailwind.config.js': 'export default { content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"], theme: { extend: {} }, plugins: [] };',
     'postcss.config.js': 'export default { plugins: { tailwindcss: {}, autoprefixer: {} } };',
     'src/main.tsx': 'import { createRoot } from "react-dom/client"; import App from "./App.tsx"; import "./index.css"; createRoot(document.getElementById("root")).render(<App />);',
-    'src/index.css': '@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody { margin: 0; padding: 40px; background: #ffffff; color: #111111; font-family: system-ui, sans-serif; min-height: 100vh; }',
+    'src/index.css': '@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody { margin: 0; background: #ffffff; color: #111111; font-family: system-ui, sans-serif; min-height: 100vh; }',
     'src/App.tsx': appTsx,
     [`src/components/${componentName}.jsx`]: (componentCss ? `import "./${componentName}.css";\n` : '') + componentCode.replace(/\.\/assets\//g, '/assets/'),
     [`src/components/${componentName}.css`]: componentCss || `/* ${componentName} */`,
@@ -2329,7 +2329,7 @@ function preBootWebContainer() {
       const WebContainer = mod.WebContainer || mod.default?.WebContainer || mod.default;
       if (!WebContainer) return;
       webContainerInstance = await WebContainer.boot();
-      webContainerInstance.on('error', () => {});
+      webContainerInstance.on('error', () => { });
 
       // Mount a minimal project with base deps and install
       const basePkg = JSON.stringify({
@@ -2342,9 +2342,11 @@ function preBootWebContainer() {
         'package.json': { file: { contents: basePkg } },
         'vite.config.ts': { file: { contents: 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });' } },
         'index.html': { file: { contents: '<!DOCTYPE html><html><head></head><body><div id="root"></div></body></html>' } },
-        src: { directory: {
-          'main.tsx': { file: { contents: 'document.getElementById("root").textContent = "ready";' } },
-        }},
+        src: {
+          directory: {
+            'main.tsx': { file: { contents: 'document.getElementById("root").textContent = "ready";' } },
+          }
+        },
       };
       await webContainerInstance.mount(baseTree);
       const installProc = await webContainerInstance.spawn('npm', ['install']);
@@ -2837,7 +2839,7 @@ function handleRefineComplete(data) {
       }).then(() => {
         // Force reload after Vite processes file changes
         setTimeout(() => {
-            if (previewFrame && webContainerPreviewUrl) {
+          if (previewFrame && webContainerPreviewUrl) {
             const url = webContainerPreviewUrl;
             replacePreviewIframe('about:blank');
             setTimeout(() => { replacePreviewIframe(url); }, 150);

@@ -2576,7 +2576,7 @@ function handleRefineComplete(data) {
 
 // Chat input events
 if (chatSendBtn) {
-  chatSendBtn.addEventListener('click', sendChatMessage);
+  chatSendBtn.addEventListener('click', () => sendChatMessage());
 }
 if (chatInput) {
   chatInput.addEventListener('keydown', (e) => {

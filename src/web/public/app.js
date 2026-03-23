@@ -164,6 +164,7 @@ let codeViewMode = 'generated'; // 'generated' | 'wired'
 let wiredAppFiles = {}; // path -> content (when template was wired)
 let generatedTabsData = [];
 let templateWired = false;
+let activeConversionSessionId = null; // sessionId of in-flight SSE conversion
 let currentUpdatedShadcnSource = null;
 let currentShadcnComponentName = null;
 let currentShadcnSubComponents = null;
@@ -457,11 +458,13 @@ function renderProjectList() {
       ? `background-image: url(${p.thumbnail}); background-size: cover;`
       : `background: hsl(200, 55%, 45%);`;
     const letter = (p.name || '?')[0].toUpperCase();
-    html += `<div class="sidebar__project-item${isActive ? ' active' : ''}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
+    const convertingClass = p.converting ? ' converting' : '';
+    const dateLabel = p.converting ? 'Converting...' : formatTimeAgo(p.updatedAt || p.createdAt);
+    html += `<div class="sidebar__project-item${isActive ? ' active' : ''}${convertingClass}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
       <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
       <div class="sidebar__project-info">
         <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
-        <div class="sidebar__project-date">${formatTimeAgo(p.updatedAt || p.createdAt)}</div>
+        <div class="sidebar__project-date">${dateLabel}</div>
       </div>
       <button class="sidebar__project-delete" data-delete-id="${escapeHtml(p.id)}" title="Delete project" aria-label="Delete project">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -501,10 +504,64 @@ function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
 
+  // If project is still converting, restore the full progress UI
+  if (project.converting) {
+    currentProjectId = project.id;
+    currentSessionId = project.sessionId || project.id;
+    currentComponentName = project.name || '';
+    currentFrameworkOutputs = {};
+    renderProjectList();
+
+    // Restore split view and progress panel
+    mainHero.classList.add('hidden');
+    mainSplit.classList.add('visible');
+    mainHero.closest('.main')?.classList.add('split-visible');
+    figmaUrlInput.value = project.figmaUrl || '';
+
+    // Show progress panel (steps are still in DOM from background SSE)
+    if (progressCollapsible) {
+      progressCollapsible.style.display = '';
+      progressCollapsible.classList.add('visible');
+      progressCollapsible.classList.remove('collapsed');
+    }
+    if (emptyState) emptyState.style.display = 'none';
+
+    // Restore converting UI state
+    setLoading(true);
+    setStatus('converting', 'Converting...');
+    switchMode('preview');
+    previewEmpty.style.display = 'flex';
+    previewFrame.style.display = 'none';
+    if (previewHeader) previewHeader.style.display = 'none';
+    if (previewLoading) previewLoading.style.display = 'none';
+    downloadBtn.style.display = 'none';
+    const pushGithubBtn = document.getElementById('push-github-btn');
+    if (pushGithubBtn) pushGithubBtn.style.display = 'none';
+
+    // Hide chat, show URL input
+    if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+    if (chatInputGroup) chatInputGroup.style.display = 'none';
+    if (urlInputGroup) urlInputGroup.style.display = 'block';
+
+    // Auto-collapse sidebar on selection (non-mobile)
+    if (window.innerWidth > 768) {
+      sidebar.classList.add('collapsed');
+      updateSidebarToggleTitle();
+      updateMenuButtonVisibility();
+    }
+
+    return;
+  }
+
   currentProjectId = project.id;
   currentSessionId = project.sessionId || project.id;
   currentComponentName = project.name || '';
   currentFrameworkOutputs = project.frameworkOutputs || {};
+  currentUpdatedShadcnSource = project.updatedShadcnSource || null;
+  currentShadcnComponentName = project.shadcnComponentName || null;
+  currentShadcnSubComponents = project.shadcnSubComponents || null;
+  currentComponentPropertyDefs = project.componentPropertyDefinitions || null;
+  currentVariantMetadata = project.variantMetadata || null;
 
   // Switch to split view
   mainHero.classList.add('hidden');
@@ -573,14 +630,18 @@ function restoreProject(projectId) {
   const pushGithubBtn = document.getElementById('push-github-btn');
   if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
 
-  // Preview: show loading state, then try server session first, fall back to inline
+  // Preview: check server session first, then choose path — no parallel race
   previewEmpty.style.display = 'none';
   setPreviewLoading(true, 'Loading preview...');
-  startPreviewForSession(project.frameworks || [], project.chartComponents || []);
-  // If static preview 404s (expired session) fall back to inline preview
   fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
     .then(r => {
-      if (!r.ok) showInlinePreview(project);
+      if (r.ok) {
+        // Server session alive — use full preview pipeline
+        startPreviewForSession(project.frameworks || [], project.chartComponents || []);
+      } else {
+        // Server session expired — instant inline preview from localStorage
+        showInlinePreview(project);
+      }
     })
     .catch(() => showInlinePreview(project));
 
@@ -1442,6 +1503,7 @@ function startConversion(skipDuplicateCheck) {
     readStream();
   }).catch((err) => {
     if (err.message === '__auth_redirect__') return; // handled by login modal
+    activeConversionSessionId = null;
     setLoading(false);
     setStatus('error', 'Error occurred');
     showError(err.message);
@@ -1471,12 +1533,17 @@ function parseSSEEvent(eventStr) {
   }
 
   switch (eventType) {
+    case 'session':
+      handleSessionCreated(data);
+      break;
     case 'step':
-      addProgressStep(data.message);
-      setStatus('converting', data.message);
+      if (currentProjectId === activeConversionSessionId) {
+        addProgressStep(data.message);
+        setStatus('converting', data.message);
+      }
       break;
     case 'attempt':
-      if (data.error) {
+      if (data.error && currentProjectId === activeConversionSessionId) {
         markLastStepWarning(data.error);
       }
       break;
@@ -1484,10 +1551,15 @@ function parseSSEEvent(eventStr) {
       handleComplete(data);
       break;
     case 'error':
+      activeConversionSessionId = null;
       setLoading(false);
       markLastStepError();
       setStatus('error', 'Error occurred');
       showError(data.message);
+      // Remove placeholder project on conversion failure
+      if (currentSessionId) {
+        deleteProject(currentSessionId);
+      }
       break;
   }
 }
@@ -1737,17 +1809,11 @@ export default App;
 `;
   }
 
-  const hasCharts = (chartComponents && chartComponents.length > 0) ||
-    /from ['"]recharts['"]/.test(componentCode);
   const hasShadcnSub = !!(currentShadcnSubComponents && currentShadcnSubComponents.length);
   const needsShadcnDeps = hasShadcn || hasShadcnSub;
-  const deps = { react: '^18.3.1', 'react-dom': '^18.3.1' };
-  if (hasCharts) deps['recharts'] = '^2.12.0';
+  // Start from BASE_DEPS so the fingerprint matches pre-boot — avoids redundant npm install
+  const deps = { ...BASE_DEPS };
   if (needsShadcnDeps) {
-    deps['class-variance-authority'] = '^0.7.0';
-    deps['clsx'] = '^2.1.0';
-    deps['tailwind-merge'] = '^2.2.0';
-    deps['@radix-ui/react-slot'] = '^1.0.2';
     // Scan generated shadcn source for @radix-ui/* imports and add them dynamically
     const allShadcnSources = [currentUpdatedShadcnSource || ''];
     if (currentShadcnSubComponents) {
@@ -1763,11 +1829,6 @@ export default App;
         }
       }
     }
-    // Also scan consumer code for any additional imports
-    const allCode = componentCode + allShadcnSources.join('');
-    if (/lucide-react/.test(allCode)) deps['lucide-react'] = '^0.460.0';
-    if (/react-day-picker/.test(allCode)) deps['react-day-picker'] = '^8.10.0';
-    if (/date-fns/.test(allCode)) deps['date-fns'] = '^3.6.0';
   }
 
   // Vite config — add @/ path alias for shadcn imports
@@ -1782,13 +1843,7 @@ export default App;
     type: 'module',
     scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
     dependencies: deps,
-    devDependencies: {
-      '@vitejs/plugin-react': '^4.3.4',
-      autoprefixer: '^10.4.21',
-      postcss: '^8.5.6',
-      tailwindcss: '^3.4.17',
-      vite: '^5.4.19',
-    },
+    devDependencies: BASE_DEV_DEPS,
   });
   const files = {
     'package.json': packageJson,
@@ -2139,39 +2194,138 @@ function getTabKeyToWcPath() {
   };
 }
 
-let _lastInstalledPkgJson = null; // Track last installed package.json to skip redundant npm install
+let _lastInstalledDeps = null; // Track installed dependency keys to skip redundant npm install
+let _wcBootPromise = null; // Background pre-boot promise
+let _wcBootedWithBaseDeps = false; // Whether base deps are already installed
+
+/**
+ * Normalize dependencies object into a deterministic sorted string for comparison.
+ * Prevents false mismatches from key insertion order differences.
+ */
+function normalizeDeps(pkgJsonStr) {
+  try {
+    const pkg = JSON.parse(pkgJsonStr);
+    const deps = pkg.dependencies || {};
+    const devDeps = pkg.devDependencies || {};
+    const sortedDeps = Object.keys(deps).sort().map(k => `${k}@${deps[k]}`).join(',');
+    const sortedDevDeps = Object.keys(devDeps).sort().map(k => `${k}@${devDeps[k]}`).join(',');
+    return `deps:${sortedDeps}|dev:${sortedDevDeps}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Base dependencies that cover ~95% of conversions.
+ * Pre-installed at page load so previews start instantly.
+ */
+const BASE_DEPS = {
+  react: '^18.3.1',
+  'react-dom': '^18.3.1',
+  recharts: '^2.12.0',
+  'class-variance-authority': '^0.7.0',
+  clsx: '^2.1.0',
+  'tailwind-merge': '^2.2.0',
+  '@radix-ui/react-slot': '^1.0.2',
+  'lucide-react': '^0.460.0',
+  'react-day-picker': '^8.10.0',
+  'date-fns': '^3.6.0',
+};
+
+const BASE_DEV_DEPS = {
+  '@vitejs/plugin-react': '^4.3.4',
+  autoprefixer: '^10.4.21',
+  postcss: '^8.5.6',
+  tailwindcss: '^3.4.17',
+  vite: '^5.4.19',
+};
+
+/**
+ * Pre-boot WebContainer and install base dependencies in the background.
+ * Called on page load so deps are ready before the first conversion completes.
+ */
+function preBootWebContainer() {
+  if (!isWebContainerSupported() || _wcBootPromise) return;
+  _wcBootPromise = (async () => {
+    try {
+      const mod = await import(/* webpackIgnore: true */ WEBCONTAINER_CDN + '/+esm');
+      const WebContainer = mod.WebContainer || mod.default?.WebContainer || mod.default;
+      if (!WebContainer) return;
+      webContainerInstance = await WebContainer.boot();
+      webContainerInstance.on('error', () => {});
+
+      // Mount a minimal project with base deps and install
+      const basePkg = JSON.stringify({
+        name: 'preview-app', private: true, version: '0.0.0', type: 'module',
+        scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
+        dependencies: BASE_DEPS,
+        devDependencies: BASE_DEV_DEPS,
+      });
+      const baseTree = {
+        'package.json': { file: { contents: basePkg } },
+        'vite.config.ts': { file: { contents: 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins: [react()] });' } },
+        'index.html': { file: { contents: '<!DOCTYPE html><html><head></head><body><div id="root"></div></body></html>' } },
+        src: { directory: {
+          'main.tsx': { file: { contents: 'document.getElementById("root").textContent = "ready";' } },
+        }},
+      };
+      await webContainerInstance.mount(baseTree);
+      const installProc = await webContainerInstance.spawn('npm', ['install']);
+      const exitCode = await installProc.exit;
+      if (exitCode === 0) {
+        _wcBootedWithBaseDeps = true;
+        _lastInstalledDeps = normalizeDeps(basePkg);
+      }
+    } catch (e) {
+      console.warn('WebContainer pre-boot failed:', e);
+    }
+  })();
+}
+
+// Kick off pre-boot immediately on page load
+preBootWebContainer();
 
 async function bootWebContainer(tree) {
   if (!isWebContainerSupported()) {
     throw new Error('WebContainers require Chrome or Edge.');
   }
-  const mod = await import(/* webpackIgnore: true */ WEBCONTAINER_CDN + '/+esm');
-  const WebContainer = mod.WebContainer || mod.default?.WebContainer || mod.default;
-  if (!WebContainer) throw new Error('WebContainer API not loaded');
-  if (webContainerDevProcess) {
-    webContainerDevProcess.kill?.();
-    webContainerDevProcess = null;
+
+  // Wait for pre-boot if in progress
+  if (_wcBootPromise) {
+    await _wcBootPromise;
   }
+
   const isFirstBoot = !webContainerInstance;
   if (isFirstBoot) {
+    // Pre-boot didn't run or failed — boot now
+    const mod = await import(/* webpackIgnore: true */ WEBCONTAINER_CDN + '/+esm');
+    const WebContainer = mod.WebContainer || mod.default?.WebContainer || mod.default;
+    if (!WebContainer) throw new Error('WebContainer API not loaded');
     webContainerInstance = await WebContainer.boot();
     webContainerInstance.on('error', (e) => {
       setPreviewError(e.message || 'WebContainer error');
     });
   }
+
+  if (webContainerDevProcess) {
+    webContainerDevProcess.kill?.();
+    webContainerDevProcess = null;
+  }
+
   setPreviewLoading(true, 'Mounting project...');
   await webContainerInstance.mount(tree);
 
-  // Extract current package.json content for comparison
+  // Compare normalized dependency keys — skip install if unchanged
   const currentPkgJson = tree['package.json']?.file?.contents ?? null;
-  const needsInstall = isFirstBoot || !_lastInstalledPkgJson || _lastInstalledPkgJson !== currentPkgJson;
+  const currentDepsKey = normalizeDeps(currentPkgJson);
+  const needsInstall = !_lastInstalledDeps || _lastInstalledDeps !== currentDepsKey;
 
   if (needsInstall) {
     setPreviewLoading(true, 'Installing dependencies...');
     const installProc = await webContainerInstance.spawn('npm', ['install']);
     const installExit = await installProc.exit;
     if (installExit !== 0) throw new Error('npm install failed');
-    _lastInstalledPkgJson = currentPkgJson;
+    _lastInstalledDeps = currentDepsKey;
   }
 
   setPreviewLoading(true, 'Starting preview...');
@@ -2215,7 +2369,64 @@ function syncEditorToWebContainer() {
 }
 
 // ── Complete ──
+function handleSessionCreated(data) {
+  const figmaUrl = figmaUrlInput.value.trim() || heroFigmaUrlInput.value.trim();
+  currentSessionId = data.sessionId;
+  currentProjectId = data.sessionId;
+  activeConversionSessionId = data.sessionId;
+
+  // Create placeholder project immediately so it appears in sidebar
+  saveProject({
+    id: data.sessionId,
+    sessionId: data.sessionId,
+    name: 'Converting...',
+    figmaUrl,
+    frameworks: getSelectedFrameworks(),
+    frameworkOutputs: {},
+    mitosisSource: '',
+    thumbnail: generatePlaceholderThumbnail('Converting'),
+    chatHistory: [],
+    componentPropertyDefinitions: null,
+    assets: [],
+    templateWired: false,
+    chartComponents: [],
+    shadcnSubComponents: null,
+    converting: true,
+  });
+}
+
 function handleComplete(data) {
+  const frameworks = data.frameworks || [];
+  const completedSessionId = data.sessionId;
+  const userSwitchedAway = currentProjectId !== completedSessionId;
+
+  // Always save completed project to localStorage (even if user switched away)
+  saveProject({
+    id: completedSessionId,
+    sessionId: completedSessionId,
+    name: data.componentName,
+    figmaUrl: getProject(completedSessionId)?.figmaUrl || figmaUrlInput.value.trim() || heroFigmaUrlInput.value.trim(),
+    frameworks,
+    frameworkOutputs: data.frameworkOutputs || {},
+    mitosisSource: data.mitosisSource || '',
+    thumbnail: generatePlaceholderThumbnail(data.componentName),
+    chatHistory: [],
+    componentPropertyDefinitions: data.componentPropertyDefinitions || null,
+    assets: data.assets || [],
+    templateWired: Boolean(data.templateWired),
+    chartComponents: data.chartComponents || [],
+    shadcnSubComponents: data.shadcnSubComponents || null,
+    updatedShadcnSource: data.updatedShadcnSource || null,
+    shadcnComponentName: data.shadcnComponentName || null,
+    variantMetadata: data.variantMetadata || null,
+    converting: false,
+  });
+
+  activeConversionSessionId = null;
+
+  // If user switched to a different project, don't touch the UI
+  if (userSwitchedAway) return;
+
   setLoading(false);
   setStatus('done', 'Conversion complete');
 
@@ -2290,28 +2501,7 @@ function handleComplete(data) {
   const pushGithubBtn = document.getElementById('push-github-btn');
   if (pushGithubBtn) pushGithubBtn.style.display = 'inline-flex';
 
-  const frameworks = data.frameworks || [];
   startPreviewForSession(frameworks, data.chartComponents || []);
-
-  // Save project to history
-  const figmaUrl = figmaUrlInput.value.trim() || heroFigmaUrlInput.value.trim();
-  currentProjectId = data.sessionId;
-  saveProject({
-    id: data.sessionId,
-    sessionId: data.sessionId,
-    name: data.componentName,
-    figmaUrl,
-    frameworks,
-    frameworkOutputs: currentFrameworkOutputs,
-    mitosisSource: data.mitosisSource || '',
-    thumbnail: generatePlaceholderThumbnail(data.componentName),
-    chatHistory: [],
-    componentPropertyDefinitions: data.componentPropertyDefinitions || null,
-    assets: data.assets || [],
-    templateWired: Boolean(data.templateWired),
-    chartComponents: data.chartComponents || [],
-    shadcnSubComponents: data.shadcnSubComponents || null,
-  });
 
   // Initialize chat for iterative refinement
   initChat();
@@ -2389,7 +2579,12 @@ function sendChatMessage(customText) {
   setChatLoading(true);
   const loadingMsg = addChatMessage('system', 'Generating...');
 
-  const body = JSON.stringify({ sessionId: currentSessionId, prompt });
+  const project = getProject(currentProjectId);
+  const body = JSON.stringify({
+    sessionId: currentSessionId,
+    prompt,
+    chatHistory: project?.chatHistory || [],
+  });
 
   fetch('/api/refine', {
     method: 'POST',

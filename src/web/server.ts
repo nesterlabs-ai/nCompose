@@ -288,6 +288,9 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
 
   const sessionId = generateSessionId();
 
+  // Send sessionId early so the client can create a placeholder project immediately
+  sendEvent('session', { sessionId });
+
   sendEvent('step', { message: 'Starting conversion...' });
 
   convertFigmaToCode(
@@ -432,7 +435,7 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', (req: any, res: any) => {
-  const { sessionId, prompt } = req.body;
+  const { sessionId, prompt, chatHistory } = req.body;
 
   if (!sessionId || typeof sessionId !== 'string') {
     res.status(400).json({ error: 'sessionId is required' });
@@ -443,10 +446,25 @@ app.post('/api/refine', (req: any, res: any) => {
     return;
   }
 
-  const session = getSessionEntry(sessionId);
+  let session = getSessionEntry(sessionId);
+  if (!session) {
+    // Try disk fallback — re-hydrate into memory
+    const diskResult = loadResultFromDisk(sessionId);
+    if (diskResult) {
+      setSession(sessionId, diskResult);
+      session = getSessionEntry(sessionId);
+    }
+  }
   if (!session) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
+  }
+
+  // Seed conversation from client chat history if server has none (re-hydrated session)
+  if (session.conversation.length === 0 && Array.isArray(chatHistory) && chatHistory.length > 0) {
+    session.conversation = chatHistory
+      .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+      .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
   }
 
   // Set SSE headers

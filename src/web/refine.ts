@@ -11,6 +11,7 @@ import type { Framework } from '../types/index.js';
 import { parseMitosisCode } from '../compile/parse-and-validate.js';
 import { generateFrameworkCode } from '../compile/generate.js';
 import { injectCSS } from '../compile/inject-css.js';
+import { injectDataVeIds } from '../compile/element-mapping.js';
 import { assembleSystemPrompt } from '../prompt/assemble.js';
 
 export interface RefinementResult {
@@ -18,6 +19,21 @@ export interface RefinementResult {
   css: string;
   frameworkOutputs: Record<string, string>;
   assistantMessage: string;
+  /** Element-to-code map for visual edit (updated after refinement) */
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
+}
+
+/** Selected element context from preview (when user clicks in visual edit mode). */
+export interface SelectedElementContext {
+  dataVeId?: string | null;
+  tagName?: string;
+  textContent?: string;
+  className?: string;
+  id?: string;
+  /** When inside variant grid: label like "Focused / Default" */
+  variantLabel?: string | null;
+  /** When inside variant grid: props that identify this variant (e.g. { variant: 'focused', state: 'default' }) */
+  variantProps?: Record<string, string> | null;
 }
 
 const REFINEMENT_ADDENDUM = `
@@ -52,6 +68,10 @@ export async function refineComponent(options: {
   llmProvider: LLMProvider;
   frameworks: Framework[];
   componentName: string;
+  /** When refining from visual edit click, provides element targeting context */
+  selectedElement?: SelectedElementContext;
+  /** Element map for resolving dataVeId to metadata (from session) */
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
   onStep?: (step: string) => void;
 }): Promise<RefinementResult> {
   const {
@@ -62,6 +82,8 @@ export async function refineComponent(options: {
     llmProvider,
     frameworks,
     componentName,
+    selectedElement,
+    elementMap,
     onStep,
   } = options;
 
@@ -86,15 +108,59 @@ export async function refineComponent(options: {
     ? `${currentMitosis}\n---CSS---\n${currentCSS}`
     : currentMitosis;
 
-  const newUserMessage = `Here is the current component code:
+  // Enrich prompt with element targeting context when available (from visual edit)
+  let elementContextBlock = '';
+  const hasDataVeId = selectedElement?.dataVeId && elementMap?.[selectedElement.dataVeId];
+
+  if (hasDataVeId) {
+    const entry = elementMap[selectedElement.dataVeId!];
+    elementContextBlock += `
+
+IMPORTANT - Element targeting: The user selected a specific element in the preview (data-ve-id="${selectedElement.dataVeId}").
+- Tag: <${entry.tagName}>
+- Path in component tree: ${entry.path}
+${entry.className ? `- className: ${entry.className}` : ''}
+${entry.textContent ? `- Current text: "${entry.textContent}"` : ''}`;
+  }
+
+  // Variant-specific: user clicked inside ONE variant in the grid — change must apply ONLY to that variant
+  if (selectedElement?.variantLabel && selectedElement?.variantProps && Object.keys(selectedElement.variantProps).length > 0) {
+    const propsDesc = Object.entries(selectedElement.variantProps)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(', ');
+    const normalizedHint = Object.entries(selectedElement.variantProps)
+      .map(([k, v]) => {
+        const norm = String(v).trim().toLowerCase().replace(/\\s+/g, '-');
+        return `${k}==='${norm}'`;
+      })
+      .join(' && ');
+    elementContextBlock += `
+
+CRITICAL - Variant-specific change: The user selected this element inside ONE variant only (labeled "${selectedElement.variantLabel}").
+The preview grid shows multiple variants. You MUST add conditional logic so the change applies ONLY when the component receives these variant props.
+Props from selection: ${propsDesc}. Use normalized values for comparison (e.g. ${normalizedHint}).
+Render the new content ONLY when the condition matches. For ALL other variants, keep the original content unchanged.`;
+  } else if (hasDataVeId) {
+    elementContextBlock += `
+Apply the requested changes to THIS element specifically.`;
+  }
+
+  const isShadcn = currentMitosis.includes('shadcn/ui codegen');
+
+  let newUserMessage = `Here is the current component code:
 
 \`\`\`tsx
 ${codeContext}
 \`\`\`
 
-User request: ${userPrompt}
+User request: ${userPrompt}${elementContextBlock}
 
-Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section (---CSS---), include the updated CSS after the delimiter.`;
+`;
+  if (isShadcn) {
+    newUserMessage += `This is a shadcn/ui React component (NOT a Mitosis component). Output the COMPLETE updated React file. Do NOT use Mitosis syntax (like state.classes or css={{}}). Preserve the // shadcn/ui codegen comment at the top.`;
+  } else {
+    newUserMessage += `Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section (---CSS---), include the updated CSS after the delimiter.`;
+  }
 
   messages.push({ role: 'user', content: newUserMessage });
 
@@ -107,6 +173,33 @@ Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section 
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`LLM refinement failed: ${msg}`);
   }
+
+  // --- Shadcn Fast Path ---
+  if (isShadcn) {
+    onStep?.('Updating shadcn/ui React code directly...');
+    // Extract code block from markdown
+    const codeMatch = llmOutput.match(/```(?:tsx|jsx|js|ts)?\s*([\s\S]*?)```/);
+    const rawReactCode = codeMatch ? codeMatch[1].trim() : llmOutput.trim();
+    
+    // Ensure header is present for future refinement detection
+    const mitosisSource = rawReactCode.includes('shadcn/ui codegen') 
+      ? rawReactCode 
+      : `// shadcn/ui codegen — see React output.\n${rawReactCode}`;
+
+    const frameworkOutputs: Record<string, string> = {};
+    for (const fw of frameworks) {
+      frameworkOutputs[fw] = fw === 'react' ? rawReactCode : `// shadcn/ui component (React only).\n`;
+    }
+
+    return {
+      mitosisSource,
+      css: '', // shadcn components use inline tailwind, no custom css
+      frameworkOutputs,
+      assistantMessage: llmOutput,
+      elementMap, // Preserve existing map since we bypassed Mitosis tree mapping
+    };
+  }
+  // --- Standard Mitosis Path ---
 
   // Parse through Mitosis
   onStep?.('Parsing updated component...');
@@ -136,9 +229,10 @@ Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section 
     throw new Error(`Failed to parse refined component: ${parseResult.error || 'Unknown parse error'}`);
   }
 
-  // Generate framework code
+  // Inject element IDs for visual edit, then generate framework code
   onStep?.('Compiling to frameworks...');
-  const frameworkOutputs = generateFrameworkCode(parseResult.component, frameworks);
+  const { component: componentWithIds, elementMap: newElementMap } = injectDataVeIds(parseResult.component);
+  const frameworkOutputs = generateFrameworkCode(componentWithIds, frameworks);
 
   // Inject CSS if present
   const css = parseResult.css || '';
@@ -160,5 +254,6 @@ Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section 
     css,
     frameworkOutputs,
     assistantMessage: llmOutput,
+    elementMap: newElementMap,
   };
 }

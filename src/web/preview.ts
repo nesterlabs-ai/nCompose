@@ -256,14 +256,14 @@ ${variantBuildJS}
     function App() {
       return (
         <div style={{ padding: '1rem', minHeight: '100vh' }}>
-          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
-          <p style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
+          <h1 data-ve-ignore="true" style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
+          <p data-ve-ignore="true" style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
             {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             {allVariants.map((v, i) => (
-              <div key={i} style={{ width: '100%' }}>
-                <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
+              <div key={i} style={{ width: '100%' }} data-variant-index={i} data-variant-label={v.label} data-variant-props={JSON.stringify(v.props)}>
+                <div data-ve-ignore="true" style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
                 <div style={{ width: '100%' }}>
                   <${componentName} {...v.props} />
                 </div>
@@ -647,6 +647,14 @@ function __Render(name, props, children) {
 
       document.addEventListener('mouseover', (e) => {
         if (!window.parentVisualEditActive) return;
+        if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
+          if (lastHovered && lastHovered !== selectedEl) {
+            lastHovered.classList.remove('ve-hover-outline');
+          }
+          lastHovered = null;
+          return;
+        }
+
         if (lastHovered && lastHovered !== selectedEl) {
           lastHovered.classList.remove('ve-hover-outline');
         }
@@ -658,6 +666,8 @@ function __Render(name, props, children) {
 
       document.addEventListener('click', (e) => {
         if (!window.parentVisualEditActive) return;
+        if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) return;
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -670,11 +680,22 @@ function __Render(name, props, children) {
         selectedEl.classList.remove('ve-hover-outline');
         selectedEl.classList.add('ve-selected-outline');
 
+        const veIdEl = selectedEl.closest ? selectedEl.closest('[data-ve-id]') : null;
+        const dataVeId = veIdEl ? veIdEl.getAttribute('data-ve-id') : null;
+        const variantWrapper = selectedEl.closest ? selectedEl.closest('[data-variant-label]') : null;
+        const variantLabel = variantWrapper ? variantWrapper.getAttribute('data-variant-label') : null;
+        const variantPropsStr = variantWrapper ? variantWrapper.getAttribute('data-variant-props') : null;
+        let variantProps = null;
+        try { variantProps = variantPropsStr ? JSON.parse(variantPropsStr) : null; } catch (_) {}
+
         const style = window.getComputedStyle(selectedEl);
         const rect = selectedEl.getBoundingClientRect();
 
         window.parent.postMessage({
           type: 'elementSelected',
+          dataVeId: dataVeId,
+          variantLabel: variantLabel,
+          variantProps: variantProps,
           tagName: selectedEl.tagName.toLowerCase(),
           textContent: selectedEl.textContent.trim(),
           computedStyle: {

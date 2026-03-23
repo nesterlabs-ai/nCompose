@@ -344,10 +344,10 @@ function App() {
   return (
     <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', background: '#f8f9fa', minHeight: '100vh' }}>
       <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
-        <h1 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>
+        <h1 data-ve-ignore="true" style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>
           ${componentName}
         </h1>
-        <p style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
+        <p data-ve-ignore="true" style={{ margin: '0 0 20px', color: '#666', fontSize: '13px' }}>
           {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
         </p>
         <div style={{
@@ -356,13 +356,13 @@ function App() {
           gap: '16px'
         }}>
           {allVariants.map((v, idx) => (
-            <div key={idx} style={{
+            <div key={idx} data-variant-index={idx} data-variant-label={v.label} data-variant-props={JSON.stringify(v.props)} style={{
               padding: '16px',
               background: '#fff',
               borderRadius: '10px',
               border: '1px solid #e5e7eb'
             }}>
-              <div style={labelStyle}>{v.label}</div>
+              <div data-ve-ignore="true" style={labelStyle}>{v.label}</div>
               <${componentName} {...defaultProps} {...v.props} />
             </div>
           ))}

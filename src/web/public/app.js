@@ -169,6 +169,7 @@ let currentShadcnComponentName = null;
 let currentShadcnSubComponents = null;
 let currentComponentPropertyDefs = null;
 let currentVariantMetadata = null;
+let currentElementMap = null;
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
 let wiredExplorerExpanded = new Set(['src', 'public']);
 
@@ -505,6 +506,7 @@ function restoreProject(projectId) {
   currentSessionId = project.sessionId || project.id;
   currentComponentName = project.name || '';
   currentFrameworkOutputs = project.frameworkOutputs || {};
+  currentElementMap = project.elementMap || null;
 
   // Switch to split view
   mainHero.classList.add('hidden');
@@ -724,8 +726,8 @@ function buildClientVariantGridApp(componentName, propDefs) {
 
   const propMappings = propAxes.map((axis) => {
     const propName = axis.name.toLowerCase() === 'style' ? 'variant'
-                   : axis.name.toLowerCase() === 'type' ? 'variant'
-                   : axis.camel;
+      : axis.name.toLowerCase() === 'type' ? 'variant'
+        : axis.camel;
     return { axis, propName };
   });
 
@@ -766,14 +768,14 @@ ${variantBuildJS}
     function App() {
       return (
         <div style={{ padding: '1rem', minHeight: '100vh' }}>
-          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
-          <p style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
+          <h1 data-ve-ignore="true" style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>${componentName}</h1>
+          <p data-ve-ignore="true" style={{ margin: '0 0 1rem', fontSize: '0.875rem', color: '#666' }}>
             {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             {allVariants.map((v, i) => (
-              <div key={i} style={{ width: '100%' }}>
-                <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
+              <div key={i} style={{ width: '100%' }} data-variant-index={i} data-variant-label={v.label} data-variant-props={JSON.stringify(v.props)}>
+                <div data-ve-ignore="true" style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666' }}>{v.label}</div>
                 <div style={{ width: '100%' }}>
                   <${componentName} {...v.props} />
                 </div>
@@ -917,6 +919,14 @@ function showInlinePreview(project) {
 
         document.addEventListener('mouseover', (e) => {
           if (!window.parentVisualEditActive) return;
+          if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
+            if (lastHovered && lastHovered !== selectedEl) {
+              lastHovered.classList.remove('ve-hover-outline');
+            }
+            lastHovered = null;
+            return;
+          }
+
           if (lastHovered && lastHovered !== selectedEl) {
             lastHovered.classList.remove('ve-hover-outline');
           }
@@ -928,6 +938,8 @@ function showInlinePreview(project) {
 
         document.addEventListener('click', (e) => {
           if (!window.parentVisualEditActive) return;
+          if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) return;
+
           e.preventDefault();
           e.stopPropagation();
 
@@ -940,11 +952,24 @@ function showInlinePreview(project) {
           selectedEl.classList.remove('ve-hover-outline');
           selectedEl.classList.add('ve-selected-outline');
 
+          // Find data-ve-id (element or closest ancestor with mapping)
+          const veIdEl = selectedEl.closest ? selectedEl.closest('[data-ve-id]') : null;
+          const dataVeId = veIdEl ? veIdEl.getAttribute('data-ve-id') : null;
+          // Find variant context (when inside variant grid)
+          const variantWrapper = selectedEl.closest ? selectedEl.closest('[data-variant-label]') : null;
+          const variantLabel = variantWrapper ? variantWrapper.getAttribute('data-variant-label') : null;
+          const variantPropsStr = variantWrapper ? variantWrapper.getAttribute('data-variant-props') : null;
+          let variantProps = null;
+          try { variantProps = variantPropsStr ? JSON.parse(variantPropsStr) : null; } catch (_) {}
+
           const style = window.getComputedStyle(selectedEl);
           const rect = selectedEl.getBoundingClientRect();
 
           window.parent.postMessage({
             type: 'elementSelected',
+            dataVeId: dataVeId,
+            variantLabel: variantLabel,
+            variantProps: variantProps,
             tagName: selectedEl.tagName.toLowerCase(),
             textContent: selectedEl.textContent.trim(),
             computedStyle: {
@@ -1814,6 +1839,14 @@ export default App;
 
       document.addEventListener('mouseover', (e) => {
         if (!window.parentVisualEditActive) return;
+        if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
+          if (lastHovered && lastHovered !== selectedEl) {
+            lastHovered.classList.remove('ve-hover-outline');
+          }
+          lastHovered = null;
+          return;
+        }
+
         if (lastHovered && lastHovered !== selectedEl) {
           lastHovered.classList.remove('ve-hover-outline');
         }
@@ -1825,6 +1858,8 @@ export default App;
 
       document.addEventListener('click', (e) => {
         if (!window.parentVisualEditActive) return;
+        if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) return;
+
         if (e.target === selectedEl) return;
 
         e.preventDefault();
@@ -1839,11 +1874,22 @@ export default App;
         selectedEl.classList.remove('ve-hover-outline');
         selectedEl.classList.add('ve-selected-outline');
 
+        const veIdEl = selectedEl.closest ? selectedEl.closest('[data-ve-id]') : null;
+        const dataVeId = veIdEl ? veIdEl.getAttribute('data-ve-id') : null;
+        const variantWrapper = selectedEl.closest ? selectedEl.closest('[data-variant-label]') : null;
+        const variantLabel = variantWrapper ? variantWrapper.getAttribute('data-variant-label') : null;
+        const variantPropsStr = variantWrapper ? variantWrapper.getAttribute('data-variant-props') : null;
+        let variantProps = null;
+        try { variantProps = variantPropsStr ? JSON.parse(variantPropsStr) : null; } catch (_) {}
+
         const style = window.getComputedStyle(selectedEl);
         const rect = selectedEl.getBoundingClientRect();
 
         window.parent.postMessage({
           type: 'elementSelected',
+          dataVeId: dataVeId,
+          variantLabel: variantLabel,
+          variantProps: variantProps,
           tagName: selectedEl.tagName.toLowerCase(),
           textContent: selectedEl.textContent.trim(),
           computedStyle: {
@@ -1937,7 +1983,7 @@ function buildShadcnVariantGridApp(componentName, propDefs, variantMetadata) {
   const sizeAxes = [];
   const stateAxes = [];
   const booleanProps = [];
-  const stateKeywords = ['default','hover','focus','disabled','loading','active','pressed','error','selected','rest'];
+  const stateKeywords = ['default', 'hover', 'focus', 'disabled', 'loading', 'active', 'pressed', 'error', 'selected', 'rest'];
 
   if (propDefs && typeof propDefs === 'object') {
     for (const [name, def] of Object.entries(propDefs)) {
@@ -2107,7 +2153,7 @@ function App() {
             </h2>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
               {combos.map((c, idx) => (
-                <div key={idx} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', flexShrink: 0 }}>
+                <div key={idx} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', flexShrink: 0 }} data-variant-index={idx} data-variant-label={[c.variant, c.state, c.size].filter(Boolean).join(' / ')} data-variant-props={JSON.stringify(c)}>
                   <${componentName}
                     ${variantPropName}={normalizeName(c.variant)}
                     ${sizePropName}={normalizeName(c.size)}
@@ -2264,6 +2310,7 @@ function handleComplete(data) {
   currentShadcnSubComponents = data.shadcnSubComponents || null;
   currentComponentPropertyDefs = data.componentPropertyDefinitions || null;
   currentVariantMetadata = data.variantMetadata || null;
+  currentElementMap = data.elementMap || null;
 
   // Build code tabs (generated view)
   buildTabs(data);
@@ -2311,6 +2358,7 @@ function handleComplete(data) {
     templateWired: Boolean(data.templateWired),
     chartComponents: data.chartComponents || [],
     shadcnSubComponents: data.shadcnSubComponents || null,
+    elementMap: data.elementMap || null,
   });
 
   // Initialize chat for iterative refinement
@@ -2389,7 +2437,19 @@ function sendChatMessage(customText) {
   setChatLoading(true);
   const loadingMsg = addChatMessage('system', 'Generating...');
 
-  const body = JSON.stringify({ sessionId: currentSessionId, prompt });
+  const body = JSON.stringify({
+    sessionId: currentSessionId,
+    prompt,
+    selectedElement: selectedElementInfo && (selectedElementInfo.dataVeId || selectedElementInfo.variantLabel)
+      ? {
+        dataVeId: selectedElementInfo.dataVeId,
+        tagName: selectedElementInfo.tagName,
+        textContent: selectedElementInfo.textContent,
+        variantLabel: selectedElementInfo.variantLabel,
+        variantProps: selectedElementInfo.variantProps,
+      }
+      : undefined,
+  });
 
   fetch('/api/refine', {
     method: 'POST',
@@ -2480,6 +2540,9 @@ function handleRefineComplete(data) {
   if (data.frameworkOutputs) {
     currentFrameworkOutputs = data.frameworkOutputs;
   }
+  if (data.elementMap) {
+    currentElementMap = data.elementMap;
+  }
   if (data.mitosisSource) {
     // Update the mitosis tab data
     const mitosisTab = tabsData.find(t => t.key === 'mitosis');
@@ -2496,7 +2559,9 @@ function handleRefineComplete(data) {
 
   // Persist updated outputs to project history
   if (currentProjectId) {
-    updateProjectField(currentProjectId, { frameworkOutputs: currentFrameworkOutputs });
+    const update = { frameworkOutputs: currentFrameworkOutputs };
+    if (data.elementMap) update.elementMap = data.elementMap;
+    updateProjectField(currentProjectId, update);
   }
 
   // Refresh Monaco if a tab is open
@@ -4109,7 +4174,7 @@ function updateVisualEditSidebar(info) {
   if (veFontWeight) {
     veFontWeight.value = info.computedStyle.fontWeight;
   }
-  
+
   if (veAlignBtns) {
     veAlignBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.align === info.computedStyle.textAlign);

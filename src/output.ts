@@ -27,6 +27,8 @@ export interface WriteOutputOptions {
   shadcnComponentName?: string;
   /** shadcn sub-components generated from child nodes in a composite component */
   shadcnSubComponents?: ShadcnSubComponent[];
+  /** Element-to-code map for visual edit (data-ve-id → metadata) */
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
 }
 
 /**
@@ -74,14 +76,15 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     writtenPaths.push(filePath);
   }
 
-  // Write variant metadata for preview app
-  if (variantMetadata || componentPropertyDefinitions) {
+  // Write variant metadata for preview app (includes elementMap for visual edit)
+  if (variantMetadata || componentPropertyDefinitions || options.elementMap) {
     const metadataPath = join(outputDir, `${componentName}.meta.json`);
     const metadata = {
       componentName,
       axes: variantMetadata?.axes || [],
       variants: variantMetadata?.variants || [],
       componentPropertyDefinitions: componentPropertyDefinitions || {},
+      elementMap: options.elementMap || undefined,
     };
     writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     writtenPaths.push(metadataPath);

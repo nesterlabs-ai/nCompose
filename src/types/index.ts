@@ -115,6 +115,8 @@ export interface ConversionResult {
   shadcnComponentName?: string;
   /** shadcn sub-components generated from child nodes in a composite component */
   shadcnSubComponents?: ShadcnSubComponent[];
+  /** Element-to-code map for visual edit (data-ve-id path → metadata) */
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
 }
 
 /**

@@ -352,10 +352,10 @@ export function ComponentPreviewPage() {
     <div className="min-h-dvh bg-[var(--color-background)] p-4">
       <div className="mx-auto space-y-6">
         <header className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 data-ve-ignore="true" className="text-2xl font-semibold tracking-tight">
             ${componentName}
           </h1>
-          <p className="text-[var(--color-muted-foreground)] text-sm">
+          <p data-ve-ignore="true" className="text-[var(--color-muted-foreground)] text-sm">
             {allVariants.length} variant combination{allVariants.length !== 1 ? 's' : ''}.
           </p>
         </header>
@@ -363,9 +363,12 @@ export function ComponentPreviewPage() {
           {allVariants.map((v, idx) => (
             <div
               key={idx}
+              data-variant-index={idx}
+              data-variant-label={v.label}
+              data-variant-props={JSON.stringify((v as any).props)}
               className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 w-fit"
             >
-              <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]">
+              <p data-ve-ignore="true" className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]">
                 {v.label}
               </p>
               <div className="mt-1">

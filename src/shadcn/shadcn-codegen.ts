@@ -19,6 +19,9 @@ import {
   buildShadcnSingleComponentUserPrompt,
   buildShadcnInlineComponentSystemPrompt,
   buildShadcnInlineComponentUserPrompt,
+  buildShadcnStructuralSystemPrompt,
+  buildShadcnStructuralUserPrompt,
+  type LeafComponentInfo,
 } from './shadcn-prompt-builder.js';
 
 /**
@@ -223,6 +226,70 @@ export async function generateShadcnInlineComponent(
   if (!html) throw new Error('[shadcn-inline] Failed to parse LLM output');
 
   return { html, css: '' };
+}
+
+/**
+ * Generate a shadcn structural component (sidebar, table) from a single Figma node.
+ * Unlike leaf components (button, input), structural components are layout-heavy:
+ * the LLM composes many sub-components from the template library rather than
+ * customizing a single element with CVA variants.
+ */
+export async function generateShadcnStructuralComponent(
+  rootNode: any,
+  formRoleOrCategory: string,
+  componentName: string,
+  llm: LLMProvider,
+  onStep?: (step: string) => void,
+  assets?: AssetEntry[],
+  nodeYaml?: string,
+  leafComponents?: LeafComponentInfo[],
+): Promise<ShadcnCodegenResult> {
+  const shadcnType = getShadcnComponentType(formRoleOrCategory);
+  if (!shadcnType) throw new Error(`No shadcn mapping for "${formRoleOrCategory}"`);
+
+  onStep?.(`[shadcn-structural] Reading base ${shadcnType}.tsx from starter template...`);
+  const baseShadcnSource = readShadcnSource(shadcnType);
+
+  if (!nodeYaml) throw new Error('[shadcn-structural] nodeYaml is required for structural components');
+
+  const systemPrompt = buildShadcnStructuralSystemPrompt();
+  const userPrompt = buildShadcnStructuralUserPrompt({
+    componentName,
+    shadcnType,
+    baseShadcnSource,
+    nodeYaml,
+    assets: assets && assets.length > 0
+      ? assets.map((a: any) => ({
+          filename: a.filename,
+          parentName: a.parentName,
+          dimensions: a.dimensions,
+          svgContent: a.content ? makeColorInheritable(a.content) : undefined,
+        }))
+      : undefined,
+    leafComponents: leafComponents && leafComponents.length > 0 ? leafComponents : undefined,
+  });
+
+  onStep?.(`[shadcn-structural] Generating via ${llm.name}...`);
+  let rawResponse = await llm.generate(userPrompt, systemPrompt);
+  let parsed = parseTwoCodeBlocks(rawResponse);
+
+  if (!parsed) {
+    onStep?.('[shadcn-structural] Retrying — could not parse two code blocks...');
+    const retryPrompt = userPrompt + '\n\nIMPORTANT: Output EXACTLY two fenced code blocks. Block 1 = the .tsx library source (unchanged). Block 2 = consumer .jsx.';
+    rawResponse = await llm.generate(retryPrompt, systemPrompt);
+    parsed = parseTwoCodeBlocks(rawResponse);
+  }
+
+  if (!parsed) throw new Error('[shadcn-structural] Failed to parse LLM output into two code blocks');
+
+  onStep?.(`[shadcn-structural] Generated ${shadcnType}.tsx (${parsed.block1.length} chars) + ${componentName}.jsx (${parsed.block2.length} chars)`);
+
+  return {
+    consumerCode: parsed.block2,
+    updatedShadcnSource: parsed.block1,
+    shadcnComponentName: shadcnType,
+    componentName,
+  };
 }
 
 /**

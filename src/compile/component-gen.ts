@@ -30,13 +30,15 @@ import {
 import {
   discoverComponents,
   computeStructuralFingerprint,
+  matchComponentPattern,
+  STRUCTURAL_FORM_ROLES,
   type DiscoveredComponent,
   type ComponentDiscoveryResult,
 } from '../figma/component-discovery.js';
 import { extractChartMetadata } from '../figma/chart-detection.js';
 import { generateChartCode } from './chart-codegen.js';
 import { isShadcnSupported, getShadcnComponentType } from '../shadcn/shadcn-types.js';
-import { generateShadcnSingleComponent } from '../shadcn/shadcn-codegen.js';
+import { generateShadcnSingleComponent, generateShadcnStructuralComponent } from '../shadcn/shadcn-codegen.js';
 import type { ShadcnSubComponent } from '../types/index.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -444,7 +446,6 @@ export async function generateCompoundSection(
 
     if (shadcnComps.length > 0) {
       // Deduplicate by shadcn type (e.g. 6 buttons → 1 button.tsx)
-      // Same logic as PATH B composite discovery in convert.ts
       const uniqueShadcnTypes = new Map<string, typeof shadcnComps[0]>();
       const figmaNodeNamesByType = new Map<string, string[]>();
       for (const comp of shadcnComps) {
@@ -472,14 +473,48 @@ export async function generateCompoundSection(
         }
       }
 
-      // Generate each unique shadcn type
+      // Two-pass generation: leaf widgets first, then structural components.
+      // Structural components (table, sidebar) receive leaf widget info so they
+      // can compose <Checkbox>, <Switch>, <Badge> inside their cells/slots.
+      const leafEntries: Array<[string, typeof shadcnComps[0]]> = [];
+      const structuralEntries: Array<[string, typeof shadcnComps[0]]> = [];
       for (const [shadcnType, comp] of uniqueShadcnTypes) {
+        if (STRUCTURAL_FORM_ROLES.has(comp.formRole)) {
+          structuralEntries.push([shadcnType, comp]);
+        } else {
+          leafEntries.push([shadcnType, comp]);
+        }
+      }
+
+      // Helper to sanitize source: strip extra content after first export { ... }
+      function sanitizeShadcnSource(source: string, shadcnType: string): string {
+        const firstExportMatch = source.match(/^export\s*\{[^}]+\};?\s*$/m);
+        if (firstExportMatch) {
+          const exportEnd = source.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
+          const trailing = source.slice(exportEnd).trim();
+          if (trailing.length > 0) {
+            onStep?.(`  [shadcn] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
+            return source.slice(0, exportEnd).trimEnd() + '\n';
+          }
+        }
+        return source;
+      }
+
+      // Helper to convert comp name to PascalCase
+      function toPascal(name: string): string {
+        return name
+          .replace(/[^a-zA-Z0-9\s]/g, ' ')
+          .split(/\s+/).filter(Boolean)
+          .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join('');
+      }
+
+      // ── Pass 1: Generate leaf widgets ──────────────────────────────
+      const generatedLeafInfo: Array<{ name: string; importPath: string; source: string }> = [];
+
+      for (const [shadcnType, comp] of leafEntries) {
         try {
-          const pascal = comp.name
-            .replace(/[^a-zA-Z0-9\s]/g, ' ')
-            .split(/\s+/).filter(Boolean)
-            .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-            .join('');
+          const pascal = toPascal(comp.name);
           onStep?.(`  [shadcn] Generating ${shadcnType} from "${comp.name}"...`);
           const subResult = await generateShadcnSingleComponent(
             comp.representativeNode,
@@ -489,22 +524,69 @@ export async function generateCompoundSection(
             onStep,
           );
 
-          // Sanitize: strip extra content after first export { ... }
-          let cleanSource = subResult.updatedShadcnSource;
-          const firstExportMatch = cleanSource.match(/^export\s*\{[^}]+\};?\s*$/m);
-          if (firstExportMatch) {
-            const exportEnd = cleanSource.indexOf(firstExportMatch[0]) + firstExportMatch[0].length;
-            const trailing = cleanSource.slice(exportEnd).trim();
-            if (trailing.length > 0) {
-              onStep?.(`  [shadcn] Trimming ${trailing.length} chars of extra content after export in ${shadcnType}.tsx`);
-              cleanSource = cleanSource.slice(0, exportEnd).trimEnd() + '\n';
-            }
-          }
+          const cleanSource = sanitizeShadcnSource(subResult.updatedShadcnSource, shadcnType);
 
           shadcnSubComponents.push({
             shadcnComponentName: subResult.shadcnComponentName,
             updatedShadcnSource: cleanSource,
           });
+          availableShadcn.push({
+            name: subResult.shadcnComponentName,
+            importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+            source: cleanSource,
+            figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
+          });
+          generatedLeafInfo.push({
+            name: subResult.shadcnComponentName,
+            importPath: `@/components/ui/${subResult.shadcnComponentName}`,
+            source: cleanSource,
+          });
+          onStep?.(`  [shadcn] ${shadcnType} → OK`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          onStep?.(`  [shadcn] Failed to generate ${shadcnType}: ${msg} — falling back to raw HTML`);
+          regularUiComps.push(comp);
+        }
+      }
+
+      // ── Pass 2: Generate structural components with leaf widget context ──
+      for (const [shadcnType, comp] of structuralEntries) {
+        try {
+          const pascal = toPascal(comp.name);
+          onStep?.(`  [shadcn] Generating ${shadcnType} from "${comp.name}" (structural, with ${generatedLeafInfo.length} leaf components)...`);
+
+          const nodeYaml = dump(serializeNode(comp.representativeNode), { lineWidth: 120, noRefs: true });
+          const subResult = await generateShadcnStructuralComponent(
+            comp.representativeNode,
+            comp.formRole,
+            pascal,
+            llm,
+            onStep,
+            undefined,  // assets
+            nodeYaml,
+            generatedLeafInfo,  // pass leaf widget info
+          );
+
+          const cleanSource = sanitizeShadcnSource(subResult.updatedShadcnSource, shadcnType);
+
+          shadcnSubComponents.push({
+            shadcnComponentName: subResult.shadcnComponentName,
+            updatedShadcnSource: cleanSource,
+          });
+
+          // Store the structural consumer JSX body in componentCache so the
+          // section LLM embeds it directly instead of re-generating the table/sidebar.
+          const consumerBody = extractJSXReturnBody(subResult.consumerCode);
+          if (consumerBody) {
+            componentCache.set(comp.variantKey, {
+              name: comp.name,
+              formRole: comp.formRole,
+              html: consumerBody,
+              css: '',
+              success: true,
+            });
+            onStep?.(`  [shadcn] ${shadcnType} → OK (stored as pre-built, ${consumerBody.length} chars)`);
+          }
 
           availableShadcn.push({
             name: subResult.shadcnComponentName,
@@ -512,17 +594,12 @@ export async function generateCompoundSection(
             source: cleanSource,
             figmaNodeNames: figmaNodeNamesByType.get(shadcnType),
           });
-          onStep?.(`  [shadcn] ${shadcnType} → OK`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          onStep?.(`  [shadcn] Failed to generate ${shadcnType}: ${msg} — falling back to raw HTML`);
-          // Move failed shadcn component back to regular pipeline
+          onStep?.(`  [shadcn] Failed to generate structural ${shadcnType}: ${msg} — falling back to raw HTML`);
           regularUiComps.push(comp);
         }
       }
-
-      // Remove shadcn-handled components from the YAML substitution pipeline:
-      // they'll be referenced via imports in the section JSX, not COMPONENT_REF
     }
   }
 
@@ -697,6 +774,33 @@ function substituteComponents(
           formRole: 'chart',
           props: {},
           generatedHTML: generated.html,
+        };
+        if (node.absoluteBoundingBox?.width) {
+          ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
+        }
+        if (node.absoluteBoundingBox?.height) {
+          ref.height = `${Math.round(node.absoluteBoundingBox.height)}px`;
+        }
+        return ref;
+      }
+    }
+  }
+
+  // Check if this is a recognized structural FRAME component (table, sidebar)
+  // stored in componentCache via structural codegen. These are plain FRAMEs,
+  // not INSTANCEs, so they need their own substitution path.
+  if ((node.type === 'FRAME' || node.type === 'GROUP') && node.name) {
+    const formRole = matchComponentPattern(node.name) ?? '';
+    if (formRole && STRUCTURAL_FORM_ROLES.has(formRole)) {
+      const frameKey = `frame::${node.name}::${formRole}`;
+      const frameGenerated = cache.get(frameKey);
+      if (frameGenerated && frameGenerated.success) {
+        const ref: any = {
+          name: node.name,
+          type: 'COMPONENT_REF',
+          formRole: frameGenerated.formRole,
+          props: {},
+          generatedHTML: frameGenerated.html,
         };
         if (node.absoluteBoundingBox?.width) {
           ref.width = `${Math.round(node.absoluteBoundingBox.width)}px`;
@@ -1006,6 +1110,72 @@ function buildComponentReferenceBlock(
  * Injects the component reference block into the user prompt,
  * right before the YAML block.
  */
+/**
+ * Extract the JSX return body from a full React component source.
+ * Strips imports, function declaration, export, return().
+ */
+/**
+ * Extract the function body from a full React component source.
+ * Keeps variable declarations (data arrays, constants) that the JSX depends on,
+ * and the return JSX. Strips: import lines, function declaration, export.
+ *
+ * The result is meant to be embedded INSIDE another function component,
+ * so all local variables and JSX are preserved.
+ */
+function extractJSXReturnBody(code: string): string | null {
+  if (!code) return null;
+
+  const lines = code.split('\n');
+  const bodyLines: string[] = [];
+  let insideFunction = false;
+  let braceDepth = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Skip import lines
+    if (trimmed.startsWith('import ')) continue;
+    // Skip "use client" directives
+    if (/^["']use client["'];?$/.test(trimmed)) continue;
+
+    // Detect function start: "export default function X() {" or "const X = () => {"
+    if (!insideFunction) {
+      if (/^export\s+default\s+function\s/.test(trimmed) ||
+          /^function\s/.test(trimmed) ||
+          /^const\s+\w+\s*=\s*\(/.test(trimmed)) {
+        insideFunction = true;
+        // Don't include the function declaration line itself
+        // Count the opening brace
+        if (trimmed.includes('{')) braceDepth = 1;
+        continue;
+      }
+      continue; // Skip lines before the function
+    }
+
+    // Track brace depth to know when the function ends
+    for (const ch of trimmed) {
+      if (ch === '{') braceDepth++;
+      else if (ch === '}') braceDepth--;
+    }
+
+    // Skip the final closing brace of the function
+    if (braceDepth <= 0) continue;
+
+    // Keep everything inside the function body:
+    // - variable declarations (const policyNames = [...])
+    // - return statement with JSX
+    bodyLines.push(line);
+  }
+
+  // Strip standalone "export default ComponentName;" if present
+  const result = bodyLines
+    .filter((l) => !/^\s*export\s+default\s+\w+;?\s*$/.test(l.trim()))
+    .join('\n')
+    .trim();
+
+  return result.length > 20 ? result : null;
+}
+
 function injectComponentReferences(userPrompt: string, refBlock: string): string {
   if (!refBlock) return userPrompt;
 

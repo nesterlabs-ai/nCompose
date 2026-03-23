@@ -116,17 +116,42 @@ function buildShadcnPromptBlock(
 ): string {
   if (!availableShadcnComponents || availableShadcnComponents.length === 0) return '';
 
+  // Structural component types whose sub-components must all be visible to the LLM
+  const STRUCTURAL_TYPES = new Set(['sidebar', 'table']);
+
   const entries = availableShadcnComponents.map((comp) => {
+    const isStructural = STRUCTURAL_TYPES.has(comp.name);
+
+    // Extract all exported names from the source (e.g. Table, TableRow, TableCell, ...)
+    const exportNames: string[] = [];
+    const exportBlockMatch = comp.source.match(/export\s*\{([^}]+)\}/);
+    if (exportBlockMatch) {
+      exportBlockMatch[1].split(',').forEach((s: string) => {
+        const name = s.trim().split(/\s+/)[0]; // handle "Foo as Bar"
+        if (name && /^[A-Z]/.test(name)) exportNames.push(name);
+      });
+    }
+
+    // For structural components: show full source so LLM sees all sub-components.
+    // For leaf widgets: truncate at 80 lines to save prompt space.
     const sourceLines = comp.source.split('\n');
-    const truncated = sourceLines.slice(0, 80).join('\n');
-    const suffix = sourceLines.length > 80 ? '\n// ... (truncated)' : '';
+    const displaySource = isStructural
+      ? comp.source
+      : (sourceLines.slice(0, 80).join('\n') + (sourceLines.length > 80 ? '\n// ... (truncated)' : ''));
+
     const pascalName = comp.name.charAt(0).toUpperCase() + comp.name.slice(1);
+    const importList = exportNames.length > 1
+      ? exportNames.join(', ')
+      : pascalName;
     const nodeMapping = comp.figmaNodeNames && comp.figmaNodeNames.length > 0
       ? `\n**Figma nodes that MUST use this component:** ${comp.figmaNodeNames.map(n => `"${n}"`).join(', ')}`
       : '';
-    return `### ${pascalName} — import { ${pascalName} } from "${comp.importPath}"${nodeMapping}
+    const structuralNote = isStructural
+      ? `\n**This is a STRUCTURAL component.** Use ALL exported sub-components (${exportNames.join(', ')}) to compose the layout. Do NOT use raw <div>s for table rows, cells, headers, menu items, etc.`
+      : '';
+    return `### ${pascalName} — import { ${importList} } from "${comp.importPath}"${nodeMapping}${structuralNote}
 \`\`\`tsx
-${truncated}${suffix}
+${displaySource}
 \`\`\``;
   }).join('\n\n');
 
@@ -142,6 +167,9 @@ RULES:
 - Any Figma node listed under "Figma nodes that MUST use this component" MUST be rendered using that shadcn component, NOT as raw HTML <button>, <input>, <select>, etc.
 - Pass appropriate props (variant, size, className, etc.) based on the Figma design
 - Use className overrides on shadcn components for pixel-perfect Figma styling (colors, spacing, fonts)
+- **CONSISTENCY**: If multiple YAML nodes share the same Figma component name (e.g. "Side Nav Item" appears 3 times), ALL of them MUST use the same shadcn component — do NOT use shadcn for one and raw <div> for others
+- **Search/input fields**: Bordered frames containing placeholder text (e.g. "Search", "Value") MUST be rendered as <input> elements with placeholder attribute, NOT as <span> or <div> text
+- **COMPONENT_REF nodes in YAML**: These already contain pre-built HTML in the "generatedHTML" field. Embed that HTML EXACTLY — do NOT re-generate it
 - ONLY use standard Tailwind HTML for nodes that are NOT mapped to any available component above
 `;
 }
@@ -263,6 +291,14 @@ export function assembleReactSectionUserPrompt(
 
   const yamlBlock = '```yaml\n' + yamlContent.trim() + '\n```';
 
+  const semanticHtmlRules = availableShadcnComponents && availableShadcnComponents.length > 0
+    ? '\n\n## CRITICAL — Semantic HTML Rules (read carefully)\n' +
+      '- **Search/input fields**: Any YAML node that looks like a search or input field (bordered frame with placeholder text like "Search", "Enter...", "Type...") MUST be rendered as `<input>` with a `placeholder` attribute — NEVER as `<span>` or `<div>` with text content.\n' +
+      '- **COMPONENT_REF nodes**: These contain pre-built HTML. Embed the `generatedHTML` value EXACTLY as-is. Do NOT re-generate or simplify the content inside a COMPONENT_REF.\n' +
+      '- **Consistency rule**: If you use a shadcn component (e.g. `<SidebarMenuItem>`) for ONE item of a type, you MUST use the SAME component for ALL items of that type. Do NOT use shadcn for "Policies" but raw `<div>` for "Lists" — they are the same component type in Figma.\n' +
+      '- **Numbers in cells**: If a YAML node inside a table row shows a numeric sequence (1, 2, 3...), render it as text `{index + 1}`, not as an icon image.\n'
+    : '';
+
   return 'Convert the following Figma section to a static React component with Tailwind CSS.\n\n' +
     `This is **Section ${sectionIndex} of ${totalSections}: "${sectionName}"**.\n` +
     contextBlock + '\n' +
@@ -275,6 +311,7 @@ export function assembleReactSectionUserPrompt(
     '- **ICON nodes** (type: ICON with assetFile): MUST render as `<img src="{assetFile}" alt="" />` with the node\'s width and height.\n' +
     '- Use `className` not `class`.\n' +
     '- Output purely static content — no useState, no event handlers, no dynamic expressions.\n' +
+    semanticHtmlRules +
     shadcnBlock + '\n' +
     yamlBlock;
 }

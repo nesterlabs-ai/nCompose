@@ -20,6 +20,7 @@ import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
 import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, isAuthEnabled } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
+import { isDynamoEnabled, saveUserProject } from './db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -313,18 +314,35 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
       },
     },
   )
-    .then((result) => {
+    .then(async (result) => {
       clearInterval(heartbeat);
 
       try {
         // Increment free tier usage for anonymous users
         if ((req as any)._fingerprint) {
-          incrementFreeTierUsage((req as any)._fingerprint);
+          await incrementFreeTierUsage((req as any)._fingerprint);
         }
 
         // Store result in session
         const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
         setSession(sessionId, result, llmName, selectedFrameworks);
+
+        // Persist project metadata to DynamoDB for authenticated users
+        if (req.user && isDynamoEnabled()) {
+          try {
+            await saveUserProject(req.user.sub, {
+              projectId: sessionId,
+              sessionId,
+              name: result.componentName,
+              figmaUrl: figmaUrl,
+              frameworks: selectedFrameworks,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          } catch (dbErr) {
+            console.error('[convert] DynamoDB project save failed:', dbErr);
+          }
+        }
 
         // Write output files to disk (same as CLI)
         const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);

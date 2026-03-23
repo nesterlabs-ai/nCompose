@@ -469,3 +469,159 @@ export function buildShadcnInlineComponentUserPrompt(
 
   return parts.join('\n');
 }
+
+// ── Structural component prompt builders (sidebar, table) ────────────────
+
+/**
+ * System prompt for structural shadcn components (sidebar, table).
+ * These are layout-heavy components where the LLM composes many
+ * sub-components from the template rather than customizing one.
+ */
+export function buildShadcnStructuralSystemPrompt(): string {
+  return `You are a React component expert specializing in shadcn/ui composable component libraries.
+
+Your task: Given a Figma node tree and a shadcn component library, compose the library's sub-components to replicate the Figma layout with correct content, icons, and styling.
+
+## Rules
+
+1. **Output exactly TWO fenced code blocks** — no other code blocks:
+   - Block 1: The shadcn component library source (\`.tsx\`) — keep it UNCHANGED unless minor style tweaks are needed (e.g. adding Figma-specific colors as CSS variables). Do NOT rewrite the library.
+   - Block 2: A consumer component (\`.jsx\`) that imports and composes the sub-components from the library to match the Figma design.
+
+2. **Map Figma children to sub-components**: Read the Figma node tree carefully. Each Figma element should map to the closest matching sub-component from the library:
+   - Section groups → Group/GroupLabel components
+   - Menu items with icons and text → MenuItem + MenuButton components
+   - Nested/indented items → Sub-menu components
+   - Dividers/separators → Separator components
+   - Headers/footers → Header/Footer components
+   - Table rows → TableRow, table cells → TableCell, headers → TableHead
+
+3. **Preserve exact content from Figma**: Every text label, every icon reference, every active/selected state must appear in the output. Do NOT omit menu items, table rows, or any content.
+
+4. **Use Tailwind arbitrary values for Figma-specific styling**: Apply exact colors, dimensions, fonts from Figma as Tailwind classes on the library components (e.g. \`className="bg-[rgba(255,255,255,0.4)] backdrop-blur-[30px]"\`).
+
+5. **Active/selected states**: If a Figma item shows a highlighted/selected background, use the library's built-in active/selected mechanism (e.g. \`isActive={true}\`, \`data-[state=selected]\`) rather than manual className overrides.
+
+6. **Icons**: Reference SVG asset files using \`<img src="./assets/filename.svg">\` paths. Match each icon to its Figma item. If inline SVG content is provided, use it directly with camelCase attributes.
+
+7. **Consumer component**: The .jsx file MUST:
+   - Import sub-components from \`@/components/ui/{type}\`
+   - Import React from "react" — and NOTHING ELSE
+   - Use default export
+   - Compose the full layout using the library's sub-components
+   - NOT use raw \`<div>\` elements for things that have a matching sub-component
+
+8. **Do NOT restructure the library**: Block 1 should be the library source mostly unchanged. Your job is to USE the library in Block 2, not to rewrite it.
+
+9. **No extra explanations** — just the two code blocks.
+
+10. **Sidebar components**: The consumer component MUST wrap \`<Sidebar>\` inside \`<SidebarProvider>\`. Import \`SidebarProvider\` from \`@/components/ui/sidebar\`. Without it, the \`useSidebar()\` context hook will throw a runtime error.
+`;
+}
+
+/**
+ * User prompt for structural shadcn components.
+ */
+export interface LeafComponentInfo {
+  /** shadcn type name (e.g. "checkbox", "switch") */
+  name: string;
+  /** Import path (e.g. "@/components/ui/checkbox") */
+  importPath: string;
+  /** The full .tsx source of the leaf component */
+  source: string;
+}
+
+export function buildShadcnStructuralUserPrompt(ctx: {
+  componentName: string;
+  shadcnType: string;
+  baseShadcnSource: string;
+  nodeYaml: string;
+  assets?: IconAssetInfo[];
+  leafComponents?: LeafComponentInfo[];
+}): string {
+  const parts: string[] = [];
+
+  parts.push(`# Component: ${ctx.componentName}`);
+  parts.push(`# shadcn type: ${ctx.shadcnType}`);
+  parts.push('');
+
+  parts.push('## Figma Node Tree (YAML)');
+  parts.push('This is the complete Figma design. Map each element to the appropriate shadcn sub-component.');
+  parts.push('```yaml');
+  parts.push(ctx.nodeYaml.trim());
+  parts.push('```');
+  parts.push('');
+
+  // Assets
+  if (ctx.assets && ctx.assets.length > 0) {
+    parts.push('## Icon Assets');
+    parts.push('Reference these files via `<img src="./assets/filename.svg" />` or inline the SVG markup.');
+    parts.push('');
+    for (const asset of ctx.assets) {
+      const dims = asset.dimensions ? ` (${asset.dimensions.width}x${asset.dimensions.height})` : '';
+      const position = asset.parentName ? ` [parent: ${asset.parentName}]` : '';
+      parts.push(`- \`${asset.filename}\`${dims}${position}`);
+      if (asset.svgContent) {
+        parts.push('  ```svg');
+        parts.push('  ' + asset.svgContent.trim());
+        parts.push('  ```');
+      }
+    }
+    parts.push('');
+  }
+
+  parts.push('## shadcn Component Library Source');
+  parts.push('Use these composable sub-components to build the layout. Do NOT use raw <div>s for elements that match a sub-component.');
+  parts.push('```tsx');
+  parts.push(ctx.baseShadcnSource);
+  parts.push('```');
+  parts.push('');
+
+  // Leaf components available for use inside the structural layout
+  if (ctx.leafComponents && ctx.leafComponents.length > 0) {
+    parts.push('## Available Leaf Components (use inside cells/slots)');
+    parts.push('These pre-built interactive components should be used for checkboxes, toggles, badges, buttons, etc. found in the Figma tree.');
+    parts.push('Import them in the consumer .jsx and use them instead of raw <div>s, <img>s, or hand-built approximations.');
+    parts.push('');
+    for (const leaf of ctx.leafComponents) {
+      // Extract exported names from the source
+      const exportNames: string[] = [];
+      const exportMatch = leaf.source.match(/export\s*\{([^}]+)\}/);
+      if (exportMatch) {
+        exportMatch[1].split(',').forEach((s: string) => {
+          const name = s.trim().split(/\s+/)[0];
+          if (name && /^[A-Z]/.test(name)) exportNames.push(name);
+        });
+      }
+      const pascalName = leaf.name.charAt(0).toUpperCase() + leaf.name.slice(1);
+      const importList = exportNames.length > 0 ? exportNames.join(', ') : pascalName;
+      parts.push(`### ${pascalName} — import { ${importList} } from "${leaf.importPath}"`);
+      // Show first 30 lines for leaf context (enough to see the interface)
+      const lines = leaf.source.split('\n');
+      const truncated = lines.slice(0, 30).join('\n');
+      parts.push('```tsx');
+      parts.push(truncated + (lines.length > 30 ? '\n// ...' : ''));
+      parts.push('```');
+      parts.push('');
+    }
+  }
+
+  parts.push('## Output Instructions');
+  parts.push(`1. First code block: The \`${ctx.shadcnType}.tsx\` library source (keep mostly unchanged)`);
+  parts.push(`2. Second code block: Consumer \`${ctx.componentName}.jsx\` that imports from \`@/components/ui/${ctx.shadcnType}\` and composes the full layout`);
+  if (ctx.leafComponents && ctx.leafComponents.length > 0) {
+    parts.push(`   - Also import and use the leaf components listed above (${ctx.leafComponents.map(l => l.name).join(', ')})`);
+  }
+  parts.push('');
+  parts.push('Remember:');
+  parts.push('- Map EVERY Figma item to a sub-component — do NOT skip items or use raw <div>s');
+  parts.push('- Use exact text labels, icon filenames, and colors from the Figma data');
+  parts.push('- Mark active/selected items using the library\'s built-in mechanism');
+  if (ctx.leafComponents && ctx.leafComponents.length > 0) {
+    parts.push('- Use the leaf components (Checkbox, Switch, Badge, etc.) for interactive elements — do NOT build them manually');
+  }
+  parts.push('- When Figma shows widthMode: fill, use flex-1 (NOT flex-grow + fixed width). When Figma shows a fixed width, use w-[Npx].');
+  parts.push(`- The consumer component name is: ${ctx.componentName}`);
+
+  return parts.join('\n');
+}

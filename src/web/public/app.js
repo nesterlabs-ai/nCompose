@@ -86,7 +86,29 @@ const modeCodeBtn = document.getElementById('mode-code');
 const viewPreview = document.getElementById('view-preview');
 const viewCode = document.getElementById('view-code');
 const previewEmpty = document.getElementById('preview-empty');
-const previewFrame = document.getElementById('preview-frame');
+let previewFrame = document.getElementById('preview-frame');
+
+// Replace the preview iframe with a fresh one (gives full isolated JS context).
+function replacePreviewIframe(url) {
+  try {
+    const container = previewFrame.parentNode;
+    const newFrame = document.createElement('iframe');
+    newFrame.className = previewFrame.className || 'preview-frame';
+    newFrame.id = 'preview-frame';
+    newFrame.sandbox = previewFrame.getAttribute('sandbox') || 'allow-scripts allow-same-origin';
+    newFrame.style.display = previewFrame.style.display || 'block';
+    newFrame.src = url;
+    // Replace old iframe in DOM
+    container.replaceChild(newFrame, previewFrame);
+    // Update the reference
+    previewFrame = newFrame;
+    return newFrame;
+  } catch (e) {
+    // Fallback: try to set src on existing frame
+    try { previewFrame.src = url; } catch (er) { /* ignore */ }
+    return previewFrame;
+  }
+}
 const downloadBtn = document.getElementById('download-btn');
 const codeExplorer = document.getElementById('code-explorer');
 const explorerBody = document.getElementById('explorer-body');
@@ -343,6 +365,8 @@ function saveProject(project) {
   while (projects.length > MAX_PROJECTS) projects.pop();
   saveProjects(projects);
   renderProjectList();
+  // Debounced persist to DynamoDB for authenticated users
+  debouncedPersistProject(projects.find(p => p.id === project.id) || project);
 }
 
 function deleteProject(id) {
@@ -557,6 +581,7 @@ function restoreProject(projectId) {
   currentSessionId = project.sessionId || project.id;
   currentComponentName = project.name || '';
   currentFrameworkOutputs = project.frameworkOutputs || {};
+  // Restore shadcn + variant metadata (used by the preview project-tree builder).
   currentUpdatedShadcnSource = project.updatedShadcnSource || null;
   currentShadcnComponentName = project.shadcnComponentName || null;
   currentShadcnSubComponents = project.shadcnSubComponents || null;
@@ -632,6 +657,7 @@ function restoreProject(projectId) {
 
   // Preview: check server session first, then choose path — no parallel race
   previewEmpty.style.display = 'none';
+  const chartComponents = project.chartComponents || [];
   setPreviewLoading(true, 'Loading preview...');
   fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
     .then(r => {
@@ -1130,7 +1156,7 @@ function resetToHero() {
   switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
-  previewFrame.src = 'about:blank';
+  replacePreviewIframe('about:blank');
   if (previewHeader) previewHeader.style.display = 'none';
   if (previewLoading) previewLoading.style.display = 'none';
   downloadBtn.style.display = 'none';
@@ -1426,7 +1452,7 @@ function startConversion(skipDuplicateCheck) {
   switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
-  previewFrame.src = 'about:blank';
+  replacePreviewIframe('about:blank');
   if (previewHeader) previewHeader.style.display = 'none';
   if (previewLoading) previewLoading.style.display = 'none';
   webContainerSyncEnabled = false;
@@ -1683,7 +1709,7 @@ function setPreviewReady(url, isLive, statusText) {
   setPreviewLoading(false);
   previewEmpty.style.display = 'none';
   previewFrame.style.display = 'block';
-  previewFrame.src = url;
+  replacePreviewIframe(url);
   if (previewHeader) previewHeader.style.display = 'flex';
   if (previewLiveBadge) previewLiveBadge.style.display = isLive ? 'inline-block' : 'none';
   if (previewStatus) previewStatus.textContent = isLive ? 'Live Vite preview' : (statusText || '');
@@ -1697,6 +1723,12 @@ function setPreviewReady(url, isLive, statusText) {
 function startPreviewForSession(frameworks, chartComponents) {
   webContainerSyncEnabled = false;
   webContainerLastWritten = {};
+
+  // Hide old preview immediately so the user never sees a dead-port error
+  // while the WebContainer restarts for the new project.
+  previewFrame.style.display = 'none';
+  if (previewHeader) previewHeader.style.display = 'none';
+  setPreviewLoading(true, 'Loading preview...');
 
   const hasReact = Array.isArray(frameworks) && frameworks.includes('react');
   const reactCode = currentFrameworkOutputs.react || '';
@@ -2744,25 +2776,25 @@ function handleRefineComplete(data) {
       }).then(() => {
         // Force reload after Vite processes file changes
         setTimeout(() => {
-          if (previewFrame && webContainerPreviewUrl) {
+            if (previewFrame && webContainerPreviewUrl) {
             const url = webContainerPreviewUrl;
-            previewFrame.src = 'about:blank';
-            setTimeout(() => { previewFrame.src = url; }, 150);
+            replacePreviewIframe('about:blank');
+            setTimeout(() => { replacePreviewIframe(url); }, 150);
           }
         }, 2000);
       }).catch(() => {
-        previewFrame.src = staticUrl;
+        replacePreviewIframe(staticUrl);
       });
     } else {
       // Static preview path: reload iframe
-      previewFrame.src = staticUrl;
+      replacePreviewIframe(staticUrl);
     }
   }
 }
 
 // Chat input events
 if (chatSendBtn) {
-  chatSendBtn.addEventListener('click', sendChatMessage);
+  chatSendBtn.addEventListener('click', () => sendChatMessage());
 }
 if (chatInput) {
   chatInput.addEventListener('keydown', (e) => {
@@ -3316,7 +3348,7 @@ downloadBtn.addEventListener('click', () => {
 if (previewReload) {
   previewReload.addEventListener('click', () => {
     if (previewFrame.src && previewFrame.src !== 'about:blank') {
-      previewFrame.src = previewFrame.src;
+      replacePreviewIframe(previewFrame.src);
     }
   });
 }
@@ -3836,6 +3868,111 @@ function authHeaders() {
   return {};
 }
 
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+// ── DynamoDB Project Sync ──
+
+let _syncDebounceTimer = null;
+
+/** Debounced persist of a single project to DynamoDB (for authenticated users). */
+function debouncedPersistProject(project) {
+  if (!isAuthenticated || !authIdToken) return;
+  clearTimeout(_syncDebounceTimer);
+  _syncDebounceTimer = setTimeout(async () => {
+    try {
+      await fetch('/api/auth/projects/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          projects: [{
+            id: project.id,
+            sessionId: project.sessionId,
+            name: project.name || 'Untitled',
+            figmaUrl: project.figmaUrl || '',
+            frameworks: project.frameworks || [],
+            createdAt: project.createdAt || Date.now(),
+            updatedAt: project.updatedAt || Date.now(),
+          }],
+        }),
+      });
+    } catch (e) {
+      console.warn('[sync] DynamoDB persist failed:', e);
+    }
+  }, 2000);
+}
+
+/** After login: push localStorage projects to DynamoDB, then merge server list back. */
+async function syncProjectsAfterLogin() {
+  if (!isAuthenticated || !authIdToken) return;
+  try {
+    const localProjects = loadProjects();
+    const fingerprint = getCookie('ftfp');
+
+    // Push local projects to server
+    if (localProjects.length > 0) {
+      await fetch('/api/auth/projects/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          projects: localProjects.map(p => ({
+            id: p.id,
+            sessionId: p.sessionId || p.id,
+            name: p.name || 'Untitled',
+            figmaUrl: p.figmaUrl || '',
+            frameworks: p.frameworks || [],
+            createdAt: p.createdAt || Date.now(),
+            updatedAt: p.updatedAt || Date.now(),
+          })),
+          fingerprint: fingerprint || undefined,
+        }),
+      });
+    }
+
+    // Fetch merged list from server
+    const res = await fetch('/api/auth/projects', { headers: authHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.projects)) {
+        mergeRemoteProjects(data.projects);
+      }
+    }
+  } catch (e) {
+    console.warn('[sync] Project sync after login failed:', e);
+  }
+}
+
+/** Merge remote DynamoDB projects into localStorage. Later updatedAt wins. */
+function mergeRemoteProjects(remoteProjects) {
+  const local = loadProjects();
+  const localMap = new Map(local.map(p => [p.id || p.sessionId, p]));
+
+  for (const remote of remoteProjects) {
+    const key = remote.projectId || remote.id;
+    const existing = localMap.get(key);
+    if (!existing || (remote.updatedAt > (existing.updatedAt || 0))) {
+      localMap.set(key, {
+        ...existing,
+        id: key,
+        sessionId: remote.sessionId || key,
+        name: remote.name || existing?.name || 'Untitled',
+        figmaUrl: remote.figmaUrl || existing?.figmaUrl || '',
+        frameworks: remote.frameworks || existing?.frameworks || [],
+        createdAt: remote.createdAt || existing?.createdAt || Date.now(),
+        updatedAt: remote.updatedAt || existing?.updatedAt || Date.now(),
+      });
+    }
+  }
+
+  const merged = Array.from(localMap.values())
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, MAX_PROJECTS);
+  saveProjects(merged);
+  renderProjectList();
+}
+
 async function initAuth() {
   try {
     const res = await fetch('/api/auth/config');
@@ -3856,7 +3993,7 @@ async function initAuth() {
         cogUser.getSession((err, session) => {
           if (!err && session && session.isValid()) {
             authIdToken = session.getIdToken().getJwtToken();
-            fetchAuthMe();
+            fetchAuthMe().then(() => syncProjectsAfterLogin());
           }
         });
       }
@@ -4022,6 +4159,7 @@ function initLoginModal() {
         spinner.style.display = 'none';
         fetchAuthMe().then(() => {
           updateFreeTierDisplay();
+          syncProjectsAfterLogin();
           closeLoginModal();
           if (loginSuccessCallback) { const cb = loginSuccessCallback; loginSuccessCallback = null; cb(); }
         });

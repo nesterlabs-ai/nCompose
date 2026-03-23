@@ -352,7 +352,15 @@ function buildShadcnInlineDefs(
     // Strip interface blocks (non-exported)
     source = source.replace(/^interface\s+\w+[\s\S]*?\n\}/gm, '');
 
-    defs.push(source.trim());
+    // Wrap each component source in an IIFE and register it on a window
+    // registry under a SESSION placeholder so we can clean up previously-
+    // inlined components for that session and avoid name collisions when
+    // previews are navigated without a full page reload.
+    const compName = sub.shadcnComponentName;
+    // NOTE: __SESSION_ID__ will be replaced by generatePreviewHTML with the
+    // real sessionId value so we don't need access to it here.
+    const wrappedSource = `(function(){\n${source.trim()}\n  try {\n    window.__INLINED_COMPONENTS = window.__INLINED_COMPONENTS || {};\n    var __sid = "__SESSION_ID__";\n    window.__INLINED_COMPONENTS[__sid] = window.__INLINED_COMPONENTS[__sid] || {};\n    if (typeof ${compName} !== 'undefined') { window.__INLINED_COMPONENTS[__sid][${JSON.stringify(compName)}] = true; window[${JSON.stringify(compName)}] = ${compName}; }\n  } catch (e) { }\n})();`;
+    defs.push(wrappedSource);
   }
 
   return defs.join('\n\n') + '\n\n';
@@ -387,7 +395,16 @@ export function generatePreviewHTML(
   // Inline shadcn sub-component definitions so the preview can render them
   // without a module bundler. Extracts the component function from the .tsx source
   // and makes it available as a global (e.g. Button, Card, Input).
-  const shadcnInlineDefs = buildShadcnInlineDefs(shadcnSubComponents);
+    let shadcnInlineDefs = buildShadcnInlineDefs(shadcnSubComponents);
+    // Substitute the session placeholder in the inlined defs so registrations
+    // are stored under this preview's session and can be cleaned up later.
+    if (shadcnInlineDefs) {
+      shadcnInlineDefs = shadcnInlineDefs.replace(/__SESSION_ID__/g, sessionId);
+    }
+
+  // Names of the inlined shadcn components — used by the in-page Babel
+  // plugin so we don't rewrite their JSX into __Render(...) calls.
+  const shadcnInlineNames = (shadcnSubComponents || []).map(s => s.shadcnComponentName);
 
   // When shadcn components are present, they use Tailwind utility classes
   // (including arbitrary values like w-[240px], bg-[#hex]). The Tailwind CDN
@@ -416,14 +433,17 @@ function __Render(name, props, children) {
   return React.createElement('div', wrapperProps, content);
 }
 `;
-  const escapedJSX = (
-    `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
-    universalRendererRuntime +
-    shadcnInlineDefs +
-    code + '\n' +
-    appCode + '\n' +
-    `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`
-  ).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    const escapedJSX = (
+        `try { if (window.__INLINED_COMPONENTS && window.__INLINED_COMPONENTS[${JSON.stringify(sessionId)}]) { Object.keys(window.__INLINED_COMPONENTS[${JSON.stringify(sessionId)}]).forEach(function(k){ try{ delete window[k]; }catch(e){} }); delete window.__INLINED_COMPONENTS[${JSON.stringify(sessionId)}]; } } catch (e) {}` +
+      `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
+      universalRendererRuntime +
+      shadcnInlineDefs +
+      code + '\n' +
+      appCode + '\n' +
+      `try { if (window.__REACT_ROOT__ && typeof window.__REACT_ROOT__.unmount === 'function') { try { window.__REACT_ROOT__.unmount(); } catch (e) {} } } catch (e) {}
+window.__REACT_ROOT__ = ReactDOM.createRoot(document.getElementById('root'));
+window.__REACT_ROOT__.render(React.createElement(App));`
+    ).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -460,6 +480,7 @@ function __Render(name, props, children) {
     };
     try {
       var jsxCode = \`${escapedJSX}\`;
+      var __KNOWN_COMPONENTS = ${JSON.stringify(shadcnInlineNames)};
       // Babel plugin: rewrite unknown custom components (<Foo />) into __Render("Foo", props, children)
       var universalComponentRendererPlugin = function(babel) {
         var t = babel.types;
@@ -527,6 +548,9 @@ function __Render(name, props, children) {
               if (!opening || !opening.name) return;
               if (!t.isJSXIdentifier(opening.name)) return; // ignore MemberExpression (<UI.Button />) etc
               var name = opening.name.name;
+              // If this component is one of the known inlined shadcn components,
+              // leave it alone so its implementation can receive and handle props.
+              if (Array.isArray(__KNOWN_COMPONENTS) && __KNOWN_COMPONENTS.indexOf(name) !== -1) return;
               if (!isUppercaseComponentName(name)) return; // keep intrinsic tags
 
               var propsExpr = buildPropsExpression(opening.attributes || []);

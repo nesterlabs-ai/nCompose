@@ -119,6 +119,14 @@ export interface PageConfig {
   minChildHeight: number;
 }
 
+// ── DynamoDB ─────────────────────────────────────────────────────────────
+
+export interface DynamoConfig {
+  tableName: string;
+  region: string;
+  endpoint: string;
+}
+
 // ── Cognito Auth ──────────────────────────────────────────────────────────
 
 export interface CognitoConfig {
@@ -218,10 +226,16 @@ export const config = {
     minChildHeight: envInt('PAGE_MIN_CHILD_HEIGHT', 60),
   } as PageConfig,
 
+  dynamo: {
+    tableName: envStr('DYNAMODB_TABLE_NAME', ''),
+    region: envStr('DYNAMODB_REGION', 'us-west-2'),
+    endpoint: envStr('DYNAMODB_ENDPOINT', ''),
+  } as DynamoConfig,
+
   cognito: {
     userPoolId: envStr('COGNITO_USER_POOL_ID', ''),
     clientId: envStr('COGNITO_CLIENT_ID', ''),
-    region: envStr('COGNITO_REGION', 'us-east-1'),
+    region: envStr('COGNITO_REGION', 'us-west-2'),
   } as CognitoConfig,
 
   freeTier: {

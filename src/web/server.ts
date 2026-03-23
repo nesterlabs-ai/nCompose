@@ -20,6 +20,7 @@ import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
 import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, isAuthEnabled } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
+import { isDynamoEnabled, saveUserProject } from './db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -291,6 +292,9 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
 
   const sessionId = generateSessionId();
 
+  // Send sessionId early so the client can create a placeholder project immediately
+  sendEvent('session', { sessionId });
+
   sendEvent('step', { message: 'Starting conversion...' });
 
   convertFigmaToCode(
@@ -313,18 +317,35 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
       },
     },
   )
-    .then((result) => {
+    .then(async (result) => {
       clearInterval(heartbeat);
 
       try {
         // Increment free tier usage for anonymous users
         if ((req as any)._fingerprint) {
-          incrementFreeTierUsage((req as any)._fingerprint);
+          await incrementFreeTierUsage((req as any)._fingerprint);
         }
 
         // Store result in session
         const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
         setSession(sessionId, result, llmName, selectedFrameworks);
+
+        // Persist project metadata to DynamoDB for authenticated users
+        if (req.user && isDynamoEnabled()) {
+          try {
+            await saveUserProject(req.user.sub, {
+              projectId: sessionId,
+              sessionId,
+              name: result.componentName,
+              figmaUrl: figmaUrl,
+              frameworks: selectedFrameworks,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          } catch (dbErr) {
+            console.error('[convert] DynamoDB project save failed:', dbErr);
+          }
+        }
 
         // Write output files to disk (same as CLI)
         const componentOutputDir = join(config.server.outputDir, `${result.componentName}-${sessionId}`);
@@ -437,7 +458,7 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', (req: any, res: any) => {
-  const { sessionId, prompt, selectedElement } = req.body;
+  const { sessionId, prompt, selectedElement, chatHistory } = req.body;
 
   if (!sessionId || typeof sessionId !== 'string') {
     res.status(400).json({ error: 'sessionId is required' });
@@ -448,10 +469,25 @@ app.post('/api/refine', (req: any, res: any) => {
     return;
   }
 
-  const session = getSessionEntry(sessionId);
+  let session = getSessionEntry(sessionId);
+  if (!session) {
+    // Try disk fallback — re-hydrate into memory
+    const diskResult = loadResultFromDisk(sessionId);
+    if (diskResult) {
+      setSession(sessionId, diskResult);
+      session = getSessionEntry(sessionId);
+    }
+  }
   if (!session) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
+  }
+
+  // Seed conversation from client chat history if server has none (re-hydrated session)
+  if (session.conversation.length === 0 && Array.isArray(chatHistory) && chatHistory.length > 0) {
+    session.conversation = chatHistory
+      .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+      .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
   }
 
   // Set SSE headers

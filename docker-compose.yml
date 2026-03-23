@@ -24,6 +24,10 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - SERVER_OUTPUT_DIR=/app/web_output
+      - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-}
+      - DYNAMODB_REGION=${DYNAMODB_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
     volumes:
       - web_output:/app/web_output
 

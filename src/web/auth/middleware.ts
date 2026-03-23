@@ -4,14 +4,22 @@
  * - attachUser: global — reads Bearer token, sets req.user. Never rejects.
  * - requireAuth: 401 if not authenticated (passthrough when auth disabled).
  * - requireAuthOrFree: allows auth'd users OR anonymous with free-tier quota.
+ *
+ * Free-tier tracking:
+ *   When DynamoDB is enabled → persists across restarts.
+ *   Otherwise → in-memory Map (current behaviour, zero breaking changes).
  */
 import crypto from 'crypto';
 import { isAuthEnabled, verifyIdToken } from './cognito.js';
 import { config } from '../../config.js';
+import {
+  isDynamoEnabled,
+  dynamoGetFreeTierUsage,
+  dynamoIncrementFreeTierUsage,
+} from '../db/index.js';
 
-// ── Free tier tracking (in-memory) ──────────────────────────────────────────
-
-const freeTierUsage = new Map<string, number>();
+// ── In-memory fallback ──────────────────────────────────────────────────
+const freeTierUsageMap = new Map<string, number>();
 
 const FINGERPRINT_COOKIE = 'ftfp';
 
@@ -29,17 +37,40 @@ function getFingerprint(req: any, res: any): string {
   return fp;
 }
 
-export function getFreeTierInfo(fingerprint: string): { used: number; limit: number; remaining: number } {
+export async function getFreeTierInfo(
+  fingerprint: string,
+): Promise<{ used: number; limit: number; remaining: number }> {
   const limit = config.freeTier.maxFreeConversions;
-  const used = freeTierUsage.get(fingerprint) || 0;
+  let used: number;
+
+  if (isDynamoEnabled()) {
+    try {
+      used = await dynamoGetFreeTierUsage(fingerprint);
+    } catch (err) {
+      console.error('[free-tier] DynamoDB read failed, falling back to memory:', err);
+      used = freeTierUsageMap.get(fingerprint) || 0;
+    }
+  } else {
+    used = freeTierUsageMap.get(fingerprint) || 0;
+  }
+
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
 
-export function incrementFreeTierUsage(fingerprint: string): void {
-  freeTierUsage.set(fingerprint, (freeTierUsage.get(fingerprint) || 0) + 1);
+export async function incrementFreeTierUsage(fingerprint: string): Promise<void> {
+  // Always update in-memory map (serves as fallback + fast cache)
+  freeTierUsageMap.set(fingerprint, (freeTierUsageMap.get(fingerprint) || 0) + 1);
+
+  if (isDynamoEnabled()) {
+    try {
+      await dynamoIncrementFreeTierUsage(fingerprint);
+    } catch (err) {
+      console.error('[free-tier] DynamoDB increment failed:', err);
+    }
+  }
 }
 
-// ── Middleware ───────────────────────────────────────────────────────────────
+// ── Middleware ───────────────────────────────────────────────────────────
 
 export async function attachUser(req: any, _res: any, next: any): Promise<void> {
   if (!isAuthEnabled()) { next(); return; }
@@ -59,14 +90,13 @@ export function requireAuth(req: any, res: any, next: any): void {
   res.status(401).json({ error: 'Authentication required' });
 }
 
-export function requireAuthOrFree(req: any, res: any, next: any): void {
+export async function requireAuthOrFree(req: any, res: any, next: any): Promise<void> {
   if (!isAuthEnabled()) { next(); return; }
   if (req.user) { next(); return; }
 
   const fp = getFingerprint(req, res);
-  const info = getFreeTierInfo(fp);
+  const info = await getFreeTierInfo(fp);
   if (info.remaining > 0) {
-    // Store fingerprint on request for later incrementing
     req._fingerprint = fp;
     next();
     return;

@@ -2709,13 +2709,13 @@ function setChatLoading(loading) {
   if (chatSendBtn) chatSendBtn.disabled = loading;
 }
 
-function sendChatMessage(customText) {
+function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (chatRefining || !currentSessionId) return;
   const prompt = customText || chatInput?.value?.trim();
   if (!prompt) return;
 
-  // Add user message to chat
-  addChatMessage('user', prompt);
+  // Add user message to chat (show clean display message if provided, otherwise full prompt)
+  addChatMessage('user', displayMessage || prompt);
   chatInput.value = '';
   chatInput.style.height = 'auto';
 
@@ -2723,17 +2723,19 @@ function sendChatMessage(customText) {
   setChatLoading(true);
   const loadingMsg = addChatMessage('system', 'Generating...');
 
+  // Use saved selection (from floating prompt) or current global selection
+  const selElement = savedSelectedElement || selectedElementInfo;
   const project = getProject(currentProjectId);
   const body = JSON.stringify({
     sessionId: currentSessionId,
     prompt,
-    selectedElement: selectedElementInfo && (selectedElementInfo.dataVeId || selectedElementInfo.variantLabel)
+    selectedElement: selElement && (selElement.dataVeId || selElement.variantLabel)
       ? {
-        dataVeId: selectedElementInfo.dataVeId,
-        tagName: selectedElementInfo.tagName,
-        textContent: selectedElementInfo.textContent,
-        variantLabel: selectedElementInfo.variantLabel,
-        variantProps: selectedElementInfo.variantProps,
+        dataVeId: selElement.dataVeId,
+        tagName: selElement.tagName,
+        textContent: selElement.textContent,
+        variantLabel: selElement.variantLabel,
+        variantProps: selElement.variantProps,
       }
       : undefined,
     chatHistory: project?.chatHistory || [],
@@ -2872,6 +2874,9 @@ function handleRefineComplete(data) {
     if (data.elementMap) update.elementMap = data.elementMap;
     updateProjectField(currentProjectId, update);
   }
+
+  // Clear stale visual-edit selection so the next click starts fresh
+  selectedElementInfo = null;
 
   // Refresh Monaco if a tab is open
   if (activeFile && monacoEditor) {
@@ -4539,6 +4544,8 @@ function toggleVisualEditMode(active) {
     if (floatingPrompt) floatingPrompt.style.display = 'none';
     if (chatMessages) chatMessages.style.display = 'flex';
     if (panelHeaderText) panelHeaderText.textContent = 'Import Design';
+    // Clear stale visual-edit selection when leaving visual edit mode
+    selectedElementInfo = null;
     if (loadProjects().length > 0 && currentProjectId) {
       // Restore appropriate view
     } else if (emptyState) {
@@ -4744,26 +4751,41 @@ function generateContextFromFloatingInput(promptText) {
   if (selectedElementInfo.variantLabel && selectedElementInfo.variantLabel !== 'undefined / undefined') {
     variantDetails = ` [Clicked inside variant state: "${selectedElementInfo.variantLabel}"]`;
   }
+  const veIdHint = selectedElementInfo.dataVeId
+    ? ` (data-ve-id="${selectedElementInfo.dataVeId}")`
+    : '';
   return `You are an expert Frontend Developer. Please update the underlying React component code based on the following user request.
 
-Target Element: <${selectedElementInfo.tagName.toUpperCase()}> containing text "${selectedElementInfo.textContent.replace(/\n/g, ' ').substring(0, 30).trim()}"${variantDetails}
+IMPORTANT: Only modify the SPECIFIC element identified below. Do NOT change any other elements in the component.
+
+Target Element: <${selectedElementInfo.tagName.toUpperCase()}>${veIdHint} containing text "${selectedElementInfo.textContent.replace(/\n/g, ' ').substring(0, 30).trim()}"${variantDetails}
 
 User Request: "${promptText}"
 
-Return the fully rewritten React component code incorporating this requested modification exactly as instructed.`;
+Return the fully rewritten React component code incorporating this requested modification ONLY to the target element. Leave all other elements unchanged.`;
 }
 
 // AI Input in Floating Prompt
+function buildVisualEditDisplayMessage(promptText) {
+  const tag = selectedElementInfo?.tagName || 'element';
+  const text = selectedElementInfo?.textContent?.replace(/\n/g, ' ').trim().substring(0, 30);
+  const target = text ? `"${text}" <${tag}>` : `<${tag}>`;
+  return `[Visual Edit] ${target}: ${promptText}`;
+}
+
 if (floatingInput) {
   floatingInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const promptText = floatingInput.value.trim();
       if (!promptText) return;
 
+      // Capture selection BEFORE toggle clears it
+      const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
+      const displayMsg = buildVisualEditDisplayMessage(promptText);
       const context = generateContextFromFloatingInput(promptText);
       toggleVisualEditMode(false);
       if (chatInput) chatInput.value = context;
-      sendChatMessage(context);
+      sendChatMessage(context, savedSelection, displayMsg);
       floatingInput.value = '';
     }
   });
@@ -4773,10 +4795,13 @@ if (floatingSendBtn) {
   floatingSendBtn.addEventListener('click', () => {
     const promptText = floatingInput.value.trim();
     if (!promptText) return;
+    // Capture selection BEFORE toggle clears it
+    const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
+    const displayMsg = buildVisualEditDisplayMessage(promptText);
     const context = generateContextFromFloatingInput(promptText);
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = context;
-    sendChatMessage(context);
+    sendChatMessage(context, savedSelection, displayMsg);
     floatingInput.value = '';
   });
 }
@@ -4919,11 +4944,15 @@ if (veUnsavedSave) {
     promptLines.push("Return the fully rewritten React component code containing these exact modifications.");
 
     const promptStr = promptLines.join('\n');
+    // Capture selection BEFORE toggle clears it
+    const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
+    const editCount = i - 1;
+    const displayMsg = `[Visual Edit] Saving ${editCount} edit${editCount !== 1 ? 's' : ''} to code`;
     pendingVisualEdits = {};
     updateUnsavedBar();
 
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = promptStr;
-    sendChatMessage(promptStr);
+    sendChatMessage(promptStr, savedSelection, displayMsg);
   });
 }

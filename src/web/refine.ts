@@ -20,7 +20,7 @@ export interface RefinementResult {
   frameworkOutputs: Record<string, string>;
   assistantMessage: string;
   /** Element-to-code map for visual edit (updated after refinement) */
-  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string; insideLoop?: boolean }>;
 }
 
 /** Selected element context from preview (when user clicks in visual edit mode). */
@@ -71,7 +71,7 @@ export async function refineComponent(options: {
   /** When refining from visual edit click, provides element targeting context */
   selectedElement?: SelectedElementContext;
   /** Element map for resolving dataVeId to metadata (from session) */
-  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
+  elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string; insideLoop?: boolean }>;
   onStep?: (step: string) => void;
 }): Promise<RefinementResult> {
   const {
@@ -114,13 +114,40 @@ export async function refineComponent(options: {
 
   if (hasDataVeId) {
     const entry = elementMap[selectedElement.dataVeId!];
+    // Prefer runtime textContent (from the actual clicked DOM element) over static elementMap text
+    const displayText = selectedElement.textContent || entry.textContent;
     elementContextBlock += `
 
 IMPORTANT - Element targeting: The user selected a specific element in the preview (data-ve-id="${selectedElement.dataVeId}").
 - Tag: <${entry.tagName}>
 - Path in component tree: ${entry.path}
 ${entry.className ? `- className: ${entry.className}` : ''}
-${entry.textContent ? `- Current text: "${entry.textContent}"` : ''}`;
+${displayText ? `- Current text: "${displayText}"` : ''}`;
+
+    // Sibling disambiguation — help LLM distinguish among same-tag siblings
+    const parentPath = entry.path.includes('-')
+      ? entry.path.substring(0, entry.path.lastIndexOf('-')) : '';
+    if (parentPath && elementMap) {
+      const siblings = Object.values(elementMap).filter(
+        e => e.path.startsWith(parentPath + '-') &&
+        e.path.split('-').length === entry.path.split('-').length &&
+        e.tagName === entry.tagName
+      );
+      if (siblings.length > 1) {
+        const position = siblings.findIndex(s => s.path === entry.path) + 1;
+        elementContextBlock += `\n- Position: ${ordinal(position)} <${entry.tagName}> among ${siblings.length} sibling <${entry.tagName}> elements`;
+        const sibTexts = siblings.filter(s => s.path !== entry.path && s.textContent)
+          .map(s => `"${s.textContent}"`);
+        if (sibTexts.length > 0) {
+          elementContextBlock += ` (other siblings: ${sibTexts.join(', ')})`;
+        }
+      }
+    }
+
+    // Warn when element is inside a <For> loop — multiple DOM instances share the same ID
+    if (entry.insideLoop) {
+      elementContextBlock += `\n- NOTE: This element is inside a <For> loop. Apply the change to the loop template so ALL iterations are affected.`;
+    }
   }
 
   // Variant-specific: user clicked inside ONE variant in the grid — change must apply ONLY to that variant
@@ -142,7 +169,7 @@ Props from selection: ${propsDesc}. Use normalized values for comparison (e.g. $
 Render the new content ONLY when the condition matches. For ALL other variants, keep the original content unchanged.`;
   } else if (hasDataVeId) {
     elementContextBlock += `
-Apply the requested changes to THIS element specifically.`;
+CRITICAL: Apply the requested change ONLY to THIS specific element (data-ve-id="${selectedElement.dataVeId}"). Do NOT modify any other elements in the component. Every other element must remain exactly as-is.`;
   }
 
   const isShadcn = currentMitosis.includes('shadcn/ui codegen');
@@ -256,4 +283,11 @@ User request: ${userPrompt}${elementContextBlock}
     assistantMessage: llmOutput,
     elementMap: newElementMap,
   };
+}
+
+/** Convert a 1-based number to its ordinal string (1st, 2nd, 3rd, …). */
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }

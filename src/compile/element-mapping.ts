@@ -21,6 +21,8 @@ export interface ElementMapEntry {
   className?: string;
   /** id from properties if present */
   id?: string;
+  /** True when this element is inside a <For> loop (multiple DOM instances share the same data-ve-id) */
+  insideLoop?: boolean;
 }
 
 /** Map from data-ve-id (path) to element metadata. */
@@ -59,6 +61,15 @@ function walkAndInject(
       const children = node.children;
       if (children && Array.isArray(children)) {
         walkAndInject(children, path, elementMap);
+        // Mark all descendant entries inside a <For> — multiple DOM instances
+        // will share the same data-ve-id at runtime
+        if (name === 'For') {
+          for (const entry of Object.values(elementMap)) {
+            if (entry.path.startsWith(path + '-') || entry.path === path) {
+              entry.insideLoop = true;
+            }
+          }
+        }
       }
       return;
     }

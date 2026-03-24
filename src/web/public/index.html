@@ -363,14 +363,22 @@
                   <div class="ve-sidebar__control">
                     <label>Text color</label>
                     <div class="color-input-wrap">
-                      <div class="color-preview" id="ve-color-text-preview"></div>
+                      <div style="position: relative; width: 16px; height: 16px; flex-shrink: 0;">
+                        <input type="color" id="ve-color-text-picker"
+                          style="position: absolute; top:0; left:0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
+                        <div class="color-preview" id="ve-color-text-preview" style="pointer-events: none;"></div>
+                      </div>
                       <input type="text" id="ve-color-text" value="foreground">
                     </div>
                   </div>
                   <div class="ve-sidebar__control">
                     <label>Background color</label>
                     <div class="color-input-wrap">
-                      <div class="color-preview" id="ve-color-bg-preview"></div>
+                      <div style="position: relative; width: 16px; height: 16px; flex-shrink: 0;">
+                        <input type="color" id="ve-color-bg-picker"
+                          style="position: absolute; top:0; left:0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
+                        <div class="color-preview" id="ve-color-bg-preview" style="pointer-events: none;"></div>
+                      </div>
                       <input type="text" id="ve-color-bg" value="Inherit">
                     </div>
                   </div>
@@ -384,14 +392,42 @@
                     <label>Margin</label>
                     <div class="spacing-input-group">
                       <input type="text" id="ve-margin-all" placeholder="0">
-                      <button class="spacing-expand-btn">::</button>
+                      <button class="spacing-expand-btn" id="ve-margin-expand">::</button>
+                    </div>
+                    <div class="spacing-expanded-grid" id="ve-margin-expanded" style="display: none; margin-top: 8px;">
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Top</label><input type="text"
+                          id="ve-margin-top" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Right</label><input type="text"
+                          id="ve-margin-right" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Bottom</label><input type="text"
+                          id="ve-margin-bottom" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Left</label><input type="text"
+                          id="ve-margin-left" placeholder="0"></div>
                     </div>
                   </div>
                   <div class="ve-sidebar__control">
                     <label>Padding</label>
                     <div class="spacing-input-group">
                       <input type="text" id="ve-padding-all" placeholder="0">
-                      <button class="spacing-expand-btn">::</button>
+                      <button class="spacing-expand-btn" id="ve-padding-expand">::</button>
+                    </div>
+                    <div class="spacing-expanded-grid" id="ve-padding-expanded" style="display: none; margin-top: 8px;">
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Top</label><input type="text"
+                          id="ve-padding-top" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Right</label><input type="text"
+                          id="ve-padding-right" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Bottom</label><input type="text"
+                          id="ve-padding-bottom" placeholder="0"></div>
+                      <div class="expanded-input"><label
+                          style="font-size: 10px; color: var(--text-muted)">Left</label><input type="text"
+                          id="ve-padding-left" placeholder="0"></div>
                     </div>
                   </div>
                 </div>
@@ -414,7 +450,9 @@
                   <div class="ve-sidebar__control">
                     <label>Font style</label>
                     <select id="ve-font-style">
-                      <option>Select font style</option>
+                      <option value="normal">Normal</option>
+                      <option value="italic">Italic</option>
+                      <option value="oblique">Oblique</option>
                     </select>
                   </div>
                 </div>
@@ -454,6 +492,16 @@
                         </svg></button>
                     </div>
                   </div>
+                </div>
+              </div>
+              <div id="ve-unsaved-bar" class="ve-unsaved-bar" style="display: none;">
+                <div class="ve-unsaved-info">
+                  <span class="ve-unsaved-dot"></span>
+                  <span id="ve-unsaved-count">0 edits</span>
+                </div>
+                <div class="ve-unsaved-actions">
+                  <button id="ve-unsaved-discard" class="ve-unsaved-btn">Discard</button>
+                  <button id="ve-unsaved-save" class="ve-unsaved-btn ve-unsaved-btn--primary">Save to Code</button>
                 </div>
               </div>
             </div>
@@ -813,7 +861,8 @@
   </div>
 
   <!-- Login Modal -->
-  <div class="modal-overlay" id="login-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="login-dialog-title" aria-hidden="true">
+  <div class="modal-overlay" id="login-dialog-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="login-dialog-title" aria-hidden="true">
     <div class="modal-dialog modal-dialog--login" id="login-dialog">
       <div class="modal-header">
         <h2 class="modal-title" id="login-dialog-title">
@@ -854,7 +903,8 @@
           </div>
           <div class="login-field">
             <label for="signup-password">Password</label>
-            <input type="password" id="signup-password" placeholder="Password (8+ characters)" autocomplete="new-password" />
+            <input type="password" id="signup-password" placeholder="Password (8+ characters)"
+              autocomplete="new-password" />
           </div>
           <div class="login-field">
             <label for="signup-confirm">Confirm Password</label>
@@ -870,7 +920,8 @@
 
         <!-- Verification Form -->
         <div id="login-verify-form" class="login-form" style="display:none;">
-          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">We sent a verification code to your email. Enter it below to confirm your account.</p>
+          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">We sent a verification code to your
+            email. Enter it below to confirm your account.</p>
           <div class="login-field">
             <label for="verify-code">Verification Code</label>
             <input type="text" id="verify-code" placeholder="6-digit code" autocomplete="one-time-code" />
@@ -904,7 +955,8 @@
           </div>
           <div class="login-field">
             <label for="reset-password">New Password</label>
-            <input type="password" id="reset-password" placeholder="New password (8+ characters)" autocomplete="new-password" />
+            <input type="password" id="reset-password" placeholder="New password (8+ characters)"
+              autocomplete="new-password" />
           </div>
           <div class="login-error" id="reset-error"></div>
           <button type="button" class="login-submit" id="reset-submit-btn">

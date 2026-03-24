@@ -133,18 +133,69 @@ const floatingSendBtn = document.getElementById('ve-ai-send');
 const panelHeaderActions = document.getElementById('panel-header-actions');
 const panelHeaderText = document.querySelector('.panel__header span');
 
+// Draft / Unsaved Edits
+let pendingVisualEdits = {};
+const veUnsavedBar = document.getElementById('ve-unsaved-bar');
+const veUnsavedCount = document.getElementById('ve-unsaved-count');
+const veUnsavedDiscard = document.getElementById('ve-unsaved-discard');
+const veUnsavedSave = document.getElementById('ve-unsaved-save');
+
+function updateUnsavedBar() {
+  const numEdits = Object.values(pendingVisualEdits).reduce((sum, item) => sum + Object.keys(item.changes).length, 0);
+  if (numEdits > 0) {
+    if (veUnsavedBar) {
+      veUnsavedBar.style.display = 'flex';
+      veUnsavedCount.textContent = `${numEdits} unsaved edit${numEdits !== 1 ? 's' : ''}`;
+    }
+  } else {
+    if (veUnsavedBar) veUnsavedBar.style.display = 'none';
+  }
+}
+
+function registerVisualEdit(prop, value) {
+  if (!selectedElementInfo) return;
+  const key = selectedElementInfo.dataVeId || (selectedElementInfo.tagName + '-' + selectedElementInfo.textContent.replace(/\n/g, ' ').trim().substring(0, 25));
+  if (!pendingVisualEdits[key]) {
+    pendingVisualEdits[key] = {
+      tagName: selectedElementInfo.tagName,
+      textContent: selectedElementInfo.textContent,
+      variantLabel: selectedElementInfo.variantLabel,
+      variantProps: selectedElementInfo.variantProps,
+      changes: {}
+    };
+  }
+  pendingVisualEdits[key].changes[prop] = value;
+  updateUnsavedBar();
+}
+
 // Property Controls
 var veTextContent = document.getElementById('ve-text-content');
 var veColorText = document.getElementById('ve-color-text');
 var veColorTextPreview = document.getElementById('ve-color-text-preview');
 var veColorBg = document.getElementById('ve-color-bg');
 var veColorBgPreview = document.getElementById('ve-color-bg-preview');
+var veColorTextPicker = document.getElementById('ve-color-text-picker');
+var veColorBgPicker = document.getElementById('ve-color-bg-picker');
 var veFontSize = document.getElementById('ve-font-size');
 var veFontWeight = document.getElementById('ve-font-weight');
 var veFontStyle = document.getElementById('ve-font-style');
 var veMarginAll = document.getElementById('ve-margin-all');
+var veMarginExpand = document.getElementById('ve-margin-expand');
+var veMarginExpanded = document.getElementById('ve-margin-expanded');
+var veMarginTop = document.getElementById('ve-margin-top');
+var veMarginRight = document.getElementById('ve-margin-right');
+var veMarginBottom = document.getElementById('ve-margin-bottom');
+var veMarginLeft = document.getElementById('ve-margin-left');
 var vePaddingAll = document.getElementById('ve-padding-all');
+var vePaddingExpand = document.getElementById('ve-padding-expand');
+var vePaddingExpanded = document.getElementById('ve-padding-expanded');
+var vePaddingTop = document.getElementById('ve-padding-top');
+var vePaddingRight = document.getElementById('ve-padding-right');
+var vePaddingBottom = document.getElementById('ve-padding-bottom');
+var vePaddingLeft = document.getElementById('ve-padding-left');
 var veAlignBtns = document.querySelectorAll('.align-btn');
+var veAiVoiceBtn = document.getElementById('ve-ai-voice');
+var veAiDeleteBtn = document.getElementById('ve-ai-delete');
 
 // Resize
 const resizeHandle = document.getElementById('resize-handle');
@@ -1063,6 +1114,7 @@ function showInlinePreview(project) {
               backgroundColor: style.backgroundColor,
               fontSize: style.fontSize,
               fontWeight: style.fontWeight,
+              fontStyle: style.fontStyle,
               margin: style.margin,
               padding: style.padding,
               textAlign: style.textAlign
@@ -1078,7 +1130,12 @@ function showInlinePreview(project) {
 
         window.addEventListener('message', (e) => {
           console.log('Iframe received message:', e.data.type, e.data.active);
-          if (e.data.type === 'updateElement') {
+          if (e.data.type === 'deleteElement') {
+            if (selectedEl) {
+              selectedEl.remove();
+              selectedEl = null;
+            }
+          } else if (e.data.type === 'updateElement') {
             if (selectedEl) {
               if (e.data.prop === 'textContent') {
                 selectedEl.textContent = e.data.value;
@@ -1983,6 +2040,7 @@ export default App;
             backgroundColor: style.backgroundColor,
             fontSize: style.fontSize,
             fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
             margin: style.margin,
             padding: style.padding,
             textAlign: style.textAlign
@@ -1998,7 +2056,12 @@ export default App;
 
       window.addEventListener('message', (e) => {
         console.log('Iframe received message:', e.data.type, e.data.active);
-        if (e.data.type === 'updateElement') {
+        if (e.data.type === 'deleteElement') {
+          if (selectedEl) {
+            selectedEl.remove();
+            selectedEl = null;
+          }
+        } else if (e.data.type === 'updateElement') {
           if (selectedEl) {
             if (e.data.prop === 'textContent') {
               selectedEl.textContent = e.data.value;
@@ -2777,6 +2840,27 @@ function handleRefineComplete(data) {
   for (const [fw, code] of Object.entries(currentFrameworkOutputs)) {
     const tab = tabsData.find(t => t.key === fw);
     if (tab) tab.code = code;
+  }
+
+  // Synchronize the refined AI output directly into the Editor's file explorer
+  if (wiredAppFiles && currentComponentName && currentFrameworkOutputs.react) {
+    const extracted = extractReactCodeAndCss(currentFrameworkOutputs.react);
+    const componentCode = extracted.code.replace(/\.\/assets\//g, '/assets/');
+    const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
+    const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
+
+    const wcPath = `src/components/${currentComponentName}.jsx`;
+    wiredAppFiles[wcPath] = finalCode;
+
+    const wiredTab = tabsData.find(t => t.key === wcPath);
+    if (wiredTab) wiredTab.code = finalCode;
+
+    if (extracted.css) {
+      const cssPath = `src/components/${currentComponentName}.css`;
+      wiredAppFiles[cssPath] = extracted.css;
+      const cssTab = tabsData.find(t => t.key === cssPath);
+      if (cssTab) cssTab.code = extracted.css;
+    }
   }
 
   // Keep generatedTabsData in sync (for Generated/Wired toggle)
@@ -4491,19 +4575,54 @@ window.addEventListener('message', (e) => {
 });
 
 function updateVisualEditSidebar(info) {
+  const rgbToHexLocal = (color) => {
+    if (!color) return "#000000";
+    if (color.startsWith('#')) return color;
+    let [r, g, b] = color.match(/\d+/g) || [];
+    if (r && g && b) return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+    return "#000000";
+  };
+
   if (veTextContent) veTextContent.value = info.textContent;
   if (veColorText) veColorText.value = info.computedStyle.color;
   if (veColorTextPreview) veColorTextPreview.style.backgroundColor = info.computedStyle.color;
-  if (veColorBg) veColorBg.value = info.computedStyle.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'transparent' : info.computedStyle.backgroundColor;
-  if (veColorBgPreview) veColorBgPreview.style.backgroundColor = info.computedStyle.backgroundColor;
+  if (veColorTextPicker && info.computedStyle.color) {
+    veColorTextPicker.value = rgbToHexLocal(info.computedStyle.color);
+  }
+
+  const bgColor = info.computedStyle.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'transparent' : info.computedStyle.backgroundColor;
+  if (veColorBg) veColorBg.value = bgColor;
+  if (veColorBgPreview) veColorBgPreview.style.backgroundColor = bgColor;
+  if (veColorBgPicker && bgColor !== 'transparent' && info.computedStyle.backgroundColor) {
+    veColorBgPicker.value = rgbToHexLocal(info.computedStyle.backgroundColor);
+  }
 
   // Sync Typography
   if (veFontSize) {
+    let hasOption = Array.from(veFontSize.options).some(opt => opt.value === info.computedStyle.fontSize);
+    if (!hasOption && info.computedStyle.fontSize) {
+      let opt = document.createElement('option');
+      opt.value = opt.textContent = info.computedStyle.fontSize;
+      veFontSize.appendChild(opt);
+    }
     veFontSize.value = info.computedStyle.fontSize;
-    // If exact match not found, we could find closest or default
   }
   if (veFontWeight) {
-    veFontWeight.value = info.computedStyle.fontWeight;
+    let hasOption = Array.from(veFontWeight.options).some(opt =>
+      opt.value === info.computedStyle.fontWeight ||
+      (info.computedStyle.fontWeight === 'bold' && opt.value === '700') ||
+      (info.computedStyle.fontWeight === 'normal' && opt.value === '400')
+    );
+    if (!hasOption && info.computedStyle.fontWeight) {
+      let opt = document.createElement('option');
+      opt.value = opt.textContent = info.computedStyle.fontWeight;
+      veFontWeight.appendChild(opt);
+    }
+    let wMap = { 'bold': '700', 'normal': '400' };
+    veFontWeight.value = wMap[info.computedStyle.fontWeight] || info.computedStyle.fontWeight;
+  }
+  if (veFontStyle) {
+    veFontStyle.value = info.computedStyle.fontStyle || 'normal';
   }
 
   if (veAlignBtns) {
@@ -4515,6 +4634,27 @@ function updateVisualEditSidebar(info) {
   // Sync Spacing
   if (veMarginAll) veMarginAll.value = info.computedStyle.margin;
   if (vePaddingAll) vePaddingAll.value = info.computedStyle.padding;
+
+  const parseSpacing = (str) => {
+    let parts = (str || '0px').split(' ').filter(Boolean);
+    if (parts.length === 0) return { t: '0px', r: '0px', b: '0px', l: '0px' };
+    if (parts.length === 1) return { t: parts[0], r: parts[0], b: parts[0], l: parts[0] };
+    if (parts.length === 2) return { t: parts[0], r: parts[1], b: parts[0], l: parts[1] };
+    if (parts.length === 3) return { t: parts[0], r: parts[1], b: parts[2], l: parts[1] };
+    return { t: parts[0], r: parts[1], b: parts[2], l: parts[3] };
+  };
+
+  const cMar = parseSpacing(info.computedStyle.margin);
+  if (veMarginTop) veMarginTop.value = cMar.t;
+  if (veMarginRight) veMarginRight.value = cMar.r;
+  if (veMarginBottom) veMarginBottom.value = cMar.b;
+  if (veMarginLeft) veMarginLeft.value = cMar.l;
+
+  const cPad = parseSpacing(info.computedStyle.padding);
+  if (vePaddingTop) vePaddingTop.value = cPad.t;
+  if (vePaddingRight) vePaddingRight.value = cPad.r;
+  if (vePaddingBottom) vePaddingBottom.value = cPad.b;
+  if (vePaddingLeft) vePaddingLeft.value = cPad.l;
 
   console.log('Selected element:', info.tagName, info.computedStyle);
 }
@@ -4552,6 +4692,7 @@ function updateIframeElement(prop, value) {
   if (previewFrame && previewFrame.contentWindow) {
     previewFrame.contentWindow.postMessage({ type: 'updateElement', prop, value }, '*');
   }
+  registerVisualEdit(prop, value);
 }
 
 if (veTextContent) {
@@ -4598,6 +4739,20 @@ if (vePaddingAll) {
   vePaddingAll.addEventListener('input', (e) => updateIframeElement('padding', e.target.value));
 }
 
+function generateContextFromFloatingInput(promptText) {
+  let variantDetails = "";
+  if (selectedElementInfo.variantLabel && selectedElementInfo.variantLabel !== 'undefined / undefined') {
+    variantDetails = ` [Clicked inside variant state: "${selectedElementInfo.variantLabel}"]`;
+  }
+  return `You are an expert Frontend Developer. Please update the underlying React component code based on the following user request.
+
+Target Element: <${selectedElementInfo.tagName.toUpperCase()}> containing text "${selectedElementInfo.textContent.replace(/\n/g, ' ').substring(0, 30).trim()}"${variantDetails}
+
+User Request: "${promptText}"
+
+Return the fully rewritten React component code incorporating this requested modification exactly as instructed.`;
+}
+
 // AI Input in Floating Prompt
 if (floatingInput) {
   floatingInput.addEventListener('keydown', (e) => {
@@ -4605,8 +4760,7 @@ if (floatingInput) {
       const promptText = floatingInput.value.trim();
       if (!promptText) return;
 
-      // Switch back to chat and send prompt
-      const context = `Modify the selected ${selectedElementInfo.tagName}: ${promptText}`;
+      const context = generateContextFromFloatingInput(promptText);
       toggleVisualEditMode(false);
       if (chatInput) chatInput.value = context;
       sendChatMessage(context);
@@ -4619,10 +4773,157 @@ if (floatingSendBtn) {
   floatingSendBtn.addEventListener('click', () => {
     const promptText = floatingInput.value.trim();
     if (!promptText) return;
-    const context = `Modify the selected ${selectedElementInfo.tagName}: ${promptText}`;
+    const context = generateContextFromFloatingInput(promptText);
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = context;
     sendChatMessage(context);
     floatingInput.value = '';
+  });
+}
+
+if (veColorTextPicker) {
+  veColorTextPicker.addEventListener('input', (e) => {
+    let hex = e.target.value;
+    if (veColorText) veColorText.value = hex;
+    updateIframeElement('color', hex);
+    if (veColorTextPreview) veColorTextPreview.style.backgroundColor = hex;
+  });
+}
+
+if (veColorBgPicker) {
+  veColorBgPicker.addEventListener('input', (e) => {
+    let hex = e.target.value;
+    if (veColorBg) veColorBg.value = hex;
+    updateIframeElement('backgroundColor', hex);
+    if (veColorBgPreview) veColorBgPreview.style.backgroundColor = hex;
+  });
+}
+
+if (veFontStyle) {
+  veFontStyle.addEventListener('change', (e) => updateIframeElement('fontStyle', e.target.value));
+}
+
+if (veMarginExpand) {
+  veMarginExpand.addEventListener('click', () => {
+    veMarginExpanded.style.display = veMarginExpanded.style.display === 'none' ? 'grid' : 'none';
+  });
+}
+[veMarginTop, veMarginRight, veMarginBottom, veMarginLeft].forEach(input => {
+  if (input) {
+    input.addEventListener('input', () => {
+      let marginStr = `${veMarginTop.value || '0px'} ${veMarginRight.value || '0px'} ${veMarginBottom.value || '0px'} ${veMarginLeft.value || '0px'}`;
+      if (veMarginAll) veMarginAll.value = marginStr;
+      updateIframeElement('margin', marginStr);
+    });
+  }
+});
+
+if (vePaddingExpand) {
+  vePaddingExpand.addEventListener('click', () => {
+    vePaddingExpanded.style.display = vePaddingExpanded.style.display === 'none' ? 'grid' : 'none';
+  });
+}
+[vePaddingTop, vePaddingRight, vePaddingBottom, vePaddingLeft].forEach(input => {
+  if (input) {
+    input.addEventListener('input', () => {
+      let paddingStr = `${vePaddingTop.value || '0px'} ${vePaddingRight.value || '0px'} ${vePaddingBottom.value || '0px'} ${vePaddingLeft.value || '0px'}`;
+      if (vePaddingAll) vePaddingAll.value = paddingStr;
+      updateIframeElement('padding', paddingStr);
+    });
+  }
+});
+
+if (veAiDeleteBtn) {
+  veAiDeleteBtn.addEventListener('click', () => {
+    if (confirm('Are you sure you want to delete this element?')) {
+      if (previewFrame && previewFrame.contentWindow) {
+        previewFrame.contentWindow.postMessage({ type: 'deleteElement' }, '*');
+      }
+      registerVisualEdit('delete', true);
+      if (floatingPrompt) floatingPrompt.style.display = 'none';
+      if (visualEditSidebar) {
+        veTextContent.value = '';
+      }
+    }
+  });
+}
+
+if (veAiVoiceBtn) {
+  veAiVoiceBtn.addEventListener('click', () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.onstart = () => {
+      veAiVoiceBtn.classList.add('recording');
+      floatingInput.placeholder = "Listening...";
+    };
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      floatingInput.value = transcript;
+    };
+    recognition.onend = () => {
+      veAiVoiceBtn.classList.remove('recording');
+      floatingInput.placeholder = "Ask Nester...";
+      floatingInput.focus();
+    };
+    recognition.start();
+  });
+}
+
+if (veUnsavedDiscard) {
+  veUnsavedDiscard.addEventListener('click', () => {
+    pendingVisualEdits = {};
+    updateUnsavedBar();
+    if (previewReload) previewReload.click();
+    if (visualEditBackBtn) visualEditBackBtn.click();
+  });
+}
+
+if (veUnsavedSave) {
+  veUnsavedSave.addEventListener('click', () => {
+    if (Object.keys(pendingVisualEdits).length === 0) return;
+
+    let promptLines = [
+      "You are an expert Frontend Developer. Please update the underlying React component code to permanently apply the following visual style edits.",
+      "Below is the precise list of elements visually edited by the user. Convert these native CSS property changes into equivalent Tailwind classes (or inline styles) within the React source.",
+      ""
+    ];
+
+    let i = 1;
+    for (const [key, item] of Object.entries(pendingVisualEdits)) {
+      let variantDetails = "";
+      if (item.variantLabel && item.variantLabel !== 'undefined / undefined') {
+        variantDetails = ` [Clicked inside variant state: "${item.variantLabel}"]`;
+      }
+
+      let line = `${i}. Target Element: <${item.tagName.toUpperCase()}> containing text "${item.textContent.replace(/\n/g, ' ').substring(0, 30).trim()}"${variantDetails}`;
+      promptLines.push(line);
+
+      let propList = [];
+      for (const [p, v] of Object.entries(item.changes)) {
+        if (p === 'delete') {
+          propList.push(`   - -> Remove/Delete this element completely`);
+        } else {
+          propList.push(`   - -> Change CSS property '${p}' to '${v}'`);
+        }
+      }
+      promptLines.push(`   Updates to apply:`);
+      promptLines.push(propList.join('\n'));
+      promptLines.push("");
+      i++;
+    }
+
+    promptLines.push("Return the fully rewritten React component code containing these exact modifications.");
+
+    const promptStr = promptLines.join('\n');
+    pendingVisualEdits = {};
+    updateUnsavedBar();
+
+    toggleVisualEditMode(false);
+    if (chatInput) chatInput.value = promptStr;
+    sendChatMessage(promptStr);
   });
 }

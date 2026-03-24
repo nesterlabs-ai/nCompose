@@ -727,6 +727,7 @@ window.__REACT_ROOT__.render(React.createElement(App));`
             backgroundColor: style.backgroundColor,
             fontSize: style.fontSize,
             fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
             margin: style.margin,
             padding: style.padding,
             textAlign: style.textAlign
@@ -742,7 +743,12 @@ window.__REACT_ROOT__.render(React.createElement(App));`
 
       window.addEventListener('message', (e) => {
         console.log('Iframe received message:', e.data.type, e.data.active);
-        if (e.data.type === 'updateElement') {
+        if (e.data.type === 'deleteElement') {
+          if (selectedEl) {
+            selectedEl.remove();
+            selectedEl = null;
+          }
+        } else if (e.data.type === 'updateElement') {
           if (selectedEl) {
             if (e.data.prop === 'textContent') {
               selectedEl.textContent = e.data.value;

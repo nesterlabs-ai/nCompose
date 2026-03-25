@@ -132,6 +132,7 @@ const floatingInput = document.getElementById('ve-ai-input');
 const floatingSendBtn = document.getElementById('ve-ai-send');
 const panelHeaderActions = document.getElementById('panel-header-actions');
 const panelHeaderText = document.querySelector('.panel__header span');
+const panelInputBar = document.querySelector('.panel__input-bar');
 
 // Draft / Unsaved Edits
 let pendingVisualEdits = {};
@@ -170,6 +171,7 @@ function registerVisualEdit(prop, value) {
 
 // Property Controls
 var veTextContent = document.getElementById('ve-text-content');
+var veTextContentHint = document.getElementById('ve-text-content-hint');
 var veColorText = document.getElementById('ve-color-text');
 var veColorTextPreview = document.getElementById('ve-color-text-preview');
 var veColorBg = document.getElementById('ve-color-bg');
@@ -193,6 +195,14 @@ var vePaddingTop = document.getElementById('ve-padding-top');
 var vePaddingRight = document.getElementById('ve-padding-right');
 var vePaddingBottom = document.getElementById('ve-padding-bottom');
 var vePaddingLeft = document.getElementById('ve-padding-left');
+var veBorderRadius = document.getElementById('ve-border-radius');
+var veBoxShadow = document.getElementById('ve-box-shadow');
+var veColorBorder = document.getElementById('ve-color-border');
+var veColorBorderPreview = document.getElementById('ve-color-border-preview');
+var veColorBorderPicker = document.getElementById('ve-color-border-picker');
+var veOpacitySlider = document.getElementById('ve-opacity-slider');
+var veOpacityVal = document.getElementById('ve-opacity-val');
+var veGap = document.getElementById('ve-gap');
 var veAlignBtns = document.querySelectorAll('.align-btn');
 var veAiVoiceBtn = document.getElementById('ve-ai-voice');
 var veAiDeleteBtn = document.getElementById('ve-ai-delete');
@@ -1054,22 +1064,44 @@ function showInlinePreview(project) {
         let lastHovered = null;
         let selectedEl = null;
 
+        function clearChildHoverOutlines(el) {
+          if (!el || !el.children) return;
+          for (let i = 0; i < el.children.length; i++) {
+            el.children[i].classList.remove('ve-child-hover-outline');
+          }
+        }
+
+        function applyChildHoverOutlines(el) {
+          if (!el || !el.children || el.children.length === 0) return;
+          for (let i = 0; i < el.children.length; i++) {
+            const child = el.children[i];
+            if (child.nodeType !== 1) continue;
+            if (child.matches && child.matches('[data-ve-ignore="true"]')) continue;
+            child.classList.add('ve-child-hover-outline');
+          }
+        }
+
         document.addEventListener('mouseover', (e) => {
           if (!window.parentVisualEditActive) return;
           if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
-            if (lastHovered && lastHovered !== selectedEl) {
-              lastHovered.classList.remove('ve-hover-outline');
+            if (lastHovered) {
+              if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+              clearChildHoverOutlines(lastHovered);
             }
             lastHovered = null;
             return;
           }
 
-          if (lastHovered && lastHovered !== selectedEl) {
-            lastHovered.classList.remove('ve-hover-outline');
+          if (lastHovered === e.target) return;
+
+          if (lastHovered) {
+            if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+            clearChildHoverOutlines(lastHovered);
           }
           lastHovered = e.target;
-          if (lastHovered && lastHovered !== selectedEl && lastHovered !== document.body && lastHovered !== document.documentElement) {
-            lastHovered.classList.add('ve-hover-outline');
+          if (lastHovered && lastHovered !== document.body && lastHovered !== document.documentElement) {
+            if (lastHovered !== selectedEl) lastHovered.classList.add('ve-hover-outline');
+            applyChildHoverOutlines(lastHovered);
           }
         }, true);
 
@@ -1101,6 +1133,13 @@ function showInlinePreview(project) {
 
           const style = window.getComputedStyle(selectedEl);
           const rect = selectedEl.getBoundingClientRect();
+          const trimmedText = selectedEl.textContent.trim();
+          const descendantElements = selectedEl.querySelectorAll('*').length;
+          const VE_TEXT_LEN_MAX = 280;
+          const VE_DESC_EL_MAX = 22;
+          const textContentEditable =
+            trimmedText.length === 0 ||
+            (trimmedText.length <= VE_TEXT_LEN_MAX && descendantElements <= VE_DESC_EL_MAX);
 
           window.parent.postMessage({
             type: 'elementSelected',
@@ -1108,7 +1147,12 @@ function showInlinePreview(project) {
             variantLabel: variantLabel,
             variantProps: variantProps,
             tagName: selectedEl.tagName.toLowerCase(),
-            textContent: selectedEl.textContent.trim(),
+            textContent: trimmedText,
+            textContentEditable,
+            textContentStats: {
+              length: trimmedText.length,
+              descendantElements,
+            },
             computedStyle: {
               color: style.color,
               backgroundColor: style.backgroundColor,
@@ -1150,7 +1194,10 @@ function showInlinePreview(project) {
             window.parentVisualEditActive = e.data.active;
             console.log('Iframe Visual Edit Active:', window.parentVisualEditActive);
             if (!e.data.active) {
-              if (lastHovered) lastHovered.classList.remove('ve-hover-outline');
+              if (lastHovered) {
+                if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+                clearChildHoverOutlines(lastHovered);
+              }
               if (selectedEl) selectedEl.classList.remove('ve-selected-outline');
               selectedEl = null;
             }
@@ -1181,6 +1228,7 @@ function showInlinePreview(project) {
 .preview-error{padding:1rem;color:#dc2626;font-family:monospace;white-space:pre-wrap;font-size:13px;}
 .preview-error h3{margin-bottom:0.5rem;font-size:14px;}
 .ve-hover-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; cursor: pointer !important; }
+.ve-child-hover-outline { outline: 1px dotted #1e40af !important; outline-offset: -1px !important; }
 .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
 ${escapedCss}</style>
 <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin><\/script>
@@ -1969,6 +2017,7 @@ export default App;
   <title>Preview</title>
   <style>
     .ve-hover-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; cursor: pointer !important; }
+    .ve-child-hover-outline { outline: 1px dotted #1e40af !important; outline-offset: -1px !important; }
     .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
   </style>
 </head>
@@ -1980,22 +2029,44 @@ export default App;
       let lastHovered = null;
       let selectedEl = null;
 
+      function clearChildHoverOutlines(el) {
+        if (!el || !el.children) return;
+        for (let i = 0; i < el.children.length; i++) {
+          el.children[i].classList.remove('ve-child-hover-outline');
+        }
+      }
+
+      function applyChildHoverOutlines(el) {
+        if (!el || !el.children || el.children.length === 0) return;
+        for (let i = 0; i < el.children.length; i++) {
+          const child = el.children[i];
+          if (child.nodeType !== 1) continue;
+          if (child.matches && child.matches('[data-ve-ignore="true"]')) continue;
+          child.classList.add('ve-child-hover-outline');
+        }
+      }
+
       document.addEventListener('mouseover', (e) => {
         if (!window.parentVisualEditActive) return;
         if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
-          if (lastHovered && lastHovered !== selectedEl) {
-            lastHovered.classList.remove('ve-hover-outline');
+          if (lastHovered) {
+            if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+            clearChildHoverOutlines(lastHovered);
           }
           lastHovered = null;
           return;
         }
 
-        if (lastHovered && lastHovered !== selectedEl) {
-          lastHovered.classList.remove('ve-hover-outline');
+        if (lastHovered === e.target) return;
+
+        if (lastHovered) {
+          if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+          clearChildHoverOutlines(lastHovered);
         }
         lastHovered = e.target;
-        if (lastHovered && lastHovered !== selectedEl && lastHovered !== document.body && lastHovered !== document.documentElement) {
-          lastHovered.classList.add('ve-hover-outline');
+        if (lastHovered && lastHovered !== document.body && lastHovered !== document.documentElement) {
+          if (lastHovered !== selectedEl) lastHovered.classList.add('ve-hover-outline');
+          applyChildHoverOutlines(lastHovered);
         }
       }, true);
 
@@ -2027,6 +2098,13 @@ export default App;
 
         const style = window.getComputedStyle(selectedEl);
         const rect = selectedEl.getBoundingClientRect();
+        const trimmedText = selectedEl.textContent.trim();
+        const descendantElements = selectedEl.querySelectorAll('*').length;
+        const VE_TEXT_LEN_MAX = 280;
+        const VE_DESC_EL_MAX = 22;
+        const textContentEditable =
+          trimmedText.length === 0 ||
+          (trimmedText.length <= VE_TEXT_LEN_MAX && descendantElements <= VE_DESC_EL_MAX);
 
         window.parent.postMessage({
           type: 'elementSelected',
@@ -2034,7 +2112,12 @@ export default App;
           variantLabel: variantLabel,
           variantProps: variantProps,
           tagName: selectedEl.tagName.toLowerCase(),
-          textContent: selectedEl.textContent.trim(),
+          textContent: trimmedText,
+          textContentEditable,
+          textContentStats: {
+            length: trimmedText.length,
+            descendantElements,
+          },
           computedStyle: {
             color: style.color,
             backgroundColor: style.backgroundColor,
@@ -2075,7 +2158,10 @@ export default App;
           window.parentVisualEditActive = e.data.active;
           console.log('Iframe Visual Edit Active:', window.parentVisualEditActive);
           if (!e.data.active) {
-            if (lastHovered) lastHovered.classList.remove('ve-hover-outline');
+            if (lastHovered) {
+              if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+              clearChildHoverOutlines(lastHovered);
+            }
             if (selectedEl) selectedEl.classList.remove('ve-selected-outline');
             selectedEl = null;
           }
@@ -2701,6 +2787,85 @@ function removeChatMessage(el) {
   if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
+/** Short labels for visual-edit CSS keys in chat summaries */
+const VE_CSS_PROP_SUMMARY = {
+  backgroundColor: 'background',
+  color: 'text color',
+  opacity: 'opacity',
+  textAlign: 'alignment',
+  borderRadius: 'radius',
+  margin: 'margin',
+  padding: 'padding',
+  fontSize: 'font size',
+  fontWeight: 'font weight',
+  fontStyle: 'font style',
+  boxShadow: 'shadow',
+  borderColor: 'border color',
+  borderWidth: 'border width',
+  borderStyle: 'border style',
+  display: 'display',
+  flexDirection: 'layout',
+  justifyContent: 'alignment',
+  gap: 'gap',
+  delete: 'remove',
+};
+
+function describePendingVisualEditItem(item) {
+  if (!item) return '';
+  if (item.changes && item.changes.delete) {
+    return `${(item.tagName || 'element').toLowerCase()}: remove element`;
+  }
+  const keys = Object.keys(item.changes || {}).filter((k) => k !== 'delete');
+  if (keys.length === 0) return `${(item.tagName || 'element').toLowerCase()}: (no props)`;
+  const labels = keys.map((k) => VE_CSS_PROP_SUMMARY[k] || k.replace(/([A-Z])/g, ' $1').trim().toLowerCase());
+  const maxLabels = 6;
+  let tail = labels.slice(0, maxLabels).join(', ');
+  if (labels.length > maxLabels) tail += ', …';
+  return `${(item.tagName || 'element').toLowerCase()}: ${tail}`;
+}
+
+/** User-visible chat line when saving many iframe tweaks; full prompt goes to API only. */
+function buildVisualEditsChatSummary(pendingVisualEdits) {
+  const items = Object.values(pendingVisualEdits || {});
+  const n = items.length;
+  if (n === 0) return 'Apply visual edits to the code.';
+
+  const variantLabels = items
+    .map((i) => i.variantLabel)
+    .filter(Boolean)
+    .filter((v) => v !== 'undefined / undefined');
+  const uniqueVariants = [...new Set(variantLabels)];
+
+  let variantPart = '';
+  if (uniqueVariants.length === 1) {
+    variantPart = ` (variant ${uniqueVariants[0]})`;
+  } else if (uniqueVariants.length > 1) {
+    variantPart = ` (${uniqueVariants.length} variant contexts)`;
+  }
+
+  const parts = items.map(describePendingVisualEditItem);
+  let detail = parts.join('; ');
+  const maxLen = 240;
+  if (detail.length > maxLen) {
+    detail = detail.slice(0, maxLen - 1).trim() + '…';
+  }
+
+  return `Apply ${n} visual edit${n === 1 ? '' : 's'} to the code${variantPart}: ${detail}.`;
+}
+
+/** User-visible line for floating “Ask Nester” + refine. */
+function buildFloatingRefineSummary(userPrompt, info) {
+  const raw = (userPrompt || '').trim();
+  if (!info) return raw || 'Refine the component.';
+  const tag = (info.tagName || 'element').toLowerCase();
+  let variant = '';
+  if (info.variantLabel && info.variantLabel !== 'undefined / undefined') {
+    variant = ` (${info.variantLabel})`;
+  }
+  const snippet = raw.length > 100 ? `${raw.slice(0, 100).trim()}…` : raw;
+  return `Refine ${tag}${variant}: ${snippet || '…'}`;
+}
+
 function setChatLoading(loading) {
   chatRefining = loading;
   if (chatSpinner) chatSpinner.style.display = loading ? 'inline-block' : 'none';
@@ -2711,11 +2876,29 @@ function setChatLoading(loading) {
 
 function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (chatRefining || !currentSessionId) return;
-  const prompt = customText || chatInput?.value?.trim();
-  if (!prompt) return;
 
-  // Add user message to chat (show clean display message if provided, otherwise full prompt)
-  addChatMessage('user', displayMessage || prompt);
+  let displayText;
+  let apiPrompt;
+
+  if (
+    customText != null &&
+    typeof customText === 'object' &&
+    typeof customText.prompt === 'string'
+  ) {
+    apiPrompt = customText.prompt;
+    displayText = customText.displayText != null ? customText.displayText : apiPrompt;
+  } else if (typeof customText === 'string') {
+    apiPrompt = customText;
+    displayText = customText;
+  } else {
+    apiPrompt = chatInput?.value?.trim();
+    displayText = apiPrompt;
+  }
+
+  if (!apiPrompt) return;
+
+  // User sees a short summary; API still receives the full engineered prompt when provided
+  addChatMessage('user', displayText);
   chatInput.value = '';
   chatInput.style.height = 'auto';
 
@@ -2728,8 +2911,8 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   const project = getProject(currentProjectId);
   const body = JSON.stringify({
     sessionId: currentSessionId,
-    prompt,
-    selectedElement: selElement && (selElement.dataVeId || selElement.variantLabel)
+    prompt: apiPrompt,
+    selectedElement: selectedElementInfo && (selectedElementInfo.dataVeId || selectedElementInfo.variantLabel)
       ? {
         dataVeId: selElement.dataVeId,
         tagName: selElement.tagName,
@@ -4532,6 +4715,7 @@ function toggleVisualEditMode(active) {
     if (progressCollapsible) progressCollapsible.style.display = 'none';
     if (visualEditSidebar) visualEditSidebar.style.display = 'flex';
     if (panelHeaderActions) panelHeaderActions.style.display = 'flex';
+    if (panelInputBar) panelInputBar.style.display = 'none';
     if (panelHeaderText) panelHeaderText.textContent = 'Design / Visual edits';
     // Tell iframe to enable interaction
     if (previewFrame && previewFrame.contentWindow) {
@@ -4543,6 +4727,7 @@ function toggleVisualEditMode(active) {
     if (panelHeaderActions) panelHeaderActions.style.display = 'none';
     if (floatingPrompt) floatingPrompt.style.display = 'none';
     if (chatMessages) chatMessages.style.display = 'flex';
+    if (panelInputBar) panelInputBar.style.display = '';
     if (panelHeaderText) panelHeaderText.textContent = 'Import Design';
     // Clear stale visual-edit selection when leaving visual edit mode
     selectedElementInfo = null;
@@ -4590,7 +4775,28 @@ function updateVisualEditSidebar(info) {
     return "#000000";
   };
 
-  if (veTextContent) veTextContent.value = info.textContent;
+  const canEditText = info.textContentEditable !== false;
+  if (veTextContent) {
+    veTextContent.disabled = !canEditText;
+    veTextContent.value = canEditText ? info.textContent : '';
+    veTextContent.placeholder = canEditText
+      ? 'Enter text…'
+      : 'Select a label or small text block…';
+  }
+  if (veTextContentHint) {
+    if (canEditText) {
+      veTextContentHint.hidden = true;
+      veTextContentHint.textContent = '';
+    } else {
+      const stats = info.textContentStats || {};
+      const n = stats.descendantElements != null ? stats.descendantElements : 'many';
+      const len = stats.length != null ? stats.length : (info.textContent || '').length;
+      veTextContentHint.hidden = false;
+      veTextContentHint.textContent =
+        `This selection includes ${n} nested elements and about ${len} characters of combined text. ` +
+        'Click a specific label, heading, or input caption to edit text safely.';
+    }
+  }
   if (veColorText) veColorText.value = info.computedStyle.color;
   if (veColorTextPreview) veColorTextPreview.style.backgroundColor = info.computedStyle.color;
   if (veColorTextPicker && info.computedStyle.color) {
@@ -4634,8 +4840,62 @@ function updateVisualEditSidebar(info) {
 
   if (veAlignBtns) {
     veAlignBtns.forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.align === info.computedStyle.textAlign);
+      if (btn.dataset.align) {
+        btn.classList.toggle('active', btn.dataset.align === info.computedStyle.textAlign);
+      } else if (btn.dataset.flex) {
+        if (info.computedStyle.display === 'flex' || info.computedStyle.display === 'inline-flex') {
+          btn.classList.toggle('active', btn.dataset.flex === info.computedStyle.flexDirection);
+        } else {
+          btn.classList.remove('active');
+        }
+      } else if (btn.dataset.justify) {
+        if (info.computedStyle.display === 'flex' || info.computedStyle.display === 'inline-flex') {
+          btn.classList.toggle('active', btn.dataset.justify === info.computedStyle.justifyContent);
+        } else {
+          btn.classList.remove('active');
+        }
+      }
     });
+  }
+
+  // Sync Layout & Borders
+  if (veGap) veGap.value = info.computedStyle.gap || '0px';
+
+  if (veBorderRadius) {
+    let hasOption = Array.from(veBorderRadius.options).some(opt => opt.value === info.computedStyle.borderRadius);
+    if (!hasOption && info.computedStyle.borderRadius) {
+      let opt = document.createElement('option');
+      opt.value = opt.textContent = info.computedStyle.borderRadius;
+      veBorderRadius.appendChild(opt);
+    }
+    veBorderRadius.value = info.computedStyle.borderRadius || '0px';
+  }
+
+  if (veBoxShadow) {
+    let shadowVal = 'none';
+    if (info.computedStyle.boxShadow && info.computedStyle.boxShadow !== 'none') {
+      shadowVal = info.computedStyle.boxShadow;
+      let hasOption = Array.from(veBoxShadow.options).some(o => o.value === shadowVal);
+      if (!hasOption) {
+        let opt = document.createElement('option');
+        opt.value = shadowVal;
+        opt.textContent = shadowVal.substring(0, 15) + '...';
+        veBoxShadow.appendChild(opt);
+      }
+    }
+    veBoxShadow.value = shadowVal;
+  }
+
+  if (veOpacitySlider) {
+    veOpacitySlider.value = info.computedStyle.opacity || '1';
+    if (veOpacityVal) veOpacityVal.textContent = Math.round(veOpacitySlider.value * 100);
+  }
+
+  const borderCol = info.computedStyle.borderColor === 'rgba(0, 0, 0, 0)' ? 'transparent' : (info.computedStyle.borderColor || 'transparent');
+  if (veColorBorder) veColorBorder.value = borderCol;
+  if (veColorBorderPreview) veColorBorderPreview.style.borderColor = borderCol;
+  if (veColorBorderPicker && borderCol !== 'transparent') {
+    veColorBorderPicker.value = rgbToHexLocal(borderCol);
   }
 
   // Sync Spacing
@@ -4696,6 +4956,9 @@ if (previewFrame) {
 
 // Handling Property Updates from Sidebar
 function updateIframeElement(prop, value) {
+  if (prop === 'textContent' && selectedElementInfo && selectedElementInfo.textContentEditable === false) {
+    return;
+  }
   if (previewFrame && previewFrame.contentWindow) {
     previewFrame.contentWindow.postMessage({ type: 'updateElement', prop, value }, '*');
   }
@@ -4703,7 +4966,10 @@ function updateIframeElement(prop, value) {
 }
 
 if (veTextContent) {
-  veTextContent.addEventListener('input', (e) => updateIframeElement('textContent', e.target.value));
+  veTextContent.addEventListener('input', (e) => {
+    if (e.target.disabled) return;
+    updateIframeElement('textContent', e.target.value);
+  });
 }
 
 if (veColorText) {
@@ -4731,10 +4997,61 @@ if (veFontWeight) {
 if (veAlignBtns) {
   veAlignBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-      const align = btn.dataset.align;
-      updateIframeElement('textAlign', align);
-      veAlignBtns.forEach(b => b.classList.toggle('active', b === btn));
+      const group = btn.parentElement;
+      if (group) {
+        group.querySelectorAll('.align-btn').forEach(b => b.classList.remove('active'));
+      }
+      btn.classList.add('active');
+
+      if (btn.dataset.align) {
+        updateIframeElement('textAlign', btn.dataset.align);
+      } else if (btn.dataset.flex) {
+        updateIframeElement('display', 'flex');
+        updateIframeElement('flexDirection', btn.dataset.flex);
+      } else if (btn.dataset.justify) {
+        updateIframeElement('display', 'flex');
+        updateIframeElement('justifyContent', btn.dataset.justify);
+      }
     });
+  });
+}
+
+if (veGap) {
+  veGap.addEventListener('input', (e) => updateIframeElement('gap', e.target.value));
+}
+
+if (veBorderRadius) {
+  veBorderRadius.addEventListener('change', (e) => updateIframeElement('borderRadius', e.target.value));
+}
+
+if (veBoxShadow) {
+  veBoxShadow.addEventListener('change', (e) => updateIframeElement('boxShadow', e.target.value));
+}
+
+if (veOpacitySlider) {
+  veOpacitySlider.addEventListener('input', (e) => {
+    updateIframeElement('opacity', e.target.value);
+    if (veOpacityVal) veOpacityVal.textContent = Math.round(e.target.value * 100);
+  });
+}
+
+if (veColorBorderPicker) {
+  veColorBorderPicker.addEventListener('input', (e) => {
+    let hex = e.target.value;
+    if (veColorBorder) veColorBorder.value = hex;
+    updateIframeElement('borderStyle', 'solid');
+    updateIframeElement('borderWidth', '1px');
+    updateIframeElement('borderColor', hex);
+    if (veColorBorderPreview) veColorBorderPreview.style.borderColor = hex;
+  });
+}
+
+if (veColorBorder) {
+  veColorBorder.addEventListener('input', (e) => {
+    updateIframeElement('borderStyle', 'solid');
+    updateIframeElement('borderWidth', '1px');
+    updateIframeElement('borderColor', e.target.value);
+    if (veColorBorderPreview) veColorBorderPreview.style.borderColor = e.target.value;
   });
 }
 
@@ -4783,9 +5100,10 @@ if (floatingInput) {
       const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
       const displayMsg = buildVisualEditDisplayMessage(promptText);
       const context = generateContextFromFloatingInput(promptText);
+      const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
       toggleVisualEditMode(false);
-      if (chatInput) chatInput.value = context;
-      sendChatMessage(context, savedSelection, displayMsg);
+      if (chatInput) chatInput.value = '';
+      sendChatMessage({ displayText: displayLine, prompt: context });
       floatingInput.value = '';
     }
   });
@@ -4799,9 +5117,10 @@ if (floatingSendBtn) {
     const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
     const displayMsg = buildVisualEditDisplayMessage(promptText);
     const context = generateContextFromFloatingInput(promptText);
+    const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
     toggleVisualEditMode(false);
-    if (chatInput) chatInput.value = context;
-    sendChatMessage(context, savedSelection, displayMsg);
+    if (chatInput) chatInput.value = '';
+    sendChatMessage({ displayText: displayLine, prompt: context });
     floatingInput.value = '';
   });
 }
@@ -4944,15 +5263,105 @@ if (veUnsavedSave) {
     promptLines.push("Return the fully rewritten React component code containing these exact modifications.");
 
     const promptStr = promptLines.join('\n');
-    // Capture selection BEFORE toggle clears it
-    const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
-    const editCount = i - 1;
-    const displayMsg = `[Visual Edit] Saving ${editCount} edit${editCount !== 1 ? 's' : ''} to code`;
+    const displayLine = buildVisualEditsChatSummary(pendingVisualEdits);
     pendingVisualEdits = {};
     updateUnsavedBar();
 
     toggleVisualEditMode(false);
-    if (chatInput) chatInput.value = promptStr;
-    sendChatMessage(promptStr, savedSelection, displayMsg);
+    if (chatInput) chatInput.value = '';
+    sendChatMessage({ displayText: displayLine, prompt: promptStr });
   });
 }
+
+// ── Custom Dropdown Converter ──
+function initCustomSelects() {
+  document.querySelectorAll('.ve-sidebar__control select').forEach(selectEl => {
+    if (selectEl.dataset.customized) return;
+    selectEl.dataset.customized = 'true';
+    selectEl.style.display = 'none';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'custom-select-wrapper';
+
+    const selectedText = document.createElement('div');
+    selectedText.className = 'custom-select-selected';
+
+    const renderSelected = () => {
+      const label = selectEl.options[selectEl.selectedIndex]?.textContent || '';
+      selectedText.innerHTML = `<span>${label}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`;
+    };
+    renderSelected();
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'custom-select-dropdown';
+
+    const renderOptions = () => {
+      dropdown.innerHTML = '';
+      Array.from(selectEl.options).forEach((opt, index) => {
+        const optionDiv = document.createElement('div');
+        optionDiv.className = 'custom-select-option';
+        if (index === selectEl.selectedIndex) {
+          optionDiv.classList.add('selected');
+        }
+        optionDiv.innerHTML = `<span>${opt.textContent}</span>${index === selectEl.selectedIndex ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>' : ''}`;
+
+        optionDiv.addEventListener('mousedown', (e) => {
+          e.preventDefault(); // prevent blur from closing early if focus logic is added
+          selectEl.selectedIndex = index;
+          renderSelected();
+          selectEl.dispatchEvent(new Event('change'));
+          wrapper.classList.remove('open');
+          renderOptions();
+        });
+        dropdown.appendChild(optionDiv);
+      });
+    };
+
+    renderOptions();
+
+    selectEl.addEventListener('change', () => {
+      renderSelected();
+      renderOptions();
+    });
+
+    const observer = new MutationObserver(() => {
+      renderSelected();
+      renderOptions();
+    });
+    observer.observe(selectEl, { childList: true });
+
+    selectedText.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = wrapper.classList.contains('open');
+      document.querySelectorAll('.custom-select-wrapper').forEach(w => w.classList.remove('open'));
+      if (!isOpen) {
+        wrapper.classList.add('open');
+        const rect = wrapper.getBoundingClientRect();
+        const dropHeight = 220; // safe arbitrary max height 
+        if (window.innerHeight - rect.bottom < dropHeight && rect.top > dropHeight) {
+          dropdown.style.bottom = '100%';
+          dropdown.style.top = 'auto';
+          dropdown.style.marginBottom = '4px';
+          dropdown.style.marginTop = '0';
+        } else {
+          dropdown.style.top = '100%';
+          dropdown.style.bottom = 'auto';
+          dropdown.style.marginTop = '4px';
+          dropdown.style.marginBottom = '0';
+        }
+      }
+    });
+
+    document.addEventListener('click', () => {
+      wrapper.classList.remove('open');
+    });
+
+    selectEl.parentNode.insertBefore(wrapper, selectEl.nextSibling);
+    wrapper.appendChild(selectEl);
+    wrapper.appendChild(selectedText);
+    wrapper.appendChild(dropdown);
+  });
+}
+
+// Initialize custom selects on load
+setTimeout(initCustomSelects, 200);

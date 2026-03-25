@@ -547,6 +547,7 @@ window.__REACT_ROOT__.render(React.createElement(App));`
     .preview-error { padding: 1rem; color: #dc2626; font-family: monospace; white-space: pre-wrap; font-size: 13px; }
     .preview-error h3 { margin-bottom: 0.5rem; font-size: 14px; }
     .ve-hover-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; cursor: pointer !important; }
+    .ve-child-hover-outline { outline: 1px dotted #1e40af !important; outline-offset: -1px !important; }
     .ve-selected-outline { outline: 2px solid #3b82f6 !important; outline-offset: -2px !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important; }
     ${css}
   </style>
@@ -669,22 +670,44 @@ window.__REACT_ROOT__.render(React.createElement(App));`
       let lastHovered = null;
       let selectedEl = null;
 
+      function clearChildHoverOutlines(el) {
+        if (!el || !el.children) return;
+        for (let i = 0; i < el.children.length; i++) {
+          el.children[i].classList.remove('ve-child-hover-outline');
+        }
+      }
+
+      function applyChildHoverOutlines(el) {
+        if (!el || !el.children || el.children.length === 0) return;
+        for (let i = 0; i < el.children.length; i++) {
+          const child = el.children[i];
+          if (child.nodeType !== 1) continue;
+          if (child.matches && child.matches('[data-ve-ignore="true"]')) continue;
+          child.classList.add('ve-child-hover-outline');
+        }
+      }
+
       document.addEventListener('mouseover', (e) => {
         if (!window.parentVisualEditActive) return;
         if (!e.target.closest || e.target.closest('[data-ve-ignore="true"]') || e.target === document.body || e.target === document.documentElement) {
-          if (lastHovered && lastHovered !== selectedEl) {
-            lastHovered.classList.remove('ve-hover-outline');
+          if (lastHovered) {
+            if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+            clearChildHoverOutlines(lastHovered);
           }
           lastHovered = null;
           return;
         }
 
-        if (lastHovered && lastHovered !== selectedEl) {
-          lastHovered.classList.remove('ve-hover-outline');
+        if (lastHovered === e.target) return;
+
+        if (lastHovered) {
+          if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+          clearChildHoverOutlines(lastHovered);
         }
         lastHovered = e.target;
-        if (lastHovered && lastHovered !== selectedEl && lastHovered !== document.body && lastHovered !== document.documentElement) {
-          lastHovered.classList.add('ve-hover-outline');
+        if (lastHovered && lastHovered !== document.body && lastHovered !== document.documentElement) {
+          if (lastHovered !== selectedEl) lastHovered.classList.add('ve-hover-outline');
+          applyChildHoverOutlines(lastHovered);
         }
       }, true);
 
@@ -714,6 +737,13 @@ window.__REACT_ROOT__.render(React.createElement(App));`
 
         const style = window.getComputedStyle(selectedEl);
         const rect = selectedEl.getBoundingClientRect();
+        const trimmedText = selectedEl.textContent.trim();
+        const descendantElements = selectedEl.querySelectorAll('*').length;
+        const VE_TEXT_LEN_MAX = 280;
+        const VE_DESC_EL_MAX = 22;
+        const textContentEditable =
+          trimmedText.length === 0 ||
+          (trimmedText.length <= VE_TEXT_LEN_MAX && descendantElements <= VE_DESC_EL_MAX);
 
         window.parent.postMessage({
           type: 'elementSelected',
@@ -721,7 +751,12 @@ window.__REACT_ROOT__.render(React.createElement(App));`
           variantLabel: variantLabel,
           variantProps: variantProps,
           tagName: selectedEl.tagName.toLowerCase(),
-          textContent: selectedEl.textContent.trim(),
+          textContent: trimmedText,
+          textContentEditable,
+          textContentStats: {
+            length: trimmedText.length,
+            descendantElements,
+          },
           computedStyle: {
             color: style.color,
             backgroundColor: style.backgroundColor,
@@ -730,7 +765,15 @@ window.__REACT_ROOT__.render(React.createElement(App));`
             fontStyle: style.fontStyle,
             margin: style.margin,
             padding: style.padding,
-            textAlign: style.textAlign
+            textAlign: style.textAlign,
+            display: style.display,
+            flexDirection: style.flexDirection,
+            justifyContent: style.justifyContent,
+            gap: style.gap,
+            borderRadius: style.borderRadius,
+            boxShadow: style.boxShadow,
+            borderColor: style.borderColor,
+            opacity: style.opacity
           },
           rect: {
             top: rect.top,
@@ -762,7 +805,10 @@ window.__REACT_ROOT__.render(React.createElement(App));`
           window.parentVisualEditActive = e.data.active;
           console.log('Iframe Visual Edit Active:', window.parentVisualEditActive);
           if (!e.data.active) {
-            if (lastHovered) lastHovered.classList.remove('ve-hover-outline');
+            if (lastHovered) {
+              if (lastHovered !== selectedEl) lastHovered.classList.remove('ve-hover-outline');
+              clearChildHoverOutlines(lastHovered);
+            }
             if (selectedEl) selectedEl.classList.remove('ve-selected-outline');
             selectedEl = null;
           }

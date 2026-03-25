@@ -258,6 +258,129 @@ const MIN_PIE_ELLIPSE_DIAMETER = 20;
  */
 const MIN_SERIES_VECTOR_HEIGHT = 3;
 
+// ── Property-Based Visual Node Collection ────────────────────────────────────
+//
+// Instead of hardcoding which Figma node types to look for (VECTOR, ELLIPSE,
+// RECTANGLE, etc.), we collect ALL visual nodes based on their PROPERTIES
+// (fills, strokes, geometry) and classify them by structural patterns.
+
+/** Cached properties of a visual Figma node for chart detection. */
+interface VisualNode {
+  node: any;
+  type: string;
+  bbox: { x: number; y: number; w: number; h: number };
+  center: { cx: number; cy: number };
+  aspectRatio: number;
+  area: number;
+  fills: any[];           // chromatic solid fills + gradients
+  strokes: any[];         // chromatic strokes
+  isPolygonal: boolean;   // REGULAR_POLYGON or STAR
+  hasArcData: boolean;
+  arcSweep: number;       // |endAngle - startAngle|, 0 if none
+  innerRadius: number;    // arcData.innerRadius, 0 if none
+  hasTextDescendant: boolean;
+  strokeWeight: number;
+}
+
+/**
+ * Property-based check: is this node a visual shape?
+ * Returns true for ANY node that has fills, strokes, or geometry —
+ * regardless of its Figma type. Excludes TEXT (content, not shape)
+ * and GROUP (structural wrapper, not visual).
+ */
+function isVisualNode(n: any): boolean {
+  if (!n) return false;
+  // Include hidden nodes that have arcData — these are pie/donut slices the
+  // designer toggled off (e.g., showing only the dominant slice in a gauge view).
+  // They still define the chart structure and are needed for detection.
+  if (n.visible === false && !n.arcData) return false;
+  if (n.type === 'TEXT' || n.type === 'GROUP') return false;
+  const hasFills = Array.isArray(n.fills) && n.fills.some(
+    (f: any) => f.visible !== false && (
+      f.type === 'SOLID' || f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL'
+      || (typeof f === 'string') // simplified format: CSS color string
+      || (f.color && !f.type) // simplified format: {color: '#hex'} without type
+    ),
+  );
+  const hasStrokes = Array.isArray(n.strokes) && n.strokes.some(
+    (s: any) => s.visible !== false && (
+      s.type === 'SOLID'
+      || (typeof s === 'string') // simplified format
+      || (s.color && !s.type) // simplified format
+    ),
+  );
+  // Also check for arcData (ELLIPSE with arcs) even without fills
+  const hasArcData = !!n.arcData;
+  const hasBBox = !!n.absoluteBoundingBox;
+  return (hasFills || hasStrokes || hasArcData) && hasBBox;
+}
+
+/**
+ * Collects all visual nodes in a subtree in a single recursive walk.
+ * Returns an array of VisualNode with cached properties for fast filtering.
+ * Replaces 10+ independent findAllNodes calls with one O(n) pass.
+ */
+function collectVisualNodes(root: any): VisualNode[] {
+  const results: VisualNode[] = [];
+
+  function walk(n: any): boolean {
+    if (!n) return false;
+    // Skip hidden nodes UNLESS they have arcData (hidden pie/donut slices
+    // that define the chart structure — designer toggled them off visually)
+    if (n.visible === false && !n.arcData) return false;
+
+    let hasTextChild = n.type === 'TEXT';
+    for (const child of (n.children ?? [])) {
+      if (walk(child)) hasTextChild = true;
+    }
+
+    if (isVisualNode(n)) {
+      const bb = n.absoluteBoundingBox;
+      const w = bb?.width ?? 0;
+      const h = bb?.height ?? 0;
+      const chromaticFills = (n.fills ?? []).filter((f: any) => {
+        if (f.visible === false) return false;
+        if (f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL') return true;
+        if (f.type === 'SOLID' && f.color) return isChromatic(f.color);
+        // Simplified format: fill is a string or object without type
+        if (typeof f === 'string') return true;
+        if (f.color && !f.type) return true;
+        return false;
+      });
+      const chromaticStrokes = (n.strokes ?? []).filter((s: any) => {
+        if (s.visible === false) return false;
+        if (s.type === 'SOLID' && s.color) return isChromatic(s.color);
+        if (typeof s === 'string') return true;
+        if (s.color && !s.type) return true;
+        return false;
+      });
+
+      const arcData = n.arcData;
+      results.push({
+        node: n,
+        type: n.type ?? '',
+        bbox: { x: bb?.x ?? 0, y: bb?.y ?? 0, w, h },
+        center: { cx: (bb?.x ?? 0) + w / 2, cy: (bb?.y ?? 0) + h / 2 },
+        aspectRatio: h > 0 ? w / h : 0,
+        area: w * h,
+        fills: chromaticFills,
+        strokes: chromaticStrokes,
+        isPolygonal: n.type === 'REGULAR_POLYGON' || n.type === 'STAR',
+        hasArcData: !!arcData,
+        arcSweep: arcData ? Math.abs((arcData.endingAngle ?? 0) - (arcData.startingAngle ?? 0)) : 0,
+        innerRadius: arcData?.innerRadius ?? 0,
+        hasTextDescendant: hasTextChild,
+        strokeWeight: n.strokeWeight ?? 0,
+      });
+    }
+
+    return hasTextChild;
+  }
+
+  walk(root);
+  return results;
+}
+
 // ── Semantic Name Analysis ──────────────────────────────────────────────────
 //
 // Before running expensive geometric heuristics, analyse the Figma node names
@@ -446,18 +569,23 @@ export function isChartSection(node: any): boolean {
     }
   }
 
-  // ── Phase 1: Semantic name analysis ──
-  // Check Figma node names in the subtree for chart vs UI signals.
-  // This catches cases where geometric heuristics would fail
-  // (e.g. checkboxes mistaken for bars, nav icons mistaken for chart shapes).
-  const nameSignal = semanticNameSignal(node);
-  if (nameSignal === 'ui') {
-    _dbg(`→ REJECT: semantic name analysis says UI component`);
+  // ── Phase 0b: Complexity gate ──
+  // A chart section typically has few direct children (chart area, legend, title,
+  // axes, switcher — rarely more than 6-7). A full page or dashboard with 8+
+  // direct visible children is too complex to be a single chart.
+  // Uses the node's own children count from Figma, not a hardcoded pixel value.
+  const visibleDirectChildren = (node.children ?? []).filter((c: any) => c.visible !== false);
+  if (visibleDirectChildren.length > 7) {
+    _dbg(`→ REJECT: too many direct children (${visibleDirectChildren.length}) — likely a page/section, not a chart`);
     return false;
   }
-  // Note: nameSignal === 'chart' doesn't auto-accept — we still require at
-  // least one geometric signal to confirm. This prevents a frame that just
-  // happens to be named "chart" from passing without any actual chart shapes.
+
+  // ── Phase 1: Semantic name analysis ──
+  // Check Figma node names in the subtree for chart vs UI signals.
+  // This is ADVISORY — it influences scoring but does NOT hard-reject.
+  // A chart inside a "Widget" frame with "Tag" and "Icon" children is still
+  // a chart. Signal A (actual data shapes) is the definitive gate.
+  const nameSignal = semanticNameSignal(node);
 
   // ── Phase 2: Geometric heuristics ──
 
@@ -487,6 +615,7 @@ export function isChartSection(node: any): boolean {
 
   const signalCount = [signalA.detected, signalB, signalC].filter(Boolean).length;
 
+
   // Count all TEXT nodes to distinguish UI-heavy sections (nav, forms) from charts
   const allTextNodes = findAllNodes(node, (n: any) => n.type === 'TEXT');
   const totalTextCount = allTextNodes.length;
@@ -498,21 +627,16 @@ export function isChartSection(node: any): boolean {
   _dbg(`nameSignal=${nameSignal} signalA=${JSON.stringify(signalA)} signalB=${signalB} signalC=${signalC} signals=${signalCount} texts=${totalTextCount} longTexts=${longTextCount}`);
   if (process.env.CHART_DEBUG && signalA.detected) {
     // Dump what shapes were found
-    const pieE = findAllNodes(node, (n: any) => (n.type === 'ELLIPSE' || n.type === 'ARC') && (n.absoluteBoundingBox ? Math.max(n.absoluteBoundingBox.width, n.absoluteBoundingBox.height) >= 20 : false));
-    const barS = findAllNodes(node, (n: any) => {
-      const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
-      if (!BAR_TYPES.includes(n.type)) return false;
-      const bb = n.absoluteBoundingBox;
-      if (!bb || bb.width < 3 || bb.height < 3) return false;
-      return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
-    });
+    const debugVN = collectVisualNodes(node);
+    const pieE = debugVN.filter((vn) => (vn.hasArcData || (vn.bbox.w > 0 && vn.bbox.h > 0 && Math.max(vn.bbox.w, vn.bbox.h) / Math.min(vn.bbox.w, vn.bbox.h) <= 1.3)) && Math.max(vn.bbox.w, vn.bbox.h) >= 20);
+    const barS = debugVN.filter((vn) => vn.fills.length > 0 && vn.bbox.w >= 3 && vn.bbox.h >= 3);
     _dbg(`  pieEllipses=${pieE.length} barShapes=${barS.length}`);
-    for (const b of barS.slice(0, 15)) {
-      const bb = b.absoluteBoundingBox;
-      const fill = (b.fills ?? []).find((f: any) => f.type === 'SOLID');
+    for (const bvn of barS.slice(0, 15)) {
+      const bb = bvn.node.absoluteBoundingBox;
+      const fill = (bvn.node.fills ?? []).find((f: any) => f.type === 'SOLID');
       const c = fill?.color;
       const rgb = c ? `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})` : '?';
-      _dbg(`    bar: "${b.name}" type=${b.type} ${bb?.width}x${bb?.height} @(${bb?.x},${bb?.y}) fill=${rgb}`);
+      _dbg(`    bar: "${bvn.node.name}" type=${bvn.type} ${bb?.width}x${bb?.height} @(${bb?.x},${bb?.y}) fill=${rgb}`);
     }
     if (barS.length > 15) _dbg(`    ... and ${barS.length - 15} more`);
     // Dump text nodes
@@ -521,52 +645,117 @@ export function isChartSection(node: any): boolean {
     }
   }
 
-  // Semantic chart name + any geometric signal → accept with relaxed thresholds.
-  // When the designer explicitly named something "chart"/"graph" and geometry
-  // confirms at least one structural signal, trust the name.
-  if (nameSignal === 'chart' && signalCount >= 1) {
-    _dbg(`→ ACCEPT: semantic name says chart + ${signalCount} geometric signal(s)`);
-    return true;
+  // ── Gate: Signal A (data shapes) is REQUIRED ─────────────────────────────
+  // A chart MUST have visual data elements — bars, pie slices, line vectors,
+  // area fills. Without them, it's not a chart regardless of name, text layout,
+  // or grid lines. Axis labels (Signal B) and grid lines (Signal C) exist in
+  // non-chart UI too (tables, forms, lists) — they can't confirm a chart alone.
+  if (!signalA.detected) {
+    _dbg(`→ REJECT: no data shapes (Signal A required)`);
+    return false;
   }
 
-  // High-confidence single signal: strong pie/donut or bar cluster
-  if (signalA.detected && signalA.highConfidence) {
-    // But reject if text-heavy (nav/form sections have many TEXT nodes)
-    const shapeCount = signalA.count ?? 5;
-    // Bar charts naturally have many text nodes (axis labels + bar labels).
-    // When multiple signals confirm a chart (axes, grid lines), allow a higher text count.
-    // With 2+ signals: allow up to shapeCount * 5 texts (bars have 2–3 labels each + title).
-    // With 1 signal: use stricter shapeCount * 3 threshold.
-    const textMultiplier = signalCount >= 2 ? 5 : 3;
-    if (totalTextCount > shapeCount * textMultiplier) {
-      _dbg(`→ REJECT: highConf signalA but text-heavy (${totalTextCount} > ${shapeCount}*${textMultiplier}=${shapeCount*textMultiplier})`);
+  // When semantic names say "UI" (navbar, sidebar, form, etc.) and Signal A
+  // is low confidence, require supporting evidence (axes or grid lines).
+  // This prevents navbars with icon buttons from being charts, while allowing
+  // real charts inside "Widget" frames with "Tag"/"Icon" sub-components.
+  if (nameSignal === 'ui' && !signalA.highConfidence && signalCount < 2) {
+    _dbg(`→ REJECT: semantic names say UI + low confidence Signal A + no supporting signals`);
+    return false;
+  }
+
+  // From here, Signal A is confirmed — we have actual chart shapes.
+  // Use structural text analysis to filter false positives.
+
+  // ── Structural text classification ──────────────────────────────────────
+  // Instead of counting ALL text nodes, classify each by position relative
+  // to the data shapes. Chart-related text (axis labels, legend items,
+  // titles) is expected. Only non-chart text counts against detection.
+  const dataShapeVNs = collectVisualNodes(node).filter((vn) =>
+    !vn.hasTextDescendant && vn.bbox.w > 12 && vn.bbox.h > 12,
+  );
+  let nonChartTextCount = 0;
+  if (dataShapeVNs.length > 0 && bb) {
+    // Compute bounding box of all data shapes (the "chart area")
+    let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+    for (const vn of dataShapeVNs) {
+      if (vn.bbox.x < sMinX) sMinX = vn.bbox.x;
+      if (vn.bbox.y < sMinY) sMinY = vn.bbox.y;
+      if (vn.bbox.x + vn.bbox.w > sMaxX) sMaxX = vn.bbox.x + vn.bbox.w;
+      if (vn.bbox.y + vn.bbox.h > sMaxY) sMaxY = vn.bbox.y + vn.bbox.h;
+    }
+    const chartW = sMaxX - sMinX;
+    const chartH = sMaxY - sMinY;
+
+    for (const t of allTextNodes) {
+      const tbb = t.absoluteBoundingBox;
+      if (!tbb) continue;
+      const tx = tbb.x + tbb.width / 2;
+      const ty = tbb.y + tbb.height / 2;
+      const chars = (t.characters ?? '').trim();
+
+      // Short text (≤ 8 chars) near chart edges → axis label or value
+      if (chars.length <= 8) continue;
+
+      // Text above chart area (within 50px) → title/subtitle
+      if (ty < sMinY && ty > sMinY - 80) continue;
+
+      // Text below chart area (within 50px) → x-axis labels or legend
+      if (ty > sMaxY && ty < sMaxY + 60) continue;
+
+      // Text to the left of chart area → y-axis labels
+      if (tx < sMinX && tx > sMinX - 60) continue;
+
+      // Text inside chart area → data label, annotation
+      if (tx >= sMinX && tx <= sMaxX && ty >= sMinY && ty <= sMaxY) continue;
+
+      // Text next to a small colored shape (legend dot) → legend item
+      // Check if there's a small visual node within 20px horizontally
+      const isNearDot = dataShapeVNs.some((vn) =>
+        vn.bbox.w <= 16 && vn.bbox.h <= 16
+        && Math.abs((vn.bbox.y + vn.bbox.h / 2) - ty) < 10
+        && Math.abs((vn.bbox.x + vn.bbox.w) - tbb.x) < 20,
+      );
+      if (isNearDot) continue;
+
+      // This text is NOT chart-related — counts against detection
+      nonChartTextCount++;
+    }
+    _dbg(`structural text: ${totalTextCount} total, ${nonChartTextCount} non-chart`);
+  }
+
+  // High-confidence shapes: accept unless too much non-chart text.
+  // Non-chart text means paragraphs, descriptions, form labels — content
+  // that shouldn't be in a chart section.
+  if (signalA.highConfidence) {
+    if (nonChartTextCount > 3) {
+      _dbg(`→ REJECT: highConf signalA but ${nonChartTextCount} non-chart texts`);
       return false;
     }
-    _dbg(`→ ACCEPT: highConf signalA`);
+    _dbg(`→ ACCEPT: highConf signalA (${nonChartTextCount} non-chart texts)`);
     return true;
   }
 
-  // Two or more signals
+  // Data shapes + chart name → accept
+  if (nameSignal === 'chart') {
+    _dbg(`→ ACCEPT: data shapes + chart name`);
+    return true;
+  }
+
+  // Data shapes + supporting signals (axes or grid) → accept
   if (signalCount >= 2) {
-    // Reject if section has many long text strings (paragraphs, descriptions)
-    if (longTextCount >= 4) {
-      _dbg(`→ REJECT: 2+ signals but longText≥4`);
+    if (nonChartTextCount > 5) {
+      _dbg(`→ REJECT: data shapes + signals but ${nonChartTextCount} non-chart texts`);
       return false;
     }
-    _dbg(`→ ACCEPT: 2+ signals`);
+    _dbg(`→ ACCEPT: data shapes + ${signalCount - 1} supporting signal(s)`);
     return true;
   }
 
-  // Single signal — be conservative
-  if (signalCount === 1) {
-    if (longTextCount >= 2) { _dbg(`→ REJECT: 1 signal, longText≥2`); return false; }
-    if (totalTextCount > 10) { _dbg(`→ REJECT: 1 signal, texts>10`); return false; }
-    _dbg(`→ ACCEPT: 1 signal`);
-    return true;
-  }
-
-  _dbg(`→ REJECT: 0 signals`);
-  return false;
+  // Data shapes only, no supporting signals — be conservative
+  if (nonChartTextCount > 2) { _dbg(`→ REJECT: data shapes only, ${nonChartTextCount} non-chart texts`); return false; }
+  _dbg(`→ ACCEPT: data shapes only (low confidence)`);
+  return true;
 }
 
 // ── Signal A: Data shape cluster ────────────────────────────────────────────
@@ -581,24 +770,112 @@ interface ShapeClusterResult {
 export function _debugHasDataShapeCluster(node: any): ShapeClusterResult { return hasDataShapeCluster(node); }
 export function _debugHasAxisLikeTextArrangement(node: any): boolean { return hasAxisLikeTextArrangement(node); }
 export function _debugHasParallelGridLines(node: any): boolean { return hasParallelGridLines(node); }
+/**
+ * Validates that a group of aligned shapes actually looks like chart bars,
+ * not UI elements (cards, buttons, list items).
+ *
+ * Checks from Figma data only:
+ * 1. Consistent size on the NON-varying dimension (bars have similar widths)
+ * 2. Varying size on the data dimension (bars have different heights)
+ * 3. The variation is significant relative to the shapes themselves
+ *
+ * @param group - Array of Figma nodes sharing a common edge
+ * @param direction - 'vertical' (shared bottom) or 'horizontal' (shared left)
+ */
+function isBarLikeGroup(group: any[], direction: 'vertical' | 'horizontal'): boolean {
+  const bbs = group.map((r: any) => r.absoluteBoundingBox).filter(Boolean);
+  if (bbs.length < 3) return false;
+
+  if (direction === 'vertical') {
+    // Vertical bars: widths should be consistent, heights should vary
+    const widths = bbs.map((bb: any) => bb.width);
+    const heights = bbs.map((bb: any) => bb.height);
+
+    const medianWidth = widths.sort((a: number, b: number) => a - b)[Math.floor(widths.length / 2)];
+    const maxHeight = Math.max(...heights);
+    const minHeight = Math.min(...heights);
+
+    // Width consistency: most bars within ±50% of median width
+    const consistentWidths = widths.filter(
+      (w: number) => w >= medianWidth * 0.5 && w <= medianWidth * 1.5,
+    ).length;
+    if (consistentWidths < widths.length * 0.6) return false;
+
+    // Height variation: range must be significant relative to the tallest bar
+    // (bars represent different data values, so heights should differ)
+    if (maxHeight === 0) return false;
+    const heightVariation = (maxHeight - minHeight) / maxHeight;
+    if (heightVariation < 0.15) return false; // less than 15% variation → not a data chart
+
+  } else {
+    // Horizontal bars: heights should be consistent, widths should vary
+    const widths = bbs.map((bb: any) => bb.width);
+    const heights = bbs.map((bb: any) => bb.height);
+
+    const medianHeight = heights.sort((a: number, b: number) => a - b)[Math.floor(heights.length / 2)];
+    const maxWidth = Math.max(...widths);
+    const minWidth = Math.min(...widths);
+
+    const consistentHeights = heights.filter(
+      (h: number) => h >= medianHeight * 0.5 && h <= medianHeight * 1.5,
+    ).length;
+    if (consistentHeights < heights.length * 0.6) return false;
+
+    if (maxWidth === 0) return false;
+    const widthVariation = (maxWidth - minWidth) / maxWidth;
+    if (widthVariation < 0.15) return false;
+  }
+
+  return true;
+}
+
 function hasDataShapeCluster(node: any): ShapeClusterResult {
   const none: ShapeClusterResult = { detected: false, highConfidence: false };
 
   const rootBB = node.absoluteBoundingBox;
   const rootSize = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
+  const rootW = rootBB?.width ?? 0;
+  const rootH = rootBB?.height ?? 0;
 
-  // ── Pie / Donut: overlapping ellipses ────────────────────────────────────
-  // Only consider ellipses large enough to be actual chart slices.
-  // Small ellipses (< MIN_PIE_ELLIPSE_DIAMETER) are data-point dots,
-  // legend swatches, or decorative elements — never pie arcs.
-  const pieEllipses = findAllNodes(node, (n: any) => {
-    if (n.type !== 'ELLIPSE' && n.type !== 'ARC') return false;
-    const bb = n.absoluteBoundingBox;
-    if (!bb) return false;
-    const diameter = Math.max(bb.width, bb.height);
-    return diameter >= MIN_PIE_ELLIPSE_DIAMETER;
+  // Single-pass collection of ALL visual nodes — property-based, not type-based
+  const visualNodes = collectVisualNodes(node);
+
+  // Spatial spread check: chart data shapes must span a meaningful area of the
+  // container. Icon illustrations cluster in a small region.
+  // Only measure pure visual shapes (no text descendants) — UI containers
+  // with borders/fills span the full width but aren't chart data.
+  const pureShapes = visualNodes.filter((vn) => !vn.hasTextDescendant);
+  if (pureShapes.length > 0 && rootW > 0 && rootH > 0) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const vn of pureShapes) {
+      if (vn.bbox.x < minX) minX = vn.bbox.x;
+      if (vn.bbox.y < minY) minY = vn.bbox.y;
+      if (vn.bbox.x + vn.bbox.w > maxX) maxX = vn.bbox.x + vn.bbox.w;
+      if (vn.bbox.y + vn.bbox.h > maxY) maxY = vn.bbox.y + vn.bbox.h;
+    }
+    const shapeSpreadW = maxX - minX;
+    const shapeSpreadH = maxY - minY;
+    const spreadArea = shapeSpreadW * shapeSpreadH;
+    const rootArea = rootW * rootH;
+    if (rootArea > 0 && spreadArea / rootArea < 0.25) {
+      return none; // shapes cluster in a small area — icons, not chart data
+    }
+  }
+
+  // ── Pie / Donut: overlapping CIRCULAR shapes ────────────────────────────
+  // Must be circular (aspect ratio ~1:1). arcData alone is not enough —
+  // Figma attaches arcData to ALL ellipses including non-circular bar caps
+  // (29×16 ovals on top of 3D bars). Only circular shapes can be pie slices.
+  const pieShapes = visualNodes.filter((vn) => {
+    const diameter = Math.max(vn.bbox.w, vn.bbox.h);
+    if (diameter < MIN_PIE_ELLIPSE_DIAMETER) return false;
+    // Must be circular: aspect ratio close to 1:1
+    const isCircular = vn.bbox.w > 0 && vn.bbox.h > 0
+      && Math.max(vn.bbox.w, vn.bbox.h) / Math.min(vn.bbox.w, vn.bbox.h) <= 1.3;
+    return isCircular;
   });
-  const ellipseGroups = groupByCenter(pieEllipses, POS_TOLERANCE, SIZE_TOLERANCE);
+  const pieNodes = pieShapes.map((vn) => vn.node);
+  const ellipseGroups = groupByCenter(pieNodes, POS_TOLERANCE, SIZE_TOLERANCE);
   for (const group of ellipseGroups) {
     if (group.length >= MIN_PIE_ELLIPSES) {
       const chromaticCount = group.filter((e: any) =>
@@ -615,11 +892,9 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
   }
 
   // ── Concentric ring charts (radial) ──────────────────────────────────────
-  // Same center, different sizes, with partial arcs.
-  // Also requires size filter to avoid grouping data-point dots.
-  const concentricGroups = groupByCenterOnly(pieEllipses, POS_TOLERANCE);
+  const concentricGroups = groupByCenterOnly(pieNodes, POS_TOLERANCE);
   for (const group of concentricGroups) {
-    if (group.length >= 4) { // At least 2 rings (2 ellipses each: background + progress)
+    if (group.length >= 4) {
       const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
       const uniqueSizes = new Set(sizes);
       const hasPartialArcs = group.some((e: any) => {
@@ -633,84 +908,141 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
     }
   }
 
-  // ── Bar shapes: aligned elements with varying height/width ────────────────
-  // Bars in Figma can be RECTANGLE, BOOLEAN_OPERATION (3D cylinders),
-  // FRAME (auto-layout containers), or any visual node type.
-  // Strategy 1: Any node type with chromatic fills, aligned like bars.
-  const barShapes = findAllNodes(node, (n: any) => {
-    const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
-    if (!BAR_TYPES.includes(n.type)) return false;
-    const bb = n.absoluteBoundingBox;
-    if (!bb || bb.width < 3 || bb.height < 3) return false;
-    return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
-  });
-  if (barShapes.length >= MIN_BAR_RECTS) {
-    // Helper: if >= 50% of bar candidates contain TEXT children, it's a UI container
-    // (nav items, cards, list rows) not chart bars.
-    const isUIContainerGroup = (group: any[]): boolean => {
-      const withText = group.filter((r: any) =>
-        findAllNodes(r, (n: any) => n.type === 'TEXT').length > 0,
-      ).length;
-      return withText >= group.length * 0.5;
-    };
-
-    // Group by shared bottom-edge y (vertical bars)
-    const bottomGroups = groupByProperty(barShapes, (r: any) => {
-      const bb = r.absoluteBoundingBox;
-      return bb ? bb.y + bb.height : 0;
-    }, POS_TOLERANCE);
-    for (const group of bottomGroups) {
-      if (group.length >= MIN_BAR_RECTS) {
-        const heights = group.map((r: any) => r.absoluteBoundingBox?.height ?? 0);
-        const heightRange = Math.max(...heights) - Math.min(...heights);
-        if (heightRange > 10 && !isUIContainerGroup(group)) {
-          return { detected: true, highConfidence: group.length >= 5, count: group.length };
-        }
-      }
-    }
-    // Group by shared left-edge x (horizontal bars)
-    const leftGroups = groupByProperty(barShapes, (r: any) => {
-      return r.absoluteBoundingBox?.x ?? 0;
-    }, POS_TOLERANCE);
-    for (const group of leftGroups) {
-      if (group.length >= MIN_BAR_RECTS) {
-        const widths = group.map((r: any) => r.absoluteBoundingBox?.width ?? 0);
-        const widthRange = Math.max(...widths) - Math.min(...widths);
-        if (widthRange > 10 && !isUIContainerGroup(group)) {
-          return { detected: true, highConfidence: group.length >= 5, count: group.length };
+  // ── Concentric shapes (radar/spider grid) ────────────────────────────────
+  // Any visual nodes arranged concentrically with different sizes = radar grid.
+  // Works for REGULAR_POLYGON, STAR, VECTOR paths, or any shape type.
+  // Also checks for radially arranged text labels (axis names around center).
+  const concentricCandidates = visualNodes.filter((vn) =>
+    !vn.hasTextDescendant && vn.bbox.w >= 20 && vn.bbox.h >= 20,
+  );
+  if (concentricCandidates.length >= 3) {
+    const ccNodes = concentricCandidates.map((vn) => vn.node);
+    const ccGroups = groupByCenterOnly(ccNodes, POS_TOLERANCE * 3); // wider tolerance for VECTOR paths
+    for (const group of ccGroups) {
+      if (group.length >= 3) {
+        const sizes = group.map((e: any) => {
+          const bb = e.absoluteBoundingBox;
+          return bb ? Math.round(Math.max(bb.width, bb.height)) : 0;
+        });
+        const uniqueSizes = new Set(sizes);
+        if (uniqueSizes.size >= 3) {
+          // Check for radially arranged text (axis labels around center)
+          const groupBB = getGroupBoundingBox(group);
+          const cx = groupBB.x + groupBB.width / 2;
+          const cy = groupBB.y + groupBB.height / 2;
+          const radius = Math.max(groupBB.width, groupBB.height) / 2;
+          const textNodes = findAllNodes(node, (n: any) => n.type === 'TEXT');
+          const nearbyTexts = textNodes.filter((t: any) => {
+            const tbb = t.absoluteBoundingBox;
+            if (!tbb) return false;
+            const tx = tbb.x + tbb.width / 2;
+            const ty = tbb.y + tbb.height / 2;
+            const dist = Math.sqrt((tx - cx) ** 2 + (ty - cy) ** 2);
+            return dist >= radius * 0.4 && dist <= radius * 2;
+          });
+          // Concentric shapes + radial text = radar
+          if (nearbyTexts.length >= 3) {
+            return { detected: true, highConfidence: true, count: group.length };
+          }
+          // Concentric shapes alone (no text) = still possible radar
+          if (group.length >= 4) {
+            return { detected: true, highConfidence: group.length >= 5, count: group.length };
+          }
         }
       }
     }
   }
 
-  // Strategy 2: Structural bar detection — sibling nodes with same width but
-  // varying heights (or same height, varying widths for horizontal).
-  // This catches bars that are empty FRAMEs without fills (color from variables/styles).
+  // ── Bar shapes: ANY filled visual node, validated structurally ────────────
+  // No type restriction — bars can be RECTANGLE, BOOLEAN_OPERATION, FRAME,
+  // VECTOR, INSTANCE, COMPONENT, or any future type. The isBarLikeGroup
+  // validation (consistent width, varying height) filters out non-bar shapes.
+  const barCandidates = visualNodes.filter((vn) =>
+    vn.fills.length > 0 && vn.bbox.w >= 3 && vn.bbox.h >= 3 && !vn.hasTextDescendant,
+  );
+  const barNodes = barCandidates.map((vn) => vn.node);
+  if (barNodes.length >= MIN_BAR_RECTS) {
+    // UI container filter: shapes with text descendants are likely cards/buttons
+    const isUIContainerGroup = (group: any[]): boolean => {
+      const vnMap = new Map(visualNodes.map((vn) => [vn.node, vn]));
+      const withText = group.filter((r: any) => vnMap.get(r)?.hasTextDescendant).length;
+      return withText >= group.length * 0.5;
+    };
+
+    // Group by shared bottom-edge y (vertical bars)
+    const bottomGroups = groupByProperty(barNodes, (r: any) => {
+      const bb = r.absoluteBoundingBox;
+      return bb ? bb.y + bb.height : 0;
+    }, POS_TOLERANCE);
+    for (const group of bottomGroups) {
+      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'vertical') && !isUIContainerGroup(group)) {
+        return { detected: true, highConfidence: group.length >= 5, count: group.length };
+      }
+    }
+    // Group by shared left-edge x (horizontal bars)
+    const leftGroups = groupByProperty(barNodes, (r: any) => {
+      return r.absoluteBoundingBox?.x ?? 0;
+    }, POS_TOLERANCE);
+    for (const group of leftGroups) {
+      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'horizontal') && !isUIContainerGroup(group)) {
+        return { detected: true, highConfidence: group.length >= 5, count: group.length };
+      }
+    }
+  }
+
+  // Strategy 2: Structural bar detection (empty FRAMEs without fills)
   const structuralBars = findStructuralBarGroups(node);
   if (structuralBars.detected) {
     return structuralBars;
   }
 
-  // ── Series vectors (line / area charts) ──────────────────────────────────
-  // A real data-series VECTOR has meaningful height (the line undulates) and
-  // meaningful width.  Decorative divider lines / separators are essentially
-  // zero-height or tiny, and should NOT trigger chart detection.
-  const seriesVectors = findAllNodes(node, (n: any) => {
-    if (n.type !== 'VECTOR') return false;
-    const hasStroke = (n.strokes ?? []).length > 0;
-    const bb = n.absoluteBoundingBox;
-    if (!bb) return false;
-    // Must be landscape (wider than tall)
-    if (bb.width <= bb.height * 2) return false;
-    // Must have meaningful height — flat/zero-height vectors are decorative dividers
-    if (bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
-    // Must span a significant portion of the container width to be a data series
-    // (not a tiny icon stroke or legend swatch line).
-    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
-    return hasStroke;
+  // ── Series paths (line / area charts) ─────────────────────────────────────
+  // Stroked visual node with landscape aspect and meaningful height.
+  // Excludes nodes with text descendants (input fields, buttons, cards with borders)
+  // — these are UI elements, not chart data series.
+  const seriesPaths = visualNodes.filter((vn) => {
+    if (vn.strokes.length === 0) return false;
+    if (vn.hasTextDescendant) return false; // input fields, buttons, cards
+    if (vn.bbox.w <= vn.bbox.h * 2) return false;
+    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
+    return true;
   });
-  if (seriesVectors.length >= 1) {
-    return { detected: true, highConfidence: seriesVectors.length >= 2 };
+  // Require at least 2 series paths for confident detection.
+  // A single stroked landscape shape is too common in UI (input fields, card
+  // borders, dividers). For a single series path, require supporting evidence:
+  // small dot-like shapes nearby (data point markers on the line).
+  if (seriesPaths.length >= 2) {
+    return { detected: true, highConfidence: true };
+  }
+  if (seriesPaths.length === 1) {
+    // Look for data point markers: small shapes (≤ 12px) near the series path
+    const seriesPath = seriesPaths[0];
+    const dataPoints = visualNodes.filter((vn) => {
+      if (vn === seriesPath) return false;
+      if (vn.hasTextDescendant) return false;
+      // Small dot-like shape
+      if (vn.bbox.w > 12 || vn.bbox.h > 12) return false;
+      // Near the series path vertically (within the path's y range)
+      const pathTop = seriesPath.bbox.y;
+      const pathBottom = seriesPath.bbox.y + seriesPath.bbox.h;
+      const dotCY = vn.bbox.y + vn.bbox.h / 2;
+      return dotCY >= pathTop - 5 && dotCY <= pathBottom + 5;
+    });
+    if (dataPoints.length >= 2) {
+      return { detected: true, highConfidence: false };
+    }
+  }
+
+  // ── Filled overlay shapes (radar data polygons, area fills) ───────────────
+  // Chromatic filled shapes that overlap with other shapes — data overlays
+  const filledOverlays = visualNodes.filter((vn) =>
+    vn.fills.length > 0 && vn.bbox.w > 30 && vn.bbox.h > 30
+    && !vn.hasTextDescendant && !vn.isPolygonal,
+  );
+  if (filledOverlays.length >= 2 && concentricCandidates.length >= 3) {
+    // Filled shapes near a concentric grid → radar data series
+    return { detected: true, highConfidence: true, count: filledOverlays.length };
   }
 
   return none;
@@ -846,16 +1178,23 @@ export function detectChartType(node: any): ChartType {
   const hasGrid = hasParallelGridLines(node);
   const cartesianBoost = (hasAxes ? 3 : 0) + (hasGrid ? 2 : 0);
 
-  // ── 1. PIE / DONUT ──────────────────────────────────────────────────────
-  // Only large ellipses count — small ones are data-point dots.
-  const allEllipses = findAllNodes(node, (n: any) => n.type === 'ELLIPSE');
-  const pieEllipses = allEllipses.filter((n: any) => {
-    const bb = n.absoluteBoundingBox;
-    return bb && Math.max(bb.width, bb.height) >= MIN_PIE_ELLIPSE_DIAMETER;
+  // Single-pass collection of ALL visual nodes — property-based, not type-based
+  const visualNodes = collectVisualNodes(node);
+
+  // ── 1. PIE / DONUT — circular shapes with chromatic fills ────────────────
+  // Must be circular (aspect ratio ~1:1). arcData alone is not enough —
+  // bar overlay ellipses (29×16 ovals) have arcData but aren't pie slices.
+  const pieShapes = visualNodes.filter((vn) => {
+    const diameter = Math.max(vn.bbox.w, vn.bbox.h);
+    if (diameter < MIN_PIE_ELLIPSE_DIAMETER) return false;
+    const isCircular = vn.bbox.w > 0 && vn.bbox.h > 0
+      && Math.max(vn.bbox.w, vn.bbox.h) / Math.min(vn.bbox.w, vn.bbox.h) <= 1.3;
+    return isCircular;
   });
+  const pieNodes = pieShapes.map((vn) => vn.node);
 
   let pieType: 'pie' | 'donut' | null = null;
-  const pieGroups = groupByCenter(pieEllipses, POS_TOLERANCE, SIZE_TOLERANCE);
+  const pieGroups = groupByCenter(pieNodes, POS_TOLERANCE, SIZE_TOLERANCE);
   for (const group of pieGroups) {
     if (group.length >= MIN_PIE_ELLIPSES) {
       const chromaticEllipses = group.filter((e: any) =>
@@ -866,46 +1205,25 @@ export function detectChartType(node: any): ChartType {
         }),
       );
       if (chromaticEllipses.length >= MIN_PIE_ELLIPSES) {
-        // Determine donut vs pie
         const visibleGroup = group.filter((e: any) => e.visible !== false);
         const visibleWithInnerRadius = visibleGroup.filter((e: any) =>
           e.arcData && typeof e.arcData.innerRadius === 'number' && e.arcData.innerRadius > 0,
         );
-        if (visibleWithInnerRadius.length > 0) {
-          pieType = 'donut';
-        } else {
-          // Check for a visible inner element (center label / white circle)
-          const groupBB = getGroupBoundingBox(group);
-          const groupCenterX = groupBB.x + groupBB.width / 2;
-          const groupCenterY = groupBB.y + groupBB.height / 2;
-          const groupSize = Math.max(groupBB.width, groupBB.height);
-
-          const visibleInnerElements = findAllNodes(node, (n: any) => {
-            if (group.includes(n)) return false;
-            if (n.visible === false) return false;
-            const bb = n.absoluteBoundingBox;
-            if (!bb) return false;
-            const nCenterX = bb.x + bb.width / 2;
-            const nCenterY = bb.y + bb.height / 2;
-            const isNearCenter = Math.abs(nCenterX - groupCenterX) < groupSize * 0.3
-              && Math.abs(nCenterY - groupCenterY) < groupSize * 0.3;
-            const isSmaller = bb.width < groupSize * 0.6 && bb.height < groupSize * 0.6;
-            return isNearCenter && isSmaller;
-          });
-          pieType = visibleInnerElements.length > 0 ? 'donut' : 'pie';
-        }
-
-        // Score: base 5 for finding slices, plus bonus per extra slice.
-        // Penalised if cartesian signals are also present (unlikely for real pie).
+        // Donut vs pie: determined by arcData.innerRadius on VISIBLE slices only.
+        // Hidden slices may have innerRadius from a shared template — they don't
+        // represent what the chart actually looks like.
+        // Center text (e.g. "9.2K") doesn't determine the type — both pies and
+        // donuts can have center labels.
+        pieType = visibleWithInnerRadius.length > 0 ? 'donut' : 'pie';
         const pieScore = 5 + chromaticEllipses.length - cartesianBoost;
         addScore(pieType, pieScore);
-        break; // only one pie group needed
+        break;
       }
     }
   }
 
   // ── 1b. RADIAL: concentric ring chart ───────────────────────────────────
-  const concentricGroups = groupByCenterOnly(pieEllipses, POS_TOLERANCE);
+  const concentricGroups = groupByCenterOnly(pieNodes, POS_TOLERANCE);
   for (const group of concentricGroups) {
     if (group.length >= 4) {
       const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
@@ -922,98 +1240,155 @@ export function detectChartType(node: any): ChartType {
     }
   }
 
-  // ── 2. BAR ──────────────────────────────────────────────────────────────
-  // Bars in Figma can be RECTANGLE, BOOLEAN_OPERATION, FRAME, or any visual type.
-  // Strategy A: nodes with chromatic fills, aligned like bars.
-  const barShapes = findAllNodes(node, (n: any) => {
-    const BAR_TYPES = ['RECTANGLE', 'BOOLEAN_OPERATION', 'FRAME', 'INSTANCE', 'COMPONENT'];
-    if (!BAR_TYPES.includes(n.type)) return false;
-    const bb = n.absoluteBoundingBox;
-    if (!bb || bb.width < 3 || bb.height < 3) return false;
-    return (n.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color));
+  // ── 1c. RADAR: concentric shapes (any type) arranged with radial text ──
+  // Radar grids can be REGULAR_POLYGON, STAR, or VECTOR paths.
+  // Detect by: 3+ shapes sharing a center with different sizes + radial text.
+  const radarCandidates = visualNodes.filter((vn) =>
+    !vn.hasTextDescendant && vn.bbox.w >= 20 && vn.bbox.h >= 20,
+  );
+  if (radarCandidates.length >= 3) {
+    const rcNodes = radarCandidates.map((vn) => vn.node);
+    const rcGroups = groupByCenterOnly(rcNodes, POS_TOLERANCE * 3);
+    for (const group of rcGroups) {
+      if (group.length >= 3) {
+        const sizes = group.map((e: any) => {
+          const ebb = e.absoluteBoundingBox;
+          return ebb ? Math.round(Math.max(ebb.width, ebb.height)) : 0;
+        });
+        const uniqueSizes = new Set(sizes);
+        if (uniqueSizes.size >= 3) {
+          // Check for radially arranged text (axis labels around center)
+          const groupBB = getGroupBoundingBox(group);
+          const cx = groupBB.x + groupBB.width / 2;
+          const cy = groupBB.y + groupBB.height / 2;
+          const radius = Math.max(groupBB.width, groupBB.height) / 2;
+          const allTexts = findAllNodes(node, (n: any) => n.type === 'TEXT');
+          const radialTexts = allTexts.filter((t: any) => {
+            const tbb = t.absoluteBoundingBox;
+            if (!tbb) return false;
+            const tx = tbb.x + tbb.width / 2;
+            const ty = tbb.y + tbb.height / 2;
+            const dist = Math.sqrt((tx - cx) ** 2 + (ty - cy) ** 2);
+            return dist >= radius * 0.4 && dist <= radius * 2;
+          });
+
+          const dataOverlays = visualNodes.filter((vn) =>
+            vn.fills.length > 0 && vn.bbox.w > 30 && vn.bbox.h > 30
+            && !vn.hasTextDescendant,
+          );
+
+          // Strong radar signal: concentric shapes + radial text + data overlays
+          if (radialTexts.length >= 3) {
+            addScore('radar', 10 + group.length + (dataOverlays.length >= 1 ? 3 : 0));
+          } else if (group.length >= 4) {
+            addScore('radar', 6 + group.length + (dataOverlays.length >= 1 ? 3 : 0));
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // ── 2. BAR — ANY filled visual node, validated by structural alignment ──
+  // Skip bar detection if pie/donut or radar already found — the same shapes
+  // can falsely match as aligned bars (pie slices at edges, radar rings as columns).
+  const hasRadarScore = (scores['radar'] ?? 0) > 0;
+  const barCandidates = (pieType || hasRadarScore) ? [] : visualNodes.filter((vn) => {
+    if (vn.fills.length === 0) return false;
+    if (vn.hasTextDescendant) return false;
+    if (vn.bbox.w < 3 || vn.bbox.h < 3) return false;
+    // Exclude small square shapes — data point dots, legend dots, markers
+    if (vn.bbox.w <= 12 && vn.bbox.h <= 12) return false;
+    return true;
   });
-  if (barShapes.length >= MIN_BAR_RECTS) {
-    // Vertical bars: shared bottom edge, similar width
-    const bottomGroups = groupByProperty(barShapes, (r: any) => {
+  const barNodes = barCandidates.map((vn) => vn.node);
+  if (barNodes.length >= MIN_BAR_RECTS) {
+    const bottomGroups = groupByProperty(barNodes, (r: any) => {
       const bb = r.absoluteBoundingBox;
       return bb ? bb.y + bb.height : 0;
     }, POS_TOLERANCE);
     for (const group of bottomGroups) {
-      if (group.length >= MIN_BAR_RECTS) {
-        const widths = group.map((r: any) => r.absoluteBoundingBox?.width ?? 0);
-        const allSimilarWidth = widths.every((w: number) => Math.abs(w - widths[0]) < SIZE_TOLERANCE);
-        if (allSimilarWidth) {
-          addScore('bar', 5 + group.length + cartesianBoost);
-        }
+      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'vertical')) {
+        addScore('bar', 5 + group.length + cartesianBoost);
       }
     }
-    // Horizontal bars: shared left edge, similar height
-    const leftGroups = groupByProperty(barShapes, (r: any) => {
+    const leftGroups = groupByProperty(barNodes, (r: any) => {
       return r.absoluteBoundingBox?.x ?? 0;
     }, POS_TOLERANCE);
     for (const group of leftGroups) {
-      if (group.length >= MIN_BAR_RECTS) {
-        const heights = group.map((r: any) => r.absoluteBoundingBox?.height ?? 0);
-        const allSimilarHeight = heights.every((h: number) => Math.abs(h - heights[0]) < SIZE_TOLERANCE);
-        if (allSimilarHeight) {
-          addScore('bar', 5 + group.length + cartesianBoost);
+      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'horizontal')) {
+        addScore('bar', 5 + group.length + cartesianBoost);
+      }
+    }
+  }
+
+  // Strategy B: Structural bar detection (empty FRAMEs without fills).
+  // Skip if pie/donut/radar already detected — their shapes falsely match as bars.
+  if (!pieType && !hasRadarScore) {
+    const structuralBarResult = findStructuralBarGroups(node);
+    if (structuralBarResult.detected) {
+      addScore('bar', 6 + (structuralBarResult.count ?? 0) + cartesianBoost);
+    }
+  }
+
+  // ── 3. AREA — ANY node with strokes + gradient fills ────────────────────
+  const areaShapes = visualNodes.filter((vn) => {
+    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
+    const hasGradient = vn.fills.some((f: any) => f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL');
+    return vn.strokes.length > 0 && hasGradient;
+  });
+  if (areaShapes.length > 0) {
+    addScore('area', 8 + areaShapes.length + cartesianBoost);
+  }
+
+  // Fill-only area shapes (gradient without stroke)
+  const fillOnlyAreaShapes = visualNodes.filter((vn) => {
+    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
+    const hasGradient = vn.fills.some((f: any) => f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL');
+    return hasGradient && vn.strokes.length === 0 && vn.bbox.w > vn.bbox.h;
+  });
+  if (fillOnlyAreaShapes.length > 0) {
+    addScore('area', 4 + fillOnlyAreaShapes.length + cartesianBoost);
+  }
+
+  // Spatial co-occurrence: gradient fill near a stroked path
+  const linePaths = visualNodes.filter((vn) => {
+    if (vn.strokes.length === 0) return false;
+    if (vn.bbox.w <= vn.bbox.h * 2) return false;
+    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
+    return true;
+  });
+  if (linePaths.length > 0 && fillOnlyAreaShapes.length > 0) {
+    for (const lineVN of linePaths) {
+      for (const fillVN of fillOnlyAreaShapes) {
+        const overlapLeft = Math.max(lineVN.bbox.x, fillVN.bbox.x);
+        const overlapRight = Math.min(lineVN.bbox.x + lineVN.bbox.w, fillVN.bbox.x + fillVN.bbox.w);
+        const hOverlap = overlapRight - overlapLeft;
+        const minW = Math.min(lineVN.bbox.w, fillVN.bbox.w);
+        if (minW > 0 && hOverlap / minW >= 0.5) {
+          addScore('area', 6 + cartesianBoost);
+          break;
         }
       }
     }
   }
 
-  // Strategy B: Structural bar detection — sibling nodes with same width but
-  // varying heights, even without fills (color from Figma variables/styles).
-  const structuralBarResult = findStructuralBarGroups(node);
-  if (structuralBarResult.detected) {
-    addScore('bar', 6 + (structuralBarResult.count ?? 0) + cartesianBoost);
-  }
-
-  // ── 3. AREA: vectors with BOTH strokes AND gradient fills ───────────────
-  const areaVectors = findAllNodes(node, (n: any) => {
-    if (n.type !== 'VECTOR') return false;
-    const bb = n.absoluteBoundingBox;
-    if (!bb || bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
-    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
-    const hasStroke = (n.strokes ?? []).length > 0;
-    const hasGradient = (n.fills ?? []).some((f: any) => f.type === 'GRADIENT_LINEAR');
-    return hasStroke && hasGradient;
+  // ── 4. LINE — ANY stroked node, no chromatic fills, landscape ───────────
+  const lineShapes = visualNodes.filter((vn) => {
+    if (vn.strokes.length === 0) return false;
+    // No chromatic solid fills (stroked paths without fill = line)
+    const hasChromaticSolid = vn.fills.some((f: any) => f.type === 'SOLID');
+    if (hasChromaticSolid) return false;
+    if (vn.bbox.w <= vn.bbox.h * 2) return false;
+    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
+    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
+    return true;
   });
-  if (areaVectors.length > 0) {
-    // Area is very strong: gradient fill under a line is unmistakable.
-    addScore('area', 8 + areaVectors.length + cartesianBoost);
-  }
-
-  // Also check for gradient-filled vectors WITHOUT strokes (fill-only area shape)
-  const fillOnlyAreaVectors = findAllNodes(node, (n: any) => {
-    if (n.type !== 'VECTOR') return false;
-    const bb = n.absoluteBoundingBox;
-    if (!bb || bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
-    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
-    const hasGradient = (n.fills ?? []).some((f: any) => f.type === 'GRADIENT_LINEAR');
-    const hasNoStroke = (n.strokes ?? []).length === 0;
-    return hasGradient && hasNoStroke && bb.width > bb.height;
-  });
-  if (fillOnlyAreaVectors.length > 0) {
-    addScore('area', 4 + fillOnlyAreaVectors.length + cartesianBoost);
-  }
-
-  // ── 4. LINE: stroked vectors, no chromatic fills, landscape ─────────────
-  const lineVectors = findAllNodes(node, (n: any) => {
-    if (n.type !== 'VECTOR') return false;
-    const hasStroke = (n.strokes ?? []).length > 0;
-    const noFill = !(n.fills ?? []).some(
-      (f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color),
-    );
-    const bb = n.absoluteBoundingBox;
-    if (!bb) return false;
-    if (bb.width <= bb.height * 2) return false;
-    if (bb.height < MIN_SERIES_VECTOR_HEIGHT) return false;
-    if (rootSize > 0 && bb.width < rootSize * 0.15) return false;
-    return hasStroke && noFill;
-  });
-  if (lineVectors.length > 0) {
-    addScore('line', 5 + lineVectors.length + cartesianBoost);
+  if (lineShapes.length > 0) {
+    addScore('line', 5 + lineShapes.length + cartesianBoost);
   }
 
   // ── Pick winner ──────────────────────────────────────────────────────────
@@ -1225,12 +1600,57 @@ export async function extractChartMetadata(
   const yAxisMax = yAxisNums.length > 0 ? Math.max(...yAxisNums) : 100;
   const yAxisTicks = yAxisNums.length > 0 ? [...new Set(yAxisNums)].sort((a, b) => a - b) : [];
 
-  // ── Bar chart data extraction: extract labels + values from bar column structure ──
-  let barSeriesData: Array<{ name: string; value: number }> | null = null;
-  if (chartType === 'bar' && xAxisLabels.length === 0) {
+  // ── Bar chart data extraction: extract labels + values + colors from bar column structure ──
+  // Always run for bar charts — even when xAxisLabels exist from axis frames.
+  // The bar fills carry the actual colors from Figma (which may differ from legend colors).
+  let barSeriesData: Array<{ name: string; value: number; color?: string }> | null = null;
+  if (chartType === 'bar') {
     barSeriesData = extractBarChartData(node, yAxisMin, yAxisMax);
     if (barSeriesData && barSeriesData.length > 0) {
-      xAxisLabels = barSeriesData.map((d) => d.name);
+      // Only use bar labels if we don't already have axis labels
+      if (xAxisLabels.length === 0) {
+        xAxisLabels = barSeriesData.map((d) => d.name);
+      }
+      // Update series color from actual bar fills if available
+      // (legend dot color may differ from the actual bar fill color)
+      const firstBarColor = barSeriesData.find((d) => d.color)?.color;
+      if (firstBarColor && series.length > 0) {
+        series[0].color = firstBarColor;
+      }
+    }
+
+    // Fallback: when extractBarChartData can't match the column structure
+    // AND no legend provided a color, extract from bar shapes directly.
+    // Only applies when series color came from the single-color fallback
+    // (series name is 'Chart'), not from an actual legend extraction.
+    if (!barSeriesData && series.length > 0 && series[0].name === 'Chart') {
+      const barVNs = collectVisualNodes(node);
+      const barLikeShapes = barVNs.filter((vn) => {
+        if (vn.fills.length === 0) return false;
+        if (vn.bbox.w < 3 || vn.bbox.h < 10) return false;
+        if (vn.bbox.h < vn.bbox.w * 0.5) return false;
+        return true;
+      }).map((vn) => vn.node);
+
+      if (barLikeShapes.length >= 3) {
+        const colorCounts = new Map<string, number>();
+        for (const shape of barLikeShapes) {
+          const fill = (shape.fills ?? []).find((f: any) =>
+            f.type === 'SOLID' && f.visible !== false && f.color && isChromatic(f.color));
+          if (fill) {
+            const hex = figmaColorToHex(fill.color);
+            colorCounts.set(hex, (colorCounts.get(hex) ?? 0) + 1);
+          }
+        }
+        let bestColor = '';
+        let bestCount = 0;
+        for (const [hex, count] of colorCounts) {
+          if (count > bestCount) { bestCount = count; bestColor = hex; }
+        }
+        if (bestColor) {
+          series[0].color = bestColor;
+        }
+      }
     }
   }
 
@@ -1666,9 +2086,9 @@ function findLegendFrameStructurally(node: any): any | null {
  * Find small shape node (dot) inside a frame — ELLIPSE or RECTANGLE with bbox <= 16x16.
  */
 function findSmallShapeNode(node: any): any | null {
-  const SHAPE_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
+  // Property-based: any small visual node (≤16×16)
   const shapes = findAllNodes(node, (n: any) => {
-    if (!SHAPE_TYPES.includes(n.type)) return false;
+    if (!isVisualNode(n)) return false;
     const bb = n.absoluteBoundingBox;
     if (!bb) return false;
     return bb.width <= 16 && bb.height <= 16;
@@ -1895,20 +2315,17 @@ function extractChartTextContent(
     [chartAreaFrame, legendsFrame, switcherFrame, xAxisFrame, yAxisFrame].filter(Boolean),
   );
 
-  // Also exclude frames that directly contain chart data shapes (not parent containers
-  // that also hold headings). Only exclude the most specific frame containing the shapes.
-  // A data area has ≥3 chromatic shapes as direct children (max 1 level deep).
-  const dataAreas = findVisibleNodes(rootNode, (n: any) => {
-    if (n === rootNode) return false;
-    if (excludeFrames.has(n)) return false;
+  // Also exclude frames that directly contain chart data shapes.
+  // Walk DOWN to find the DEEPEST frame that still matches — this prevents
+  // excluding a parent (e.g. BarLineChart) that contains both chart bars
+  // AND summary text. Only the most specific data area is excluded.
+  function isDataArea(n: any): boolean {
     if (n.type !== 'FRAME' && n.type !== 'GROUP') return false;
-    // Count shapes that are direct children (not deeply nested)
     const directShapes = (n.children ?? []).filter((c: any) =>
       ['RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE'].includes(c.type) &&
       (c.fills ?? []).some((f: any) => f.type === 'SOLID' && f.color && isChromatic(f.color)),
     ).length;
     if (directShapes >= 3) return true;
-    // Also match bar chart containers: child frames each containing a rectangle
     const childFramesWithBars = (n.children ?? []).filter((c: any) => {
       if (c.type !== 'FRAME' && c.type !== 'GROUP') return false;
       return (c.children ?? []).some((gc: any) =>
@@ -1916,8 +2333,31 @@ function extractChartTextContent(
           f.type === 'SOLID' && f.color && isChromatic(f.color)));
     }).length;
     return childFramesWithBars >= 3;
-  });
-  for (const da of dataAreas) excludeFrames.add(da);
+  }
+
+  function findDeepestDataArea(n: any): any | null {
+    if (n === rootNode && !isDataArea(n)) {
+      // Root doesn't match — check children
+    } else if (!isDataArea(n)) {
+      return null;
+    }
+    // Check if any child is a deeper match
+    for (const child of (n.children ?? [])) {
+      if (child.visible === false) continue;
+      if (excludeFrames.has(child)) continue;
+      const deeper = findDeepestDataArea(child);
+      if (deeper) return deeper;
+    }
+    // No deeper child matches — this is the deepest (or root pass-through)
+    return (n !== rootNode && isDataArea(n)) ? n : null;
+  }
+
+  // Find deepest data areas starting from root's children
+  for (const child of (rootNode.children ?? [])) {
+    if (child.visible === false || excludeFrames.has(child)) continue;
+    const deepest = findDeepestDataArea(child);
+    if (deepest) excludeFrames.add(deepest);
+  }
 
   // Collect visible TEXT nodes NOT inside excluded frames
   const allTextNodes = findVisibleNodes(rootNode, (n: any) => n.type === 'TEXT');
@@ -2154,9 +2594,9 @@ function extractSeriesFromLegends(
       if (n.type !== 'FRAME' && n.type !== 'GROUP' && n.type !== 'INSTANCE') return false;
       const directChildren = n.children ?? [];
       const hasText = directChildren.some((c: any) => c.type === 'TEXT');
-      const DOT_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
+      // Property-based: any small visual node as legend dot
       const hasDot = directChildren.some((c: any) => {
-        if (!DOT_TYPES.includes(c.type)) return false;
+        if (!isVisualNode(c)) return false;
         const bb = c.absoluteBoundingBox;
         return bb && bb.width <= 16 && bb.height <= 16;
       });
@@ -2171,9 +2611,9 @@ function extractSeriesFromLegends(
         const text = (textNode?.characters ?? textNode?.content ?? '').trim();
         if (!textNode || text.length <= 1) continue;
 
-        const DOT_TYPES = ['ELLIPSE', 'RECTANGLE', 'LINE', 'VECTOR', 'INSTANCE'];
+        // Property-based: any small visual node as legend dot
         const dotNode = (legendItem.children ?? []).find((c: any) => {
-          if (!DOT_TYPES.includes(c.type)) return false;
+          if (!isVisualNode(c)) return false;
           const bb = c.absoluteBoundingBox;
           return bb && bb.width <= 16 && bb.height <= 16;
         });
@@ -2225,7 +2665,67 @@ function extractSeriesFromLegends(
     }
   }
 
-  // Fallback: extract a single series from data elements
+  // Fallback: detect series from the actual data shapes' visual properties.
+  // Group stroked paths by unique stroke color — each color = one series.
+  // This handles charts without legends (the shape colors ARE the series data).
+  const dataShapes = collectVisualNodes(rootNode);
+  const rootBB = rootNode.absoluteBoundingBox;
+  const rootMax = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
+
+  // Find series-like paths: stroked, landscape aspect, meaningful size
+  const seriesPaths = dataShapes.filter((vn) =>
+    vn.strokes.length > 0
+    && vn.bbox.w > vn.bbox.h
+    && vn.bbox.h >= MIN_SERIES_VECTOR_HEIGHT
+    && (rootMax === 0 || vn.bbox.w >= rootMax * 0.15),
+  );
+
+  if (seriesPaths.length > 1) {
+    // Group by unique stroke color
+    const colorMap = new Map<string, VisualNode>();
+    for (const vn of seriesPaths) {
+      const stroke = vn.strokes[0];
+      if (stroke?.color) {
+        const hex = figmaColorToHex(stroke.color);
+        if (!colorMap.has(hex)) colorMap.set(hex, vn);
+      }
+    }
+    if (colorMap.size > 1) {
+      const series: SeriesInfo[] = [];
+      let idx = 0;
+      for (const [hex] of colorMap) {
+        series.push({ name: `Series ${idx + 1}`, color: hex, legendColor: hex });
+        idx++;
+      }
+      return series;
+    }
+  }
+
+  // Also check filled shapes (bars, pie slices) by unique fill color
+  const filledShapes = dataShapes.filter((vn) =>
+    vn.fills.length > 0 && vn.bbox.w >= 3 && vn.bbox.h >= 3 && !vn.hasTextDescendant,
+  );
+  if (filledShapes.length > 1) {
+    const fillColorMap = new Map<string, VisualNode>();
+    for (const vn of filledShapes) {
+      const fill = vn.fills[0];
+      if (fill?.type === 'SOLID' && fill.color) {
+        const hex = figmaColorToHex(fill.color);
+        if (!fillColorMap.has(hex)) fillColorMap.set(hex, vn);
+      }
+    }
+    if (fillColorMap.size > 1) {
+      const series: SeriesInfo[] = [];
+      let idx = 0;
+      for (const [hex] of fillColorMap) {
+        series.push({ name: `Series ${idx + 1}`, color: hex, legendColor: hex });
+        idx++;
+      }
+      return series;
+    }
+  }
+
+  // Final fallback: single series from any chromatic color found
   const fallbackColor = extractSingleSeriesColor(rootNode);
   return [{ name: 'Chart', color: fallbackColor, legendColor: fallbackColor }];
 }
@@ -2720,7 +3220,7 @@ function parseAxisNumber(text: string): number {
  */
 function extractBarChartData(
   node: any, yAxisMin: number, yAxisMax: number,
-): Array<{ name: string; value: number }> | null {
+): Array<{ name: string; value: number; color?: string }> | null {
   // Find the bar chart container: a frame with multiple visible child frames,
   // each containing a rectangle/frame (bar) and a text node (label).
   const barContainers = findAllNodes(node, (n: any) => {
@@ -3699,12 +4199,14 @@ function figmaColorToHex(c: any): string {
 }
 
 function toPascalCase(str: string): string {
-  return str
+  const result = str
     .replace(/[^a-zA-Z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(Boolean)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join('');
+    .join('')
+    .replace(/^[0-9]+/, ''); // JS identifiers can't start with digits
+  return result || 'Component';
 }
 
 // toKebabCase imported from component-set-parser.ts for consistency

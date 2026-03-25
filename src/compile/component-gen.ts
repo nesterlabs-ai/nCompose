@@ -403,8 +403,10 @@ export async function generateCompoundSection(
         .replace(/[^a-zA-Z0-9\s]/g, ' ')
         .split(/\s+/).filter(Boolean)
         .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join('');
-      let chartComponentName = pascal + (pascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
+        .join('')
+        .replace(/^[0-9]+/, ''); // strip leading digits — JS identifiers can't start with numbers
+      const safePascal = pascal || 'Component'; // fallback if name was all digits
+      let chartComponentName = safePascal + (safePascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
       // Deduplicate: if another chart already has this name, append a suffix
       if (usedChartNames.has(chartComponentName)) {
         let suffix = 2;

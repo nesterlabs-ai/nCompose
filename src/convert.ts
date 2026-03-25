@@ -920,8 +920,11 @@ export async function convertFigmaToCode(
   // For chart COMPONENT_SETs, generate a chart for EACH variant.
   if (isComponentSet(enhanced)) {
     const rawChildren = rawDocumentNode?.children ?? [];
-    const rawFirstVariant = rawChildren[0];
-    if (rawFirstVariant && isChartSection(rawFirstVariant)) {
+    // Check if ANY variant is a chart — not just the first one.
+    // The first variant may be a minimal "condensed" version with few shapes,
+    // while fuller variants have complete chart structures with axes and grid.
+    const chartVariant = rawChildren.find((v: any) => v && isChartSection(v));
+    if (chartVariant) {
       // Derive component name from the COMPONENT_SET name (e.g. "_Activitiy gauge" → "ActivityGaugeChart")
       const setName = rawDocumentNode?.name ?? enhanced?.nodes?.[0]?.name ?? '';
 
@@ -963,13 +966,28 @@ export async function convertFigmaToCode(
         }
 
         // Strip all import statements and change export default → plain function
-        const body = chartCode
+        let body = chartCode
           .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]+['"]\s*;?/g, '')
           .replace(/import\s+['"][^'"]+['"]\s*;?/g, '')
           .replace(/export\s+default\s+function/, 'function')
           .trim();
+
+        // Deduplicate: if this variant's component name already exists, rename it
+        let finalVariantName = result.componentName;
+        if (variantNames.includes(finalVariantName)) {
+          let suffix = 2;
+          while (variantNames.includes(`${finalVariantName}${suffix}`)) suffix++;
+          const newName = `${finalVariantName}${suffix}`;
+          // Rename all occurrences in the body (CHART_DATA_, CustomTooltip_, function name)
+          body = body.replace(
+            new RegExp(`(?<=^|[^a-zA-Z0-9])${finalVariantName}(?=[^a-zA-Z0-9]|$)`, 'g'),
+            newName,
+          );
+          finalVariantName = newName;
+        }
+
         chartDefinitions.push(body);
-        variantNames.push(result.componentName);
+        variantNames.push(finalVariantName);
 
         // Merge CSS
         if (result.css) allCss += (allCss ? '\n\n' : '') + result.css;
@@ -2033,12 +2051,14 @@ function buildSectionDesign(parentDesign: any, child: any): any {
  * Convert a Figma node name to PascalCase for use as a component name.
  */
 function toPascalCase(name: string): string {
-  return name
+  const result = name
     .replace(/[^a-zA-Z0-9\s-_]/g, '')
     .split(/[\s\-_]+/)
     .filter(Boolean)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join('');
+    .join('')
+    .replace(/^[0-9]+/, ''); // JS identifiers can't start with digits
+  return result || 'Component'; // fallback if name was all digits/symbols
 }
 
 /**
@@ -2138,6 +2158,159 @@ function flattenWrapperFrames(children: any[], parentWidth: number): any[] {
   return result;
 }
 
+// ── Chart sibling merging ────────────────────────────────────────────────────
+
+/**
+ * Checks if a node's subtree contains only chart-auxiliary content:
+ * axis labels (short TEXT), grid lines (LINE/VECTOR), gradient fills,
+ * small dots — NOT interactive UI (buttons, inputs, long text, images).
+ */
+function isChartAuxiliaryNode(node: any): boolean {
+  if (!node || node.visible === false) return false;
+  const leaves: any[] = [];
+  const stack: any[] = [node];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    if (!n || n.visible === false) continue;
+    const kids = n.children ?? [];
+    if (kids.length === 0) leaves.push(n);
+    else for (const kid of kids) stack.push(kid);
+  }
+  if (leaves.length === 0) return true;
+
+  let chartLike = 0;
+  let uiSignal = 0;
+  for (const leaf of leaves) {
+    const t = leaf.type;
+    const bb = leaf.absoluteBoundingBox;
+    const w = bb?.width ?? 0;
+    const h = bb?.height ?? 0;
+    if (t === 'TEXT') {
+      if ((leaf.characters ?? '').length > 40) uiSignal++;
+      else chartLike++;
+    } else if (t === 'LINE' || t === 'VECTOR' || t === 'BOOLEAN_OPERATION') {
+      chartLike++;
+    } else if (t === 'RECTANGLE' || t === 'ELLIPSE') {
+      const hasGradient = (leaf.fills ?? []).some((f: any) => f.visible !== false && (f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL'));
+      if (hasGradient || (w <= 20 && h <= 20)) chartLike++;
+      else if (w > 100 && h > 100) uiSignal++;
+      else chartLike++;
+    } else {
+      uiSignal++;
+    }
+  }
+  return uiSignal === 0 && chartLike > 0;
+}
+
+/**
+ * Checks if two nodes are spatially related (horizontal overlap ≥ 50%,
+ * vertical gap ≤ 20px). Uses absoluteBoundingBox from Figma.
+ */
+function areSpatiallyRelated(a: any, b: any): boolean {
+  const bbA = a.absoluteBoundingBox;
+  const bbB = b.absoluteBoundingBox;
+  if (!bbA || !bbB) return false;
+  const overlapLeft = Math.max(bbA.x, bbB.x);
+  const overlapRight = Math.min(bbA.x + bbA.width, bbB.x + bbB.width);
+  const minWidth = Math.min(bbA.width, bbB.width);
+  if (minWidth <= 0 || (overlapRight - overlapLeft) / minWidth < 0.5) return false;
+  const aBottom = bbA.y + bbA.height;
+  const bBottom = bbB.y + bbB.height;
+  const verticalGap = Math.max(0, Math.max(bbA.y, bbB.y) - Math.min(aBottom, bBottom));
+  return verticalGap <= 20;
+}
+
+/**
+ * Removes page sections that are chart-auxiliary siblings of detected chart sections.
+ * Prevents the LLM from re-rendering axes, grid lines, and gradient fills
+ * that the Recharts codegen already handles.
+ */
+function mergeChartAdjacentSiblings(children: any[], rawChildren: any[]): { children: any[] } {
+  // Build a lookup map from raw children by node ID, so we can find the
+  // matching raw node for each (possibly flattened) simplified child.
+  // isChartSection needs the raw node (arcData, strokes, fills).
+  const rawById = new Map<string, any>();
+  const buildRawMap = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (n?.id) rawById.set(n.id, n);
+      if (n?.children) buildRawMap(n.children);
+    }
+  };
+  buildRawMap(rawChildren);
+
+  const isChart: boolean[] = children.map((child) => {
+    if (!child || child.visible === false) return false;
+    const type = child.type;
+    if (type !== 'FRAME' && type !== 'GROUP' && type !== 'INSTANCE') return false;
+    // Find matching raw node by ID for accurate chart detection
+    const raw = rawById.get(child.id) ?? child;
+    return isChartSection(raw);
+  });
+
+  // Track which siblings each chart absorbed (not a shared pool)
+  const absorbedByChart = new Map<number, number[]>(); // chartIndex → [siblingIndices]
+  const absorbed = new Set<number>();
+
+  for (let ci = 0; ci < children.length; ci++) {
+    if (!isChart[ci] || absorbed.has(ci)) continue;
+    const chartChild = children[ci];
+    const mySiblings: number[] = [];
+
+    // Look forward
+    for (let si = ci + 1; si < children.length; si++) {
+      if (absorbed.has(si) || isChart[si]) break;
+      const sib = children[si];
+      if (!sib || sib.visible === false) continue;
+      if (areSpatiallyRelated(chartChild, sib) && isChartAuxiliaryNode(sib)) {
+        absorbed.add(si);
+        mySiblings.push(si);
+      } else break;
+    }
+    // Look backward
+    for (let si = ci - 1; si >= 0; si--) {
+      if (absorbed.has(si) || isChart[si]) break;
+      const sib = children[si];
+      if (!sib || sib.visible === false) continue;
+      if (areSpatiallyRelated(chartChild, sib) && isChartAuxiliaryNode(sib)) {
+        absorbed.add(si);
+        mySiblings.push(si);
+      } else break;
+    }
+
+    if (mySiblings.length > 0) absorbedByChart.set(ci, mySiblings);
+  }
+
+  if (absorbed.size === 0) {
+    return { children };
+  }
+
+  // Merge each chart's OWN absorbed siblings' children into that chart only.
+  // Use shallow copies to avoid mutating the shared raw tree.
+  for (const [ci, sibIndices] of absorbedByChart) {
+    const chartChild = children[ci];
+    const rawChart = rawById.get(chartChild.id);
+
+    for (const si of sibIndices) {
+      const sib = children[si];
+      if (!sib?.children) continue;
+
+      // Append sibling's children to the chart node (shallow copy)
+      if (!chartChild.children) chartChild.children = [];
+      chartChild.children = [...chartChild.children, ...sib.children];
+
+      // Also merge into a COPY of the raw chart node
+      if (rawChart) {
+        const rawSib = rawById.get(sib.id);
+        if (rawSib?.children) {
+          rawChart.children = [...(rawChart.children ?? []), ...rawSib.children];
+        }
+      }
+    }
+  }
+
+  return { children: children.filter((_, i) => !absorbed.has(i)) };
+}
+
 /**
  * PATH C: Multi-section page → per-section LLM calls → stitch → compile.
  *
@@ -2169,6 +2342,13 @@ async function convertPage(
   const parentWidth =
     rootNode.absoluteBoundingBox?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x ?? 0;
   children = flattenWrapperFrames(children, parentWidth);
+
+  // Merge chart-adjacent siblings: when a child is detected as a chart,
+  // remove neighboring siblings that are structurally part of the same chart
+  // (axis labels, grid overlays, gradient fills). These are already handled
+  // by the Recharts codegen — rendering them via LLM creates duplicate overlays.
+  const mergeResult = mergeChartAdjacentSiblings(children, rawChildren);
+  children = mergeResult.children;
 
   // Step C1: Extract page layout CSS
   onStep?.('Detected multi-section page — extracting layout...');
@@ -2428,8 +2608,13 @@ async function convertPage(
         while (finalChartNames.has(`${oldName}${suffix}`)) suffix++;
         const newName = `${oldName}${suffix}`;
 
-        // Rename in chart's generated code and CSS (use word boundaries to avoid partial matches)
-        chart.reactCode = chart.reactCode.replace(new RegExp(`\\b${oldName}\\b`, 'g'), newName);
+        // Rename in chart's generated code and CSS.
+        // Use lookbehind/lookahead to match the name at word boundaries AND after
+        // underscores (e.g. CHART_DATA_WidgetChart, CustomTooltip_WidgetChart).
+        // \b alone fails because _ is a word character in regex.
+        chart.reactCode = chart.reactCode.replace(
+          new RegExp(`(?<=^|[^a-zA-Z0-9])${oldName}(?=[^a-zA-Z0-9]|$)`, 'g'), newName,
+        );
         const oldBem = oldName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
         const newBem = newName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9-]/g, '');
         chart.css = chart.css.replace(new RegExp(`\\b${oldBem}\\b`, 'g'), newBem);

@@ -302,10 +302,11 @@ function matchVisualHeuristic(node: any, rawNode?: any): string | null {
   const childCount = visibleChildCount(node);
   const horiz = isHorizontalLayout(node, rawNode);
 
-  // Button: h≤64, horizontal layout, 1-3 children, has TEXT child
-  if (h <= 64 && horiz && childCount >= 1 && childCount <= 3 && hasTextChild(node)) {
-    return 'button';
-  }
+  // Button visual heuristic REMOVED.
+  // Buttons are detected reliably via INSTANCE node type + name matching
+  // + componentProperties inference. Visual heuristics on plain FRAMEs
+  // cause false positives (hero banners, content cards, CTA containers
+  // all match "short horizontal frame with text").
 
   // Input: horizontal, has border/stroke, wider than tall, has TEXT, h≤64
   if (horiz && hasBorder(node) && w > h && hasTextChild(node) && h <= 64) {
@@ -423,6 +424,40 @@ export function matchComponentPattern(name: string): string | null {
 }
 
 /**
+ * Validates that a name-matched 'button' formRole is structurally plausible.
+ * Names like "CTA", "CTAs", "special CTA" can appear on large container frames.
+ * INSTANCE nodes are always trusted (from a design system component).
+ * FRAME/GROUP nodes must be compact to be actual buttons.
+ */
+function validateButtonFormRole(node: any, rawNode?: any): boolean {
+  if (node.type === 'INSTANCE') return true;
+  const dims = getNodeDimensions(node) ?? getNodeDimensions(rawNode);
+  if (!dims || dims.h === 0) return true;
+  if (dims.h > 80) return false;
+  if (dims.w / dims.h > 5) return false;
+  return true;
+}
+
+/**
+ * Validates that a name-matched 'sidebar' formRole is structurally plausible.
+ *
+ * A sidebar is taller than wide (vertical navigation panel).
+ * A top navbar is wider than tall (horizontal bar).
+ * Names like "Navbar", "Navigation" match the sidebar regex but are
+ * often top navigation bars — the node's own dimensions distinguish them.
+ * INSTANCE nodes are trusted (from a design system component).
+ */
+function validateSidebarFormRole(node: any, rawNode?: any): boolean {
+  if (node.type === 'INSTANCE') return true;
+  const dims = getNodeDimensions(node) ?? getNodeDimensions(rawNode);
+  if (!dims || dims.w === 0 || dims.h === 0) return true;
+  // A sidebar must be taller than wide (aspect ratio h/w > 1)
+  // A navbar like 390×98 has h/w = 0.25 → not a sidebar
+  // A sidebar like 280×900 has h/w = 3.2 → is a sidebar
+  return dims.h > dims.w;
+}
+
+/**
  * Refines a name-based formRole by inspecting the node's componentProperties.
  *
  * Figma component sets often use variant properties like `Dropdown=Yes`,
@@ -430,8 +465,18 @@ export function matchComponentPattern(name: string): string | null {
  * The name might just be "Input Fields" for all variants, so we check
  * the actual properties to detect dropdowns, country selectors, etc.
  */
-function refineFormRole(formRole: string, node: any): string {
-  if (formRole !== 'textInput') return formRole; // only refine text inputs
+function refineFormRole(formRole: string, node: any, rawNode?: any): string {
+  // Validate button: large containers named "CTA" etc. aren't actual buttons
+  if ((formRole === 'button' || formRole === 'iconButton') && !validateButtonFormRole(node, rawNode)) {
+    return 'component';
+  }
+
+  // Validate sidebar: wide+short nodes named "Navbar" etc. aren't sidebars
+  if (formRole === 'sidebar' && !validateSidebarFormRole(node, rawNode)) {
+    return 'component';
+  }
+
+  if (formRole !== 'textInput') return formRole; // only refine text inputs further
 
   const raw = node.componentProperties ?? node.componentPropertyValues ?? {};
 
@@ -516,7 +561,14 @@ function walkForComponents(
     // First check for structural components (sidebar, table) by name.
     // These are collected AND recursion continues into their children
     // so leaf widgets inside (checkboxes, switches, badges) are also found.
-    const structNameRole = matchComponentPattern(node.name ?? '');
+    let structNameRole = matchComponentPattern(node.name ?? '');
+    // Validate structural roles using Figma dimensions — e.g. "Navbar" matches
+    // the sidebar regex but is wider than tall, so it's not actually a sidebar.
+    if (structNameRole && STRUCTURAL_FORM_ROLES.has(structNameRole)) {
+      if (structNameRole === 'sidebar' && !validateSidebarFormRole(node, rawNode)) {
+        structNameRole = null; // not a sidebar — let it fall through
+      }
+    }
     if (structNameRole && STRUCTURAL_FORM_ROLES.has(structNameRole)) {
       const key = `frame::${node.name}::${structNameRole}`;
       if (!results.has(key)) {
@@ -569,7 +621,7 @@ function walkForComponents(
     }
 
     if (rawFormRole) {
-      const formRole = refineFormRole(rawFormRole, node);
+      const formRole = refineFormRole(rawFormRole, node, rawNode);
 
       if (deepRecurse) {
         // In deepRecurse mode: collect recognized leaf primitives but ALWAYS

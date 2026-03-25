@@ -560,6 +560,13 @@ window.__REACT_ROOT__.render(React.createElement(App));`
   <div id="root"></div>
 
   <script>
+    // Expose React hooks as globals so generated code works after import stripping
+    var useState = React.useState;
+    var useEffect = React.useEffect;
+    var useRef = React.useRef;
+    var useMemo = React.useMemo;
+    var useCallback = React.useCallback;
+
     window.onerror = function(msg, src, line, col, err) {
       var el = document.getElementById('root');
       if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + (line ? ' (line ' + line + ')' : '') + '</div>';

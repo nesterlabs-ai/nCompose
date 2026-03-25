@@ -4,7 +4,7 @@ You are generating ONE SECTION of a multi-section landing page. This section wil
 
 ### Section Rules
 
-1. **Purely static content** — do NOT use `useStore`, `Show`, `For`, or any props. Everything is hardcoded.
+1. **Purely static content** — do NOT use `useStore`, `Show`, `For`, or any props. Everything is hardcoded. Every sibling element with unique text content must be rendered individually — never collapse different-content siblings into a loop or array.
 2. **Use BEM class names** prefixed with the section name (e.g. `"hero__title"`, `"hero__cta-button"`)
 3. **Do NOT add a page-level wrapper** — output only the section's inner content (no outer `<div class="page">`)
 4. **Use semantic HTML** — `<header>`, `<section>`, `<footer>`, `<nav>`, `<h1>`-`<h6>`, `<p>`, `<button>`, `<a>`, `<img>`, `<ul>`, `<li>` as appropriate

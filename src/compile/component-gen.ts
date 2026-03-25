@@ -1669,6 +1669,101 @@ function estimateOriginalSize(node: any, serializeNode: (n: any) => any): number
 // ── Sibling Name Deduplication ───────────────────────────────────────────────
 
 /**
+ * Walks the entire serialized tree and makes names globally unique when they
+ * have different child text content. This prevents the LLM from collapsing
+ * structurally-similar but content-different nodes (e.g., 4 contact cards
+ * across different parent groups) into a single `<For>` loop.
+ *
+ * Unlike `deduplicateSiblingNames` (which only deduplicates within direct siblings),
+ * this pass collects ALL named nodes across the tree and renames duplicates
+ * that have different inner text.
+ */
+export function deduplicateGlobalNames(root: any): void {
+  // Step 1: Collect ALL names in the tree for collision avoidance
+  const allNames = new Set<string>();
+  function collectNames(node: any): void {
+    if (!node) return;
+    if (node.name) allNames.add(node.name);
+    if (node.children) {
+      for (const child of node.children) collectNames(child);
+    }
+  }
+  collectNames(root);
+
+  // Step 2: Collect all named nodes with children that have text content
+  const nameMap = new Map<string, Array<{ node: any; textFp: string }>>();
+  function walk(node: any): void {
+    if (!node) return;
+    if (node.name && node.children?.length > 0) {
+      const textFp = collectChildTexts(node.children);
+      if (textFp) {
+        if (!nameMap.has(node.name)) nameMap.set(node.name, []);
+        nameMap.get(node.name)!.push({ node, textFp });
+      }
+    }
+    if (node.children) {
+      for (const child of node.children) walk(child);
+    }
+  }
+  walk(root);
+
+  // Step 3: For each name with multiple nodes that have different text, rename
+  for (const [baseName, entries] of nameMap) {
+    if (entries.length <= 1) continue;
+
+    // Group by text fingerprint
+    const fpGroups = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      if (!fpGroups.has(entry.textFp)) fpGroups.set(entry.textFp, []);
+      fpGroups.get(entry.textFp)!.push(entry);
+    }
+
+    // If all have the same text, no renaming needed
+    if (fpGroups.size <= 1) continue;
+
+    // Rename: largest group keeps original name, others get collision-free suffixes
+    const sorted = [...fpGroups.values()].sort((a, b) => b.length - a.length);
+    // Strip existing numeric suffix to get the base for new suffixes
+    const strippedBase = baseName.replace(/\s+\d+$/, '');
+    // Find the highest existing suffix for this base
+    let maxSuffix = 1;
+    for (const name of allNames) {
+      const m = name.match(new RegExp(`^${strippedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(\\d+)$`));
+      if (m) maxSuffix = Math.max(maxSuffix, parseInt(m[1], 10));
+    }
+
+    let counter = maxSuffix;
+    for (let i = 0; i < sorted.length; i++) {
+      if (i === 0) continue; // largest group keeps original name
+      counter++;
+      for (const entry of sorted[i]) {
+        const newName = `${strippedBase} ${counter}`;
+        entry.node.name = newName;
+        allNames.add(newName);
+      }
+    }
+  }
+}
+
+/**
+ * Recursively collects text content from child nodes.
+ * Used to distinguish containers with identical structure but different inner text
+ * (e.g., 4 contact cards with different email addresses).
+ */
+function collectChildTexts(children: any[]): string {
+  const texts: string[] = [];
+  for (const child of children) {
+    if (child.text) texts.push(child.text);
+    if (child.characters) texts.push(child.characters);
+    if (child.children?.length > 0) {
+      const sub = collectChildTexts(child.children);
+      if (sub) texts.push(sub);
+    }
+  }
+  return texts.join('|');
+}
+
+/**
  * Computes a visual-property fingerprint for a serialized node.
  *
  * Two nodes with the same name but different fingerprints need unique names
@@ -1721,6 +1816,12 @@ function computeVisualFingerprint(node: any): string {
 
   // Children count (a container with 1 child vs 3 children needs different CSS)
   if (node.children?.length !== undefined) parts.push(`cc:${node.children.length}`);
+
+  // Digest children's text content — cards with different inner text are different
+  if (node.children?.length > 0) {
+    const childTexts = collectChildTexts(node.children);
+    if (childTexts) parts.push(`ct:${childTexts}`);
+  }
 
   // Rotation (rotated arrows are visually different)
   if (node.rotation) parts.push(`rot:${node.rotation}`);

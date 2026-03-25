@@ -54,6 +54,7 @@ CRITICAL — violating ANY of these causes a compilation failure:
 11. All numeric CSS values MUST include units: '16px', '1.5em' — NEVER bare numbers
 12. If you need a data array or object used in `<For>` or JSX expressions, place it inside `useStore`: `const state = useStore({ items: [...] })` and reference as `state.items`. Do NOT use plain `const` for component data — Mitosis will drop it.
 13. When a container uses `flex-wrap: wrap` with children of uniform width, prefer `display: grid; grid-template-columns: repeat(N, 1fr)` where N = floor(container-width / child-width). This produces a cleaner grid than flex-wrap.
+14. NEVER use `<For>` to render sibling elements that have different text content or different child nodes. If siblings share the same structure but differ in text, icons, or links, render each as a separate hardcoded element. `<For>` is ONLY for truly identical repeating items (e.g., a list of items from an array where the template is the same).
 
 ## Class Naming Rules (BEM)
 

@@ -43,7 +43,7 @@ import {
   type PageSectionContext,
 } from './prompt/index.js';
 import { generateWithRetry } from './compile/retry.js';
-import { generateCompoundSection, deduplicateSiblingNames } from './compile/component-gen.js';
+import { generateCompoundSection, deduplicateSiblingNames, deduplicateGlobalNames } from './compile/component-gen.js';
 import { parseMitosisCode } from './compile/parse-and-validate.js';
 import { buildFidelityReport } from './compile/fidelity-report.js';
 import { generateFrameworkCode } from './compile/generate.js';
@@ -1379,6 +1379,54 @@ function collectExpectedTextsFromComponentSet(componentSetData: any): string[] {
 /**
  * Collect expected text literals from a generic design tree (PATH B/C).
  */
+/**
+ * Detects whether the serialized tree has sibling groups where children share
+ * the same structure but have different text content (e.g., 4 contact cards).
+ * Returns true if such groups exist — signals the LLM should NOT use <For>.
+ */
+function hasDifferentContentSiblings(node: any): boolean {
+  if (!node) return false;
+  if (!node.children || !Array.isArray(node.children)) return false;
+
+  if (node.children.length >= 2) {
+    // Group children by structural similarity (name prefix, type)
+    const typeGroups = new Map<string, any[]>();
+    for (const child of node.children) {
+      if (!child?.name) continue;
+      // Use base name (strip numeric suffix) + type as group key
+      const baseName = child.name.replace(/\s+\d+$/, '');
+      const childType = child.type || 'UNKNOWN';
+      const key = `${baseName}|${childType}`;
+      if (!typeGroups.has(key)) typeGroups.set(key, []);
+      typeGroups.get(key)!.push(child);
+    }
+
+    for (const [, group] of typeGroups) {
+      if (group.length < 2) continue;
+      // Check if children have different text content
+      const textSet = new Set<string>();
+      for (const child of group) {
+        const texts: string[] = [];
+        const collectText = (n: any) => {
+          if (n?.text) texts.push(n.text);
+          if (n?.characters) texts.push(n.characters);
+          if (n?.children) for (const c of n.children) collectText(c);
+        };
+        collectText(child);
+        textSet.add(texts.join('|'));
+      }
+      // If siblings have the same base name but different text → different content siblings
+      if (textSet.size > 1) return true;
+    }
+  }
+
+  // Recurse into ALL children (even single-child nodes)
+  for (const child of node.children) {
+    if (hasDifferentContentSiblings(child)) return true;
+  }
+  return false;
+}
+
 function collectExpectedTextsFromNode(rootNode: any): string[] {
   const seen = new Set<string>();
 
@@ -1598,6 +1646,10 @@ async function convertSingleComponent(
   // Serialize root node to CSS-ready YAML so the LLM receives colors as CSS strings
   // (hex / rgba) rather than raw Figma Paint objects with 0-1 component values.
   const cssReadyNode = rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap, undefined, imageFillMap) : null;
+  // Global dedup: ensure nodes with same name but different content get unique names
+  // across the entire tree (not just siblings). Prevents LLM from using <For> loops
+  // for structurally-similar but content-different cards/sections.
+  if (cssReadyNode) deduplicateGlobalNames(cssReadyNode);
   const llmYaml = cssReadyNode
     ? dump(cssReadyNode, { lineWidth: 120, noRefs: true })
     : dump(rootNode ? serializeNodeForPrompt(rootNode, 0, pathBAssetMap, undefined, imageFillMap) : enhanced, { lineWidth: 120, noRefs: true });
@@ -1872,7 +1924,27 @@ async function convertSingleComponent(
   // ── templateMode OFF: existing Mitosis pipeline (unchanged) ───────────
   onStep?.('Assembling prompts...');
   const systemPrompt = assembleSystemPrompt(options.templateMode);
-  const userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
+  let userPrompt = assembleUserPrompt(llmYaml, options.name, semanticHint ?? undefined, options.templateMode);
+
+  // If the tree has sibling groups with different text content (e.g., 4 cards
+  // with different emails), inject a strong anti-loop instruction so the LLM
+  // hardcodes each element instead of using <For> with a data array.
+  if (cssReadyNode && hasDifferentContentSiblings(cssReadyNode)) {
+    userPrompt += `\n\n⚠️ CRITICAL — STATIC CONTENT ONLY:
+This design contains sibling elements that share the same structure but have DIFFERENT text content, icons, or links. You MUST render each element as a SEPARATE hardcoded JSX element.
+
+DO NOT:
+- Use \`<For>\` or any loop construct
+- Create data arrays in \`useStore\`
+- Use \`.map()\` or \`.forEach()\`
+- Import \`For\` from \`@builder.io/mitosis\`
+- Import \`useStore\` from \`@builder.io/mitosis\`
+
+DO:
+- Hardcode each card/item as its own JSX block with literal text content
+- Copy each text value directly from the YAML into the JSX
+- Use static \`class="..."\` attributes (no dynamic classes)`;
+  }
 
   onStep?.(`Generating Mitosis code via ${llm.name}...`);
 
@@ -1885,10 +1957,11 @@ async function convertSingleComponent(
   const expectedTextLiterals = rootNode ? collectExpectedTextsFromNode(rootNode) : [];
 
   const rootNodeWidth = rootNode?.absoluteBoundingBox?.width ?? rootNode?.dimensions?.width ?? rootNode?.size?.x;
+  const rejectForLoops = cssReadyNode ? hasDifferentContentSiblings(cssReadyNode) : false;
   const parseResult = await generateWithRetry(
     llm, systemPrompt, userPrompt, onAttempt, undefined,
     pathBExpectedTag, pathBCategory !== 'unknown' ? pathBCategory : undefined, expectedTextLiterals,
-    undefined, llmYaml, rootNodeWidth,
+    undefined, llmYaml, rootNodeWidth, rejectForLoops,
   );
 
   onDebugData?.({ yamlContent, rawLLMOutput: parseResult.rawCode });

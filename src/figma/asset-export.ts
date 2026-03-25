@@ -230,10 +230,10 @@ export function isAssetNode(node: any): boolean {
  */
 export function collectAssetNodes(
   node: any,
-  result: { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] = [],
+  result: { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any; componentId?: string }[] = [],
   parentDimensions?: { width: number; height: number },
   parentName?: string,
-): { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any }[] {
+): { id: string; name: string; type?: string; dimensions?: { width: number; height: number }; parentName?: string; figmaStyles?: any; componentId?: string }[] {
   if (!node || node.visible === false) return result;
 
   // Extract dimensions from this node (could be in layout.dimensions or node.dimensions)
@@ -275,6 +275,7 @@ export function collectAssetNodes(
       dimensions: nodeDimensions,
       parentName: useParentName || (node.name ?? 'vector'), // Keep frame name as parent (Left Icon, Right Icon)
       figmaStyles: Object.keys(figmaStyles).length > 0 ? figmaStyles : undefined,
+      componentId: (node as any).componentId, // Unique per icon component — prevents dedup of different icons with same wrapper
     });
     return result; // do not recurse into the asset node itself
   }
@@ -453,7 +454,7 @@ function extractSVGColorSignature(svgContent: string): string {
  * @param client  - Authenticated FigmaClient instance
  */
 export async function exportAssets(
-  nodes: { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string }[],
+  nodes: { id: string; name: string; dimensions?: { width: number; height: number }; parentName?: string; componentId?: string }[],
   fileKey: string,
   client: FigmaClient,
 ): Promise<AssetEntry[]> {
@@ -481,7 +482,8 @@ export async function exportAssets(
     const op = n.figmaStyles?.opacity ?? '';
     const fx = n.figmaStyles?.effects ? JSON.stringify(n.figmaStyles.effects) : '';
     const nodeType = (n as any).type ?? '';
-    return `${n.name}|${w}x${h}|${colorKey}|sw:${sw}|op:${op}|fx:${fx}|t:${nodeType}`;
+    const compId = (n as any).componentId ?? '';
+    return `${n.name}|${w}x${h}|${colorKey}|sw:${sw}|op:${op}|fx:${fx}|t:${nodeType}|cid:${compId}`;
   };
   const uniqueMap = new Map<string, typeof nodes[0]>();       // key → representative node
   const dupeMapping = new Map<string, string>();              // duplicate nodeId → representative nodeId

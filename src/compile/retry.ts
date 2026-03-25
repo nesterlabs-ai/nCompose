@@ -245,6 +245,7 @@ export async function generateWithRetry(
   enforceLayoutFidelity?: boolean,
   sourceYaml?: string,
   rootWidth?: number,
+  rejectForLoops?: boolean,
 ): Promise<ParseResult> {
   let lastError = '';
 
@@ -266,6 +267,19 @@ export async function generateWithRetry(
     if (!result.success) {
       lastError = result.error ?? 'Unknown parse error';
       onAttempt?.(attempt, MAX_RETRIES, lastError);
+      continue;
+    }
+
+    // Reject <For> loops when the design has different-content siblings.
+    // The LLM must hardcode each element individually for correct rendering.
+    if (rejectForLoops && attempt < MAX_RETRIES && /<For[\s>]/.test(result.rawCode)) {
+      lastError =
+        'CRITICAL: You used <For> loop but this design has sibling elements with DIFFERENT content.\n' +
+        'Do NOT use <For>, useStore arrays, or any loop construct.\n' +
+        'Do NOT import For or useStore from @builder.io/mitosis.\n' +
+        'Render each card/item as a SEPARATE hardcoded JSX element with literal text.\n' +
+        'Copy each unique text value from the YAML directly into JSX.';
+      onAttempt?.(attempt, MAX_RETRIES, 'Rejected <For> loop — retrying with hardcoded elements');
       continue;
     }
 

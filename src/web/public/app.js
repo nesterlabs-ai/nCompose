@@ -254,6 +254,11 @@ let currentShadcnSubComponents = null;
 let currentComponentPropertyDefs = null;
 let currentVariantMetadata = null;
 let currentElementMap = null;
+
+// ── Undo State ──
+let undoStack = []; // { frameworkOutputs, tabsDataSnapshot, wiredAppFilesSnapshot }
+const MAX_UNDO_DEPTH = 10;
+let lastUserRequestText = '';
 /** Set of folder path prefixes that are expanded in wired app tree (e.g. 'src', 'src/components') */
 let wiredExplorerExpanded = new Set(['src', 'public']);
 
@@ -761,7 +766,12 @@ function restoreProject(projectId) {
   if (project.chatHistory && project.chatHistory.length > 0) {
     if (chatMessages) chatMessages.classList.add('visible');
     for (const msg of project.chatHistory) {
-      addChatMessage(msg.role, msg.content, true);
+      if (msg.meta && msg.role === 'assistant') {
+        // New-style rich card entry
+        addRichAssistantMessage({ title: msg.content, filesChanged: msg.meta.filesChanged, skipPersist: true });
+      } else {
+        addChatMessage(msg.role, msg.content, true);
+      }
     }
   }
 
@@ -1493,9 +1503,9 @@ function updateTypewriterVisibility() {
   }
 }
 
-heroFigmaUrlInput.addEventListener('focus', updateTypewriterVisibility);
+heroFigmaUrlInput.addEventListener('focus', () => { updateTypewriterVisibility(); hideHeroChatResponse(); });
 heroFigmaUrlInput.addEventListener('blur', updateTypewriterVisibility);
-heroFigmaUrlInput.addEventListener('input', updateTypewriterVisibility);
+heroFigmaUrlInput.addEventListener('input', () => { updateTypewriterVisibility(); hideHeroChatResponse(); });
 updateTypewriterVisibility();
 if (!heroTypewriter.classList.contains('hidden')) runTypewriter();
 
@@ -1516,7 +1526,39 @@ function getSelectedFrameworks() {
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 
-function startConversion(skipDuplicateCheck) {
+function isFigmaUrl(text) {
+  return /figma\.com\/(design|file|proto)\//i.test(text);
+}
+
+function showHeroChatResponse() {
+  const responseEl = document.getElementById('hero-chat-response');
+  if (!responseEl) return;
+
+  const hasToken = !!sessionStorage.getItem(TOKEN_ID_KEY);
+
+  let html = '<p class="hero-chat-greeting">Hey! I\'m Nester Compose</p>';
+  html += '<p>I convert Figma designs into import-ready code for React, Vue, Svelte, Angular, and Solid.</p>';
+  html += '<ol class="hero-chat-steps">';
+  if (!hasToken) {
+    html += '<li><span class="hero-chat-step-num">1</span><span class="hero-chat-step-text"><strong>Add your Figma access token</strong> in the sidebar</span></li>';
+    html += '<li><span class="hero-chat-step-num">2</span><span class="hero-chat-step-text"><strong>Paste a Figma design URL</strong> in the input above</span></li>';
+    html += '<li><span class="hero-chat-step-num">3</span><span class="hero-chat-step-text"><strong>Pick your frameworks</strong> and hit send</span></li>';
+  } else {
+    html += '<li><span class="hero-chat-step-num">1</span><span class="hero-chat-step-text"><strong>Paste a Figma design URL</strong> in the input above</span></li>';
+    html += '<li><span class="hero-chat-step-num">2</span><span class="hero-chat-step-text"><strong>Pick your frameworks</strong> and hit send</span></li>';
+  }
+  html += '</ol>';
+
+  responseEl.innerHTML = html;
+  responseEl.style.display = 'block';
+}
+
+function hideHeroChatResponse() {
+  const responseEl = document.getElementById('hero-chat-response');
+  if (responseEl) responseEl.style.display = 'none';
+}
+
+async function startConversion(skipDuplicateCheck) {
   const urlInput = getActiveUrlInput();
   const figmaUrl = urlInput.value.trim();
   const figmaToken = figmaTokenInput.value.trim();
@@ -1527,8 +1569,23 @@ function startConversion(skipDuplicateCheck) {
     return;
   }
 
-  // Auth gate: free tier exhausted → require login
-  if (authEnabled && !isAuthenticated && freeTierUsage.remaining <= 0) {
+  // If input is not a Figma URL, show conversational response
+  if (!isFigmaUrl(figmaUrl)) {
+    showHeroChatResponse();
+    return;
+  }
+
+  // Hide chat response if visible (user now pasting a real URL)
+  hideHeroChatResponse();
+
+  // Auth gate: check conversion limits
+  if (authEnabled && freeTierUsage.remaining <= 0) {
+    if (isAuthenticated) {
+      // Authenticated user hit 20-conversion limit → show contact modal
+      showContactNesterLabsModal();
+      return;
+    }
+    // Anonymous user hit 5-conversion limit → require login
     showLoginModal(() => startConversion(skipDuplicateCheck));
     return;
   }
@@ -2754,8 +2811,6 @@ function initChat() {
   if (chatInputGroup) chatInputGroup.style.display = 'block';
   // Show chat messages container
   if (chatMessages) chatMessages.classList.add('visible');
-  // Add a system message
-  addChatMessage('system', 'Conversion complete. Describe changes to refine the component.');
 }
 
 function addChatMessage(role, content, skipPersist) {
@@ -2763,7 +2818,7 @@ function addChatMessage(role, content, skipPersist) {
   const div = document.createElement('div');
   div.className = `chat-message chat-message--${role}`;
   if (role === 'system' && content.includes('...')) {
-    div.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(content)}`;
+    div.innerHTML = `<div class="chat-loading-indicator"><div class="chat-loading-dots"><span></span><span></span><span></span></div></div>`;
   } else {
     div.textContent = content;
   }
@@ -2785,6 +2840,187 @@ function addChatMessage(role, content, skipPersist) {
 
 function removeChatMessage(el) {
   if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+/** Build a descriptive title for the completion card */
+function buildCompletionTitle() {
+  // Check if this was a visual edit (lastUserRequestText contains visual edit summary)
+  if (lastUserRequestText && lastUserRequestText.startsWith('Apply ') && lastUserRequestText.includes('visual edit')) {
+    return lastUserRequestText;
+  }
+  if (lastUserRequestText) {
+    const truncated = lastUserRequestText.length > 80
+      ? lastUserRequestText.slice(0, 80).trim() + '...'
+      : lastUserRequestText;
+    return `Updated component: ${truncated}`;
+  }
+  return 'Component updated successfully.';
+}
+
+/** Derive list of changed files from refine response data */
+function deriveFilesChanged(data) {
+  const files = [];
+  if (data && data.frameworkOutputs) {
+    const name = currentComponentName || 'Component';
+    const extMap = { react: '.jsx', vue: '.vue', svelte: '.svelte', angular: '.ts', solid: '.tsx' };
+    for (const fw of Object.keys(data.frameworkOutputs)) {
+      const ext = extMap[fw] || `.${fw}`;
+      files.push(`${name}${ext}`);
+    }
+  }
+  if (data && data.mitosisSource) {
+    files.unshift(`${currentComponentName || 'Component'}.lite.tsx`);
+  }
+  if (data && data.updatedShadcnSource && currentShadcnComponentName) {
+    files.push(`ui/${currentShadcnComponentName}.tsx`);
+  }
+  if (data && data.shadcnSubComponents) {
+    for (const sub of data.shadcnSubComponents) {
+      if (sub.shadcnComponentName) files.push(`ui/${sub.shadcnComponentName}.tsx`);
+    }
+  }
+  return files;
+}
+
+/** Add a rich assistant response card (Lovable-style) */
+function addRichAssistantMessage({ title, filesChanged, skipPersist }) {
+  if (!chatMessages) return;
+  const div = document.createElement('div');
+  div.className = 'chat-message chat-message--assistant chat-message--rich';
+
+  // Title
+  const titleEl = document.createElement('div');
+  titleEl.className = 'chat-card__title';
+  titleEl.textContent = title || 'Component updated successfully.';
+  div.appendChild(titleEl);
+
+  // Files changed
+  if (filesChanged && filesChanged.length > 0) {
+    const filesEl = document.createElement('div');
+    filesEl.className = 'chat-card__files';
+
+    const fileToggle = document.createElement('button');
+    fileToggle.className = 'chat-card__files-toggle';
+    fileToggle.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 1h7l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.5"/></svg> ${filesChanged.length} file${filesChanged.length === 1 ? '' : 's'} changed`;
+    fileToggle.addEventListener('click', () => {
+      fileList.style.display = fileList.style.display === 'none' ? 'block' : 'none';
+      fileToggle.classList.toggle('expanded');
+    });
+    filesEl.appendChild(fileToggle);
+
+    const fileList = document.createElement('div');
+    fileList.className = 'chat-card__file-list';
+    fileList.style.display = 'none';
+    for (const f of filesChanged) {
+      const item = document.createElement('div');
+      item.className = 'chat-card__file-item';
+      item.textContent = f;
+      fileList.appendChild(item);
+    }
+    filesEl.appendChild(fileList);
+    div.appendChild(filesEl);
+  }
+
+  // Action buttons
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'chat-card__actions';
+
+  // Undo button
+  const undoBtn = document.createElement('button');
+  undoBtn.className = 'chat-action-btn chat-action-btn--undo';
+  undoBtn.title = 'Undo';
+  undoBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>';
+  undoBtn.addEventListener('click', () => undoLastRefinement(div));
+  actionsEl.appendChild(undoBtn);
+
+  // Copy button
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'chat-action-btn';
+  copyBtn.title = 'Copy';
+  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  copyBtn.addEventListener('click', () => {
+    const code = currentFrameworkOutputs.react || '';
+    navigator.clipboard.writeText(code).then(() => {
+      copyBtn.title = 'Copied!';
+      setTimeout(() => { copyBtn.title = 'Copy'; }, 1500);
+    });
+  });
+  actionsEl.appendChild(copyBtn);
+
+  // Thumbs up
+  const thumbsUpBtn = document.createElement('button');
+  thumbsUpBtn.className = 'chat-action-btn';
+  thumbsUpBtn.title = 'Good';
+  thumbsUpBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>';
+  thumbsUpBtn.addEventListener('click', () => { thumbsUpBtn.style.color = 'var(--success)'; });
+  actionsEl.appendChild(thumbsUpBtn);
+
+  // Thumbs down
+  const thumbsDownBtn = document.createElement('button');
+  thumbsDownBtn.className = 'chat-action-btn';
+  thumbsDownBtn.title = 'Bad';
+  thumbsDownBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>';
+  thumbsDownBtn.addEventListener('click', () => { thumbsDownBtn.style.color = 'var(--error)'; });
+  actionsEl.appendChild(thumbsDownBtn);
+
+  div.appendChild(actionsEl);
+  chatMessages.appendChild(div);
+
+  // Persist to project history with meta
+  if (!skipPersist && currentProjectId) {
+    const p = getProject(currentProjectId);
+    if (p) {
+      const history = p.chatHistory || [];
+      history.push({ role: 'assistant', content: title, meta: { filesChanged } });
+      updateProjectField(currentProjectId, { chatHistory: history });
+    }
+  }
+
+  // Scroll to bottom
+  const panelBodyEl = document.getElementById('panel-body');
+  if (panelBodyEl) panelBodyEl.scrollTop = panelBodyEl.scrollHeight;
+  return div;
+}
+
+/** Predefined suggestion chip sets (rotated) */
+const SUGGESTION_CHIP_SETS = [
+  ['Make it responsive', 'Add hover effects', 'Improve accessibility'],
+  ['Add dark mode support', 'Refine spacing', 'Add animations'],
+  ['Optimize for mobile', 'Add loading state', 'Improve contrast'],
+];
+let suggestionChipSetIndex = 0;
+
+/** Remove existing suggestion chips */
+function removeSuggestionChips() {
+  const existing = document.querySelectorAll('.chat-suggestions');
+  existing.forEach(el => el.remove());
+}
+
+/** Add suggestion chips after a rich response */
+function addSuggestionChips() {
+  if (!chatMessages) return;
+  removeSuggestionChips();
+
+  const chips = SUGGESTION_CHIP_SETS[suggestionChipSetIndex % SUGGESTION_CHIP_SETS.length];
+  suggestionChipSetIndex++;
+
+  const container = document.createElement('div');
+  container.className = 'chat-suggestions';
+  for (const text of chips) {
+    const chip = document.createElement('button');
+    chip.className = 'chat-suggestion-chip';
+    chip.textContent = text;
+    chip.addEventListener('click', () => {
+      removeSuggestionChips();
+      sendChatMessage(text);
+    });
+    container.appendChild(chip);
+  }
+  chatMessages.appendChild(container);
+
+  // Scroll to bottom
+  const panelBodyEl = document.getElementById('panel-body');
+  if (panelBodyEl) panelBodyEl.scrollTop = panelBodyEl.scrollHeight;
 }
 
 /** Short labels for visual-edit CSS keys in chat summaries */
@@ -2874,8 +3110,77 @@ function setChatLoading(loading) {
   if (chatSendBtn) chatSendBtn.disabled = loading;
 }
 
+function captureUndoSnapshot() {
+  const snapshot = {
+    frameworkOutputs: JSON.parse(JSON.stringify(currentFrameworkOutputs)),
+    tabsDataSnapshot: tabsData.map(t => ({ ...t })),
+    wiredAppFilesSnapshot: wiredAppFiles ? JSON.parse(JSON.stringify(wiredAppFiles)) : null,
+  };
+  undoStack.push(snapshot);
+  if (undoStack.length > MAX_UNDO_DEPTH) undoStack.shift();
+}
+
+function undoLastRefinement(messageEl) {
+  if (undoStack.length === 0) return;
+  const snapshot = undoStack.pop();
+
+  // Restore state
+  currentFrameworkOutputs = snapshot.frameworkOutputs;
+  tabsData = snapshot.tabsDataSnapshot;
+  if (snapshot.wiredAppFilesSnapshot) wiredAppFiles = snapshot.wiredAppFilesSnapshot;
+
+  // Update framework tab data
+  for (const [fw, code] of Object.entries(currentFrameworkOutputs)) {
+    const tab = tabsData.find(t => t.key === fw);
+    if (tab) tab.code = code;
+  }
+
+  // Refresh Monaco if open
+  if (activeFile && monacoEditor) {
+    const currentTab = tabsData.find(t => t.key === activeFile);
+    if (currentTab) monacoEditor.setValue(currentTab.code || '');
+  }
+
+  // Persist reverted outputs
+  if (currentProjectId) {
+    updateProjectField(currentProjectId, { frameworkOutputs: currentFrameworkOutputs });
+  }
+
+  // Update preview
+  if (currentSessionId && previewFrame) {
+    const reactCode = currentFrameworkOutputs.react || '';
+    if (webContainerSyncEnabled && webContainerInstance && currentComponentName && reactCode) {
+      const { code, css } = extractReactCodeAndCss(reactCode);
+      const componentCode = code.replace(/\.\/assets\//g, '/assets/');
+      const hasCssImport = /import\s+['"]\.\/.+\.css['"]/.test(componentCode);
+      const finalCode = hasCssImport ? componentCode : `import "./${currentComponentName}.css";\n` + componentCode;
+      const wcPath = `src/components/${currentComponentName}.jsx`;
+      const cssPath = `src/components/${currentComponentName}.css`;
+      delete webContainerLastWritten[wcPath];
+      delete webContainerLastWritten[cssPath];
+      syncFilesToWebContainer();
+    } else {
+      previewFrame.src = `/api/preview/${currentSessionId}?t=${Date.now()}`;
+    }
+  }
+
+  // Disable the Undo button that was clicked
+  if (messageEl) {
+    const undoBtn = messageEl.querySelector('.chat-action-btn--undo');
+    if (undoBtn) { undoBtn.disabled = true; undoBtn.style.opacity = '0.4'; }
+  }
+
+  addChatMessage('system', 'Reverted to previous version.');
+}
+
 function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (chatRefining || !currentSessionId) return;
+
+  // Capture undo snapshot before making changes
+  captureUndoSnapshot();
+
+  // Remove any existing suggestion chips
+  removeSuggestionChips();
 
   let displayText;
   let apiPrompt;
@@ -2896,6 +3201,9 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   }
 
   if (!apiPrompt) return;
+
+  // Save the display text for building completion titles
+  lastUserRequestText = typeof displayText === 'string' ? displayText : '';
 
   // User sees a short summary; API still receives the full engineered prompt when provided
   addChatMessage('user', displayText);
@@ -2984,14 +3292,18 @@ function parseRefineSSEEvent(eventStr, loadingMsg) {
     case 'step':
       // Update the loading message text
       if (loadingMsg) {
-        loadingMsg.innerHTML = `<span class="chat-spinner-inline"></span>${escapeHtml(data.message)}`;
+        loadingMsg.innerHTML = `<div class="chat-loading-indicator"><div class="chat-loading-dots"><span></span><span></span><span></span></div></div>`;
       }
       break;
     case 'complete':
       setChatLoading(false);
       removeChatMessage(loadingMsg);
       handleRefineComplete(data);
-      addChatMessage('assistant', 'Component updated successfully.');
+      {
+        const title = buildCompletionTitle();
+        const filesChanged = deriveFilesChanged(data);
+        addRichAssistantMessage({ title, filesChanged });
+      }
       break;
     case 'error':
       setChatLoading(false);

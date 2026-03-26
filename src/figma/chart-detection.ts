@@ -550,8 +550,68 @@ function semanticNameSignal(node: any): 'chart' | 'ui' | 'ambiguous' {
  * avoiding false positives from geometric analysis on UI elements
  * (navbars, checkboxes, sliders, etc.).
  */
+/**
+ * Async version of isChartSection that uses LLM for ambiguous cases.
+ * When structural analysis can't confidently decide, asks the LLM.
+ * Falls back to structural-only when no LLM is provided or LLM fails.
+ */
+export async function isChartSectionAsync(node: any, llmProvider?: LLMProvider): Promise<boolean> {
+  // Run structural analysis first
+  const structuralResult = isChartSectionStructural(node);
+  if (structuralResult !== 'ambiguous') {
+    return structuralResult === 'accept';
+  }
+
+  // Ambiguous — ask LLM if available
+  if (!llmProvider) return false; // no LLM, be conservative
+
+  try {
+    const summary = buildNodeSummary(node, 0, 5);
+    const systemPrompt = `You are a design analysis expert. Given a Figma layer tree, determine if this is a data chart/graph (bar, line, area, pie, donut, radar, etc.) or a regular UI section (form, card, navigation, contact page, etc.).
+
+Respond with ONLY a JSON object — no markdown, no explanation:
+{"isChart": true} or {"isChart": false}
+
+Key differences:
+- Charts have DATA SHAPES (bars, lines, pie slices) arranged to visualize data values
+- UI sections have ICONS, BUTTONS, TEXT FIELDS, CARDS, MAPS — not data visualization
+- A section with colored icons aligned vertically is NOT a chart — it's a UI list
+- A Google Maps mockup with pins is NOT a chart
+- Colored shapes are only chart data when they represent numerical values (varying heights/widths/angles)`;
+
+    const userPrompt = `Is this Figma section a data chart/graph?\n\n${summary}`;
+    const response = await llmProvider.generate(userPrompt, systemPrompt);
+    const match = response.match(/\{[\s\S]*?"isChart"\s*:\s*(true|false)[\s\S]*?\}/);
+    if (match) {
+      const isChart = match[1] === 'true';
+      const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSectionAsync "${node.name ?? '?'}"] ${msg}`) : () => {};
+      _dbg(`LLM says isChart=${isChart}`);
+      return isChart;
+    }
+  } catch {
+    // LLM failed — fall back to conservative reject
+  }
+
+  return false; // ambiguous + LLM failed = reject
+}
+
+/**
+ * Sync version — uses structural analysis only. Returns boolean.
+ * For backward compatibility with callers that can't await.
+ */
 export function isChartSection(node: any): boolean {
-  if (!node) return false;
+  const result = isChartSectionStructural(node);
+  // Ambiguous cases without LLM: accept if at least 1 supporting signal
+  if (result === 'ambiguous') return false;
+  return result === 'accept';
+}
+
+/**
+ * Core structural analysis. Returns 'accept', 'reject', or 'ambiguous'.
+ * 'ambiguous' means Signal A found shapes but confidence is unclear.
+ */
+function isChartSectionStructural(node: any): 'accept' | 'reject' | 'ambiguous' {
+  if (!node) return 'reject';
   const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSection "${node.name ?? '?'}"] ${msg}`) : () => {};
 
   // ── Phase 0: Minimum size gate ──
@@ -565,7 +625,7 @@ export function isChartSection(node: any): boolean {
     // or if height < 60px absolute (even a sparkline chart needs ~60px vertical space)
     if (h < w * 0.15 || h < 60) {
       _dbg(`→ REJECT: too shallow (${w}×${h}, ratio=${(h/w).toFixed(2)})`);
-      return false;
+      return 'reject';
     }
   }
 
@@ -577,7 +637,7 @@ export function isChartSection(node: any): boolean {
   const visibleDirectChildren = (node.children ?? []).filter((c: any) => c.visible !== false);
   if (visibleDirectChildren.length > 7) {
     _dbg(`→ REJECT: too many direct children (${visibleDirectChildren.length}) — likely a page/section, not a chart`);
-    return false;
+    return 'reject';
   }
 
   // ── Phase 1: Semantic name analysis ──
@@ -605,7 +665,7 @@ export function isChartSection(node: any): boolean {
         const childSignalA = hasDataShapeCluster(child);
         if (childSignalA.detected && childSignalA.highConfidence) chartChildCount++;
       }
-      if (chartChildCount >= 2) return false;
+      if (chartChildCount >= 2) return 'reject';
     }
   }
 
@@ -646,116 +706,44 @@ export function isChartSection(node: any): boolean {
   }
 
   // ── Gate: Signal A (data shapes) is REQUIRED ─────────────────────────────
-  // A chart MUST have visual data elements — bars, pie slices, line vectors,
-  // area fills. Without them, it's not a chart regardless of name, text layout,
-  // or grid lines. Axis labels (Signal B) and grid lines (Signal C) exist in
-  // non-chart UI too (tables, forms, lists) — they can't confirm a chart alone.
   if (!signalA.detected) {
     _dbg(`→ REJECT: no data shapes (Signal A required)`);
-    return false;
+    return 'reject';
   }
 
-  // When semantic names say "UI" (navbar, sidebar, form, etc.) and Signal A
-  // is low confidence, require supporting evidence (axes or grid lines).
-  // This prevents navbars with icon buttons from being charts, while allowing
-  // real charts inside "Widget" frames with "Tag"/"Icon" sub-components.
+  // When semantic names say "UI" and Signal A is low confidence + no supporting signals → reject
   if (nameSignal === 'ui' && !signalA.highConfidence && signalCount < 2) {
     _dbg(`→ REJECT: semantic names say UI + low confidence Signal A + no supporting signals`);
-    return false;
+    return 'reject';
   }
 
-  // From here, Signal A is confirmed — we have actual chart shapes.
-  // Use structural text analysis to filter false positives.
+  // ── Clear ACCEPT cases (no LLM needed) ─────────────────────────────────
 
-  // ── Structural text classification ──────────────────────────────────────
-  // Instead of counting ALL text nodes, classify each by position relative
-  // to the data shapes. Chart-related text (axis labels, legend items,
-  // titles) is expected. Only non-chart text counts against detection.
-  const dataShapeVNs = collectVisualNodes(node).filter((vn) =>
-    !vn.hasTextDescendant && vn.bbox.w > 12 && vn.bbox.h > 12,
-  );
-  let nonChartTextCount = 0;
-  if (dataShapeVNs.length > 0 && bb) {
-    // Compute bounding box of all data shapes (the "chart area")
-    let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
-    for (const vn of dataShapeVNs) {
-      if (vn.bbox.x < sMinX) sMinX = vn.bbox.x;
-      if (vn.bbox.y < sMinY) sMinY = vn.bbox.y;
-      if (vn.bbox.x + vn.bbox.w > sMaxX) sMaxX = vn.bbox.x + vn.bbox.w;
-      if (vn.bbox.y + vn.bbox.h > sMaxY) sMaxY = vn.bbox.y + vn.bbox.h;
-    }
-    const chartW = sMaxX - sMinX;
-    const chartH = sMaxY - sMinY;
-
-    for (const t of allTextNodes) {
-      const tbb = t.absoluteBoundingBox;
-      if (!tbb) continue;
-      const tx = tbb.x + tbb.width / 2;
-      const ty = tbb.y + tbb.height / 2;
-      const chars = (t.characters ?? '').trim();
-
-      // Short text (≤ 8 chars) near chart edges → axis label or value
-      if (chars.length <= 8) continue;
-
-      // Text above chart area (within 50px) → title/subtitle
-      if (ty < sMinY && ty > sMinY - 80) continue;
-
-      // Text below chart area (within 50px) → x-axis labels or legend
-      if (ty > sMaxY && ty < sMaxY + 60) continue;
-
-      // Text to the left of chart area → y-axis labels
-      if (tx < sMinX && tx > sMinX - 60) continue;
-
-      // Text inside chart area → data label, annotation
-      if (tx >= sMinX && tx <= sMaxX && ty >= sMinY && ty <= sMaxY) continue;
-
-      // Text next to a small colored shape (legend dot) → legend item
-      // Check if there's a small visual node within 20px horizontally
-      const isNearDot = dataShapeVNs.some((vn) =>
-        vn.bbox.w <= 16 && vn.bbox.h <= 16
-        && Math.abs((vn.bbox.y + vn.bbox.h / 2) - ty) < 10
-        && Math.abs((vn.bbox.x + vn.bbox.w) - tbb.x) < 20,
-      );
-      if (isNearDot) continue;
-
-      // This text is NOT chart-related — counts against detection
-      nonChartTextCount++;
-    }
-    _dbg(`structural text: ${totalTextCount} total, ${nonChartTextCount} non-chart`);
+  // Data shapes + chart name ON THE ROOT NODE → accept.
+  // Only the root node's own name counts — child names like "Pie chart"
+  // inside a CTA page shouldn't auto-accept the entire page.
+  const rootName = (node.name ?? '').toLowerCase();
+  const rootHasChartName = /chart|graph|plot|histogram|sparkline/.test(rootName);
+  if (rootHasChartName && signalA.highConfidence) {
+    _dbg(`→ ACCEPT: root name "${node.name}" has chart keyword + highConf data shapes`);
+    return 'accept';
   }
 
-  // High-confidence shapes: accept unless too much non-chart text.
-  // Non-chart text means paragraphs, descriptions, form labels — content
-  // that shouldn't be in a chart section.
-  if (signalA.highConfidence) {
-    if (nonChartTextCount > 3) {
-      _dbg(`→ REJECT: highConf signalA but ${nonChartTextCount} non-chart texts`);
-      return false;
-    }
-    _dbg(`→ ACCEPT: highConf signalA (${nonChartTextCount} non-chart texts)`);
-    return true;
+  // Data shapes + 2+ supporting signals (axes + grid) → accept
+  if (signalCount >= 3) {
+    _dbg(`→ ACCEPT: data shapes + ${signalCount - 1} supporting signals`);
+    return 'accept';
   }
 
-  // Data shapes + chart name → accept
-  if (nameSignal === 'chart') {
-    _dbg(`→ ACCEPT: data shapes + chart name`);
-    return true;
+  // High-confidence shapes + at least 1 supporting signal → accept
+  if (signalA.highConfidence && signalCount >= 2) {
+    _dbg(`→ ACCEPT: highConf shapes + supporting signal`);
+    return 'accept';
   }
 
-  // Data shapes + supporting signals (axes or grid) → accept
-  if (signalCount >= 2) {
-    if (nonChartTextCount > 5) {
-      _dbg(`→ REJECT: data shapes + signals but ${nonChartTextCount} non-chart texts`);
-      return false;
-    }
-    _dbg(`→ ACCEPT: data shapes + ${signalCount - 1} supporting signal(s)`);
-    return true;
-  }
-
-  // Data shapes only, no supporting signals — be conservative
-  if (nonChartTextCount > 2) { _dbg(`→ REJECT: data shapes only, ${nonChartTextCount} non-chart texts`); return false; }
-  _dbg(`→ ACCEPT: data shapes only (low confidence)`);
-  return true;
+  // ── Everything else is AMBIGUOUS → LLM decides ─────────────────────────
+  _dbg(`→ AMBIGUOUS: signalA=${JSON.stringify(signalA)} signals=${signalCount} nameSignal=${nameSignal}`);
+  return 'ambiguous';
 }
 
 // ── Signal A: Data shape cluster ────────────────────────────────────────────
@@ -1035,15 +1023,9 @@ function hasDataShapeCluster(node: any): ShapeClusterResult {
   }
 
   // ── Filled overlay shapes (radar data polygons, area fills) ───────────────
-  // Chromatic filled shapes that overlap with other shapes — data overlays
-  const filledOverlays = visualNodes.filter((vn) =>
-    vn.fills.length > 0 && vn.bbox.w > 30 && vn.bbox.h > 30
-    && !vn.hasTextDescendant && !vn.isPolygonal,
-  );
-  if (filledOverlays.length >= 2 && concentricCandidates.length >= 3) {
-    // Filled shapes near a concentric grid → radar data series
-    return { detected: true, highConfidence: true, count: filledOverlays.length };
-  }
+  // Only triggers if a concentric GROUP was actually found above (not just
+  // individual candidates). Without a verified concentric grid, filled shapes
+  // are likely icons, cards, or UI elements — not radar data overlays.
 
   return none;
 }

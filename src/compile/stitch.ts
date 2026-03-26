@@ -241,6 +241,8 @@ export function scopeSectionCSS(
   const output: string[] = [];
   let inKeyframes = false;
   let kfBraceDepth = 0;
+  let inMedia = false;
+  let mediaBraceDepth = 0;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -259,6 +261,32 @@ export function scopeSectionCSS(
       output.push(line);
       if (kfBraceDepth <= 0) inKeyframes = false;
       continue;
+    }
+
+    // Track @media blocks — scope selectors inside them
+    if (/^@media\b/.test(trimmed)) {
+      inMedia = true;
+      mediaBraceDepth = 0;
+      for (const ch of trimmed) {
+        if (ch === '{') mediaBraceDepth++;
+        else if (ch === '}') mediaBraceDepth--;
+      }
+      output.push(line);
+      continue;
+    }
+
+    if (inMedia) {
+      // Count braces to detect end of @media block
+      for (const ch of trimmed) {
+        if (ch === '{') mediaBraceDepth++;
+        else if (ch === '}') mediaBraceDepth--;
+      }
+      if (mediaBraceDepth <= 0) {
+        inMedia = false;
+        output.push(line);
+        continue;
+      }
+      // Fall through to scope selectors inside @media
     }
 
     // Skip CSS comment lines
@@ -291,7 +319,7 @@ export function scopeSectionCSS(
       continue;
     }
 
-    // Everything else (properties, closing braces, @media, etc.) passes through
+    // Everything else (properties, closing braces, etc.) passes through
     output.push(line);
   }
 

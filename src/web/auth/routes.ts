@@ -3,7 +3,7 @@
  */
 import { Router } from 'express';
 import { isAuthEnabled } from './cognito.js';
-import { getFreeTierInfo, requireAuth } from './middleware.js';
+import { getFreeTierInfo, getAuthUsageInfo, requireAuth } from './middleware.js';
 import { config } from '../../config.js';
 import {
   isDynamoEnabled,
@@ -37,20 +37,29 @@ router.get('/me', (req: any, res: any) => {
   });
 });
 
-/** GET /api/auth/free-tier — anonymous free tier usage */
+/** GET /api/auth/free-tier — usage info (auth or anonymous) */
 router.get('/free-tier', async (req: any, res: any) => {
   if (!isAuthEnabled()) {
-    res.json({ used: 0, limit: 0, remaining: Infinity });
+    res.json({ used: 0, limit: 0, remaining: Infinity, tier: 'free' });
     return;
   }
 
+  // Authenticated users: return auth usage limits
+  if (req.user) {
+    const info = await getAuthUsageInfo(req.user.sub);
+    res.json({ ...info, tier: 'auth' });
+    return;
+  }
+
+  // Anonymous users: return free tier usage
   const cookies = req.cookies || {};
   const fp = cookies['ftfp'];
   if (!fp) {
-    res.json({ used: 0, limit: config.freeTier.maxFreeConversions, remaining: config.freeTier.maxFreeConversions });
+    res.json({ used: 0, limit: config.freeTier.maxFreeConversions, remaining: config.freeTier.maxFreeConversions, tier: 'free' });
     return;
   }
-  res.json(await getFreeTierInfo(fp));
+  const info = await getFreeTierInfo(fp);
+  res.json({ ...info, tier: 'free' });
 });
 
 // ── User Project Endpoints (DynamoDB) ────────────────────────────────────

@@ -51,6 +51,11 @@ const statusText = document.getElementById('status-text');
 // Project list
 const projectListEl = document.getElementById('sidebar-project-list');
 const allProjectsBtn = document.getElementById('all-projects-btn');
+const sidebarSearchBtn = document.getElementById('sidebar-search-btn');
+const commandPaletteOverlay = document.getElementById('command-palette-overlay');
+const commandPaletteInput = document.getElementById('command-palette-input');
+const commandPaletteResults = document.getElementById('command-palette-results');
+const commandPaletteHint = document.getElementById('command-palette-hint');
 
 // Hero
 const mainHero = document.getElementById('main-hero');
@@ -131,7 +136,7 @@ const floatingTag = document.getElementById('ve-floating-tag');
 const floatingInput = document.getElementById('ve-ai-input');
 const floatingSendBtn = document.getElementById('ve-ai-send');
 const panelHeaderActions = document.getElementById('panel-header-actions');
-const panelHeaderText = document.querySelector('.panel__header span');
+const panelHeaderText = document.getElementById('panel-header-label');
 const panelInputBar = document.querySelector('.panel__input-bar');
 
 // Draft / Unsaved Edits
@@ -542,6 +547,36 @@ function generatePlaceholderThumbnail(name) {
   return canvas.toDataURL('image/png');
 }
 
+/** Active project title above "Import Design" (visible when split view is open, including collapsed sidebar). */
+function updatePanelHeaderProject() {
+  const el = document.getElementById('panel-header-project');
+  if (!el) return;
+  const splitVisible = mainSplit?.classList.contains('visible');
+  let display = '';
+  if (splitVisible) {
+    const p = currentProjectId ? getProject(currentProjectId) : null;
+    display = (p?.name || currentComponentName || '').trim();
+    if (display === 'Converting...' && currentComponentName) display = currentComponentName.trim();
+  }
+  if (display) {
+    el.hidden = false;
+    el.textContent = display;
+  } else {
+    el.hidden = true;
+    el.textContent = '';
+  }
+}
+
+/** Thumbnail block shared by sidebar project list and command palette (square tile, image or letter on hue). */
+function projectThumbMarkup(p) {
+  const thumbStyle = p.thumbnail
+    ? `background-image: url(${p.thumbnail}); background-size: cover;`
+    : `background: hsl(200, 55%, 45%);`;
+  const letter = (p.name || '?')[0].toUpperCase();
+  const inner = p.thumbnail ? '' : escapeHtml(letter);
+  return `<span class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${inner}</span>`;
+}
+
 function renderProjectList() {
   if (!projectListEl) return;
   const projects = loadProjects();
@@ -553,14 +588,10 @@ function renderProjectList() {
   let html = '';
   for (const p of items) {
     const isActive = currentProjectId === p.id;
-    const thumbStyle = p.thumbnail
-      ? `background-image: url(${p.thumbnail}); background-size: cover;`
-      : `background: hsl(200, 55%, 45%);`;
-    const letter = (p.name || '?')[0].toUpperCase();
     const convertingClass = p.converting ? ' converting' : '';
     const dateLabel = p.converting ? 'Converting...' : formatTimeAgo(p.updatedAt || p.createdAt);
     html += `<div class="sidebar__project-item${isActive ? ' active' : ''}${convertingClass}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
-      <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
+      ${projectThumbMarkup(p)}
       <div class="sidebar__project-info">
         <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
         <div class="sidebar__project-date">${dateLabel}</div>
@@ -597,6 +628,7 @@ function renderProjectList() {
   });
   const newBtn = projectListEl.querySelector('#new-project-btn');
   if (newBtn) newBtn.addEventListener('click', resetToHero);
+  updatePanelHeaderProject();
 }
 
 function restoreProject(projectId) {
@@ -654,6 +686,7 @@ function restoreProject(projectId) {
       updateMenuButtonVisibility();
     }
 
+    syncSidebarPrimaryNavToShellView();
     return;
   }
 
@@ -789,6 +822,7 @@ function restoreProject(projectId) {
 
   setStatus('done', 'Conversion complete');
   renderProjectList();
+  syncSidebarPrimaryNavToShellView();
 }
 
 function transformForBrowser(reactCode, componentName) {
@@ -1317,6 +1351,7 @@ function resetToHero() {
 
   setStatus('ready', 'Ready to convert');
   renderProjectList();
+  syncSidebarPrimaryNavToShellView();
 }
 
 // ── Framework Extensions Map ──
@@ -1355,6 +1390,7 @@ sidebarToggle.addEventListener('click', () => {
     updateSidebarToggleTitle();
   }
   updateMenuButtonVisibility();
+  syncSidebarPrimaryNavToShellView();
 });
 
 if (mainMenuBtn) {
@@ -1368,6 +1404,7 @@ if (mainMenuBtn) {
       updateSidebarToggleTitle();
     }
     updateMenuButtonVisibility();
+    syncSidebarPrimaryNavToShellView();
   });
 }
 
@@ -1384,8 +1421,9 @@ window.addEventListener('resize', () => {
 updateMenuButtonVisibility();
 updateSidebarToggleTitle();
 
-// Sidebar nav item selection
+// Sidebar nav item selection (Search opens command palette; All projects has its own handler)
 document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
+  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
     document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
@@ -1628,6 +1666,7 @@ async function startConversion(skipDuplicateCheck) {
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
   mainHero.closest('.main')?.classList.add('split-visible');
+  syncSidebarPrimaryNavToShellView();
 
   // Sync URL and framework selection to panel for "convert another"
   figmaUrlInput.value = figmaUrl;
@@ -4359,6 +4398,281 @@ if (allProjectsBtn) {
   });
 }
 
+// ── Command palette (⌘K / Ctrl+K) ──
+
+const COMMAND_PALETTE_ACTIONS = [
+  {
+    id: 'new',
+    label: 'New conversion',
+    subtitle: 'Start from a Figma URL',
+    icon: '+',
+    keywords: 'new start hero figma url convert create',
+  },
+];
+
+let commandPaletteSelected = 0;
+/** @type {Array<{ kind: 'action' | 'project', action?: object, project?: object }>} */
+let commandPaletteFlat = [];
+
+function commandPaletteFuzzyScore(haystack, query) {
+  if (!query || !String(query).trim()) return 1;
+  const h = String(haystack).toLowerCase();
+  const q = String(query).toLowerCase().trim();
+  if (!q) return 1;
+  const idx = h.indexOf(q);
+  if (idx >= 0) return 2000 - idx;
+  let qi = 0;
+  let score = 0;
+  let lastTi = -99;
+  for (let ti = 0; ti < h.length && qi < q.length; ti++) {
+    if (h[ti] === q[qi]) {
+      score += ti === lastTi + 1 ? 5 : 1;
+      const atWord = ti === 0 || /[\s/:=\-_]/.test(h[ti - 1]);
+      if (atWord) score += 3;
+      lastTi = ti;
+      qi++;
+    }
+  }
+  return qi === q.length ? 50 + score : 0;
+}
+
+function updateCommandPaletteHintText() {
+  if (!commandPaletteHint) return;
+  const isMac =
+    typeof navigator !== 'undefined' &&
+    (navigator.platform?.includes('Mac') || navigator.userAgent?.includes('Mac'));
+  const mod = isMac ? '⌘K' : 'Ctrl+K';
+  commandPaletteHint.textContent = `${mod} to toggle · ↑↓ navigate · Enter to open · Esc to close`;
+}
+
+function rebuildCommandPalette(query) {
+  const q = (query || '').trim();
+  const actionEntries = COMMAND_PALETTE_ACTIONS.map((a) => {
+    const blob = `${a.label} ${a.subtitle} ${a.keywords}`;
+    const score = q ? commandPaletteFuzzyScore(blob, q) : 9999;
+    return { kind: 'action', score, action: a };
+  })
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const projects = loadProjects()
+    .slice()
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const projectEntries = projects
+    .map((p) => {
+      const blob = `${p.name || ''} ${p.figmaUrl || ''}`;
+      const score = q ? commandPaletteFuzzyScore(blob, q) : 1;
+      return { kind: 'project', score, project: p };
+    })
+    .filter((e) => e.score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score || (b.project.updatedAt || 0) - (a.project.updatedAt || 0),
+    );
+
+  commandPaletteFlat = [
+    ...actionEntries.map(({ action }) => ({ kind: 'action', action })),
+    ...projectEntries.map(({ project }) => ({ kind: 'project', project })),
+  ];
+}
+
+function renderCommandPaletteRow(row, index) {
+  const sel = index === commandPaletteSelected ? ' command-palette__row--selected' : '';
+  const ariaSel = index === commandPaletteSelected ? 'true' : 'false';
+  if (row.kind === 'action') {
+    const a = row.action;
+    return `<button type="button" class="command-palette__row${sel}" role="option" data-index="${index}" aria-selected="${ariaSel}">
+      <span class="command-palette__row-icon">${escapeHtml(a.icon)}</span>
+      <span class="command-palette__row-body">
+        <span class="command-palette__row-title">${escapeHtml(a.label)}</span>
+        <span class="command-palette__row-sub">${escapeHtml(a.subtitle)}</span>
+      </span>
+    </button>`;
+  }
+  const p = row.project;
+  const dateLabel = p.converting ? 'Converting...' : formatTimeAgo(p.updatedAt || p.createdAt);
+  const title = escapeHtml(p.name || 'Untitled');
+  const convClass = p.converting ? ' command-palette__row--converting' : '';
+  return `<button type="button" class="command-palette__row${sel}${convClass}" role="option" data-index="${index}" aria-selected="${ariaSel}">
+    ${projectThumbMarkup(p)}
+    <span class="sidebar__project-info">
+      <span class="sidebar__project-name">${title}</span>
+      <span class="sidebar__project-date">${escapeHtml(dateLabel)}</span>
+    </span>
+  </button>`;
+}
+
+function renderCommandPaletteDOM() {
+  if (!commandPaletteResults) return;
+  if (commandPaletteFlat.length === 0) {
+    commandPaletteResults.innerHTML =
+      '<div class="command-palette__empty" role="status">No matching projects or actions</div>';
+    return;
+  }
+  const parts = [];
+  let lastKind = null;
+  for (let i = 0; i < commandPaletteFlat.length; i++) {
+    const row = commandPaletteFlat[i];
+    if (row.kind !== lastKind) {
+      lastKind = row.kind;
+      parts.push(
+        `<div class="command-palette__section-label">${row.kind === 'action' ? 'Actions' : 'Projects'}</div>`,
+      );
+    }
+    parts.push(renderCommandPaletteRow(row, i));
+  }
+  commandPaletteResults.innerHTML = parts.join('');
+  commandPaletteResults.querySelectorAll('.command-palette__row').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.index);
+      if (!Number.isNaN(idx)) runCommandPaletteIndex(idx);
+    });
+  });
+}
+
+function scrollCommandPaletteSelectionIntoView() {
+  commandPaletteResults
+    ?.querySelector('.command-palette__row--selected')
+    ?.scrollIntoView({ block: 'nearest' });
+}
+
+function refreshCommandPalette() {
+  const q = commandPaletteInput?.value ?? '';
+  rebuildCommandPalette(q);
+  if (commandPaletteFlat.length > 0) {
+    commandPaletteSelected = Math.min(
+      commandPaletteSelected,
+      commandPaletteFlat.length - 1,
+    );
+    if (commandPaletteSelected < 0) commandPaletteSelected = 0;
+  } else {
+    commandPaletteSelected = 0;
+  }
+  renderCommandPaletteDOM();
+  scrollCommandPaletteSelectionIntoView();
+}
+
+function runCommandPaletteIndex(index) {
+  const row = commandPaletteFlat[index];
+  if (!row) return;
+  closeCommandPalette();
+  if (row.kind === 'action' && row.action.id === 'new') {
+    resetToHero();
+    return;
+  }
+  if (row.kind === 'project' && row.project?.id) {
+    restoreProject(row.project.id);
+  }
+}
+
+/** Home / Search / Profile only — skips All projects. */
+function setSidebarPrimaryNavActive(activeEl) {
+  document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
+    if (item.id === 'all-projects-btn') return;
+    item.classList.toggle('active', activeEl != null && item === activeEl);
+  });
+}
+
+/** Home highlighted only on landing; split/project view clears primary nav (project list shows selection). */
+function syncSidebarPrimaryNavToShellView() {
+  if (!isCommandPaletteOpen()) {
+    const onHero = mainHero && !mainHero.classList.contains('hidden');
+    if (onHero) {
+      const homeNav = document.querySelector('.sidebar__nav-item[title="Home"]');
+      if (homeNav) setSidebarPrimaryNavActive(homeNav);
+    } else {
+      setSidebarPrimaryNavActive(null);
+    }
+  }
+  updatePanelHeaderProject();
+}
+
+function openCommandPalette() {
+  if (!commandPaletteOverlay || !commandPaletteInput) return;
+  if (sidebarSearchBtn) setSidebarPrimaryNavActive(sidebarSearchBtn);
+  commandPaletteOverlay.setAttribute('aria-hidden', 'false');
+  updateCommandPaletteHintText();
+  commandPaletteInput.value = '';
+  commandPaletteSelected = 0;
+  rebuildCommandPalette('');
+  renderCommandPaletteDOM();
+  requestAnimationFrame(() => {
+    commandPaletteInput.focus();
+    commandPaletteInput.select?.();
+  });
+  if (window.innerWidth <= 768) {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('visible');
+    updateMenuButtonVisibility();
+  }
+}
+
+function closeCommandPalette() {
+  if (!commandPaletteOverlay) return;
+  commandPaletteOverlay.setAttribute('aria-hidden', 'true');
+  commandPaletteSelected = 0;
+  commandPaletteFlat = [];
+  syncSidebarPrimaryNavToShellView();
+}
+
+function isCommandPaletteOpen() {
+  return commandPaletteOverlay?.getAttribute('aria-hidden') === 'false';
+}
+
+function initCommandPalette() {
+  updateCommandPaletteHintText();
+  sidebarSearchBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openCommandPalette();
+  });
+
+  commandPaletteOverlay?.addEventListener('click', (e) => {
+    if (e.target === commandPaletteOverlay) closeCommandPalette();
+  });
+
+  commandPaletteInput?.addEventListener('input', () => {
+    commandPaletteSelected = 0;
+    refreshCommandPalette();
+  });
+
+  commandPaletteInput?.addEventListener('keydown', (e) => {
+    if (!isCommandPaletteOpen()) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!commandPaletteFlat.length) return;
+      commandPaletteSelected =
+        (commandPaletteSelected + 1) % commandPaletteFlat.length;
+      renderCommandPaletteDOM();
+      scrollCommandPaletteSelectionIntoView();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!commandPaletteFlat.length) return;
+      commandPaletteSelected =
+        (commandPaletteSelected - 1 + commandPaletteFlat.length) %
+        commandPaletteFlat.length;
+      renderCommandPaletteDOM();
+      scrollCommandPaletteSelectionIntoView();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (commandPaletteFlat.length === 0) return;
+      runCommandPaletteIndex(commandPaletteSelected);
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isCommandPaletteOpen()) {
+      e.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      if (isCommandPaletteOpen()) closeCommandPalette();
+      else openCommandPalette();
+    }
+  });
+}
+
 // ── Auth: Cognito Integration ──
 
 function authHeaders() {
@@ -4891,12 +5205,14 @@ loadSavedToken();
 loadExplorerIconConfig();
 updateCodeActionsState();
 renderProjectList();
+initCommandPalette();
 initAuth();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');
 mainSplit.classList.remove('visible');
 mainHero.closest('.main')?.classList.remove('split-visible');
+syncSidebarPrimaryNavToShellView();
 
 // ── Visual Edit ──
 

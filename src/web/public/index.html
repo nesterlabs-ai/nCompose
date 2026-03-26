@@ -111,7 +111,8 @@
             </svg>
             <span>Home</span>
           </button>
-          <button type="button" class="sidebar__nav-item" title="Search">
+          <button type="button" class="sidebar__nav-item" id="sidebar-search-btn" title="Search (⌘K)"
+            aria-keyshortcuts="Meta+K Control+K">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" stroke-linecap="round" />
@@ -299,7 +300,10 @@
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M2 3h12M2 8h8M2 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
-            <span>Import Design</span>
+            <div class="panel__header-text">
+              <span class="panel__header-project" id="panel-header-project" hidden></span>
+              <span class="panel__header-label" id="panel-header-label">Import Design</span>
+            </div>
             <div class="panel__header-actions" id="panel-header-actions" style="display: none;">
               <button class="header-back-btn" id="visual-edit-back" title="Back to Chat">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -1015,6 +1019,25 @@
           </button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Command palette (⌘K / Ctrl+K) -->
+  <div class="command-palette-overlay" id="command-palette-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="command-palette-label" aria-hidden="true">
+    <div class="command-palette" id="command-palette">
+      <label id="command-palette-label" class="visually-hidden">Search projects and actions</label>
+      <div class="command-palette__search-wrap">
+        <svg class="command-palette__search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" stroke-linecap="round" />
+        </svg>
+        <input type="search" class="command-palette__input" id="command-palette-input" placeholder="Search projects…"
+          autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="command-palette-results" />
+      </div>
+      <div class="command-palette__hint" id="command-palette-hint"></div>
+      <div class="command-palette__list" id="command-palette-results" role="listbox" aria-label="Results"></div>
     </div>
   </div>
 

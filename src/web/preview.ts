@@ -340,7 +340,26 @@ function buildShadcnInlineDefs(
   const namedImports = new Set<string>();     // e.g. ChevronDown, Check, X
 
   for (const sub of shadcnSubComponents) {
-    let source = sub.updatedShadcnSource;
+    const origSource = sub.updatedShadcnSource;
+    let source = origSource;
+
+    // Extract exported component names BEFORE stripping exports.
+    // The source exports PascalCase names (e.g., Toast, ToastTitle) but
+    // shadcnComponentName is lowercase (e.g., "toast"). We need the actual
+    // PascalCase names to register them as globals for the preview.
+    const exportedNames: string[] = [];
+    const exportBlockMatch = origSource.match(/export\s+\{([^}]+)\}/);
+    if (exportBlockMatch) {
+      exportBlockMatch[1].split(',').forEach((n) => {
+        const name = n.trim();
+        if (/^[A-Z]/.test(name)) exportedNames.push(name);
+      });
+    }
+    // Also check for "export const Foo" / "export function Foo"
+    const exportDeclMatches = origSource.matchAll(/export\s+(?:const|function)\s+([A-Z]\w+)/g);
+    for (const m of exportDeclMatches) {
+      if (!exportedNames.includes(m[1])) exportedNames.push(m[1]);
+    }
 
     // Detect namespace imports: import * as FooPrimitive from "@radix-ui/..."
     // These need Proxy-based stubs so FooPrimitive.Root, .Trigger etc. work
@@ -393,7 +412,15 @@ function buildShadcnInlineDefs(
     const compName = sub.shadcnComponentName;
     // NOTE: __SESSION_ID__ will be replaced by generatePreviewHTML with the
     // real sessionId value so we don't need access to it here.
-    const wrappedSource = `(function(){\n${source.trim()}\n  try {\n    window.__INLINED_COMPONENTS = window.__INLINED_COMPONENTS || {};\n    var __sid = "__SESSION_ID__";\n    window.__INLINED_COMPONENTS[__sid] = window.__INLINED_COMPONENTS[__sid] || {};\n    if (typeof ${compName} !== 'undefined') { window.__INLINED_COMPONENTS[__sid][${JSON.stringify(compName)}] = true; window[${JSON.stringify(compName)}] = ${compName}; }\n  } catch (e) { }\n})();`;
+
+    // Build registration lines for all exported PascalCase components
+    const registrationLines = exportedNames.length > 0
+      ? exportedNames.map((name) =>
+          `if (typeof ${name} !== 'undefined') { window.__INLINED_COMPONENTS[__sid][${JSON.stringify(name)}] = true; window[${JSON.stringify(name)}] = ${name}; }`
+        ).join('\n    ')
+      : `if (typeof ${compName} !== 'undefined') { window.__INLINED_COMPONENTS[__sid][${JSON.stringify(compName)}] = true; window[${JSON.stringify(compName)}] = ${compName}; }`;
+
+    const wrappedSource = `(function(){\n${source.trim()}\n  try {\n    window.__INLINED_COMPONENTS = window.__INLINED_COMPONENTS || {};\n    var __sid = "__SESSION_ID__";\n    window.__INLINED_COMPONENTS[__sid] = window.__INLINED_COMPONENTS[__sid] || {};\n    ${registrationLines}\n  } catch (e) { }\n})();`;
     defs.push(wrappedSource);
   }
 

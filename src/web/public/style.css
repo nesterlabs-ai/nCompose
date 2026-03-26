@@ -747,6 +747,10 @@ body {
   color: var(--success);
 }
 
+.token-status.expired {
+  color: var(--warning, #f59e0b);
+}
+
 /* ── Main Area ── */
 .main {
   position: relative;
@@ -3350,6 +3354,113 @@ body {
   outline: 2px solid #3b82f6 !important;
   outline-offset: -2px !important;
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important;
+}
+
+/* ── Contact NesterLabs Modal ──────────────────────────────────────── */
+.modal-dialog--contact {
+  max-width: 440px;
+}
+
+.contact-limit-message {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+
+.contact-limit-icon {
+  margin-bottom: 12px;
+}
+
+.contact-limit-heading {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.contact-limit-subtext {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.contact-info-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.contact-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.contact-info-row svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.contact-info-row a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.contact-info-row a:hover {
+  text-decoration: underline;
+}
+
+.contact-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.contact-cta-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.contact-cta-btn:hover {
+  opacity: 0.9;
+}
+
+.contact-linkedin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.contact-linkedin-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
 }
 
 /* ── Login Modal ───────────────────────────────────────────────────── */

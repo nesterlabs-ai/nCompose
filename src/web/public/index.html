@@ -263,6 +263,8 @@
                 </div>
               </div>
             </form>
+            <!-- Chat response bubble (shown for non-URL input) -->
+            <div class="hero__chat-response" id="hero-chat-response" style="display: none;"></div>
           </div>
           <div class="hero__prompt-controls">
             <span class="hero__prompt-label">Frameworks</span>
@@ -297,9 +299,6 @@
         <!-- LEFT PANEL: Chat-like -->
         <div class="panel panel--left" id="panel-left">
           <div class="panel__header">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M2 3h12M2 8h8M2 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
             <div class="panel__header-text">
               <span class="panel__header-project" id="panel-header-project" hidden></span>
               <span class="panel__header-label" id="panel-header-label">Import Design</span>
@@ -607,20 +606,16 @@
             </div>
             <!-- Chat input group (shown post-conversion) -->
             <div id="chat-input-group" class="chat-input-group" style="display: none;">
-              <div class="visual-edit-toggle-bar">
-                <button class="ve-toggle-btn" id="enter-visual-edit">
+              <div class="input-row">
+                <button class="ve-inline-btn" id="enter-visual-edit" title="Visual edits">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="8" x2="12" y2="16" />
-                    <line x1="8" y1="12" x2="16" y2="12" />
+                    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                   </svg>
                   Visual edits
                 </button>
-              </div>
-              <div class="input-row">
                 <div class="chat-input-wrap">
-                  <textarea id="chat-input" class="form-input chat-input" placeholder="Describe a change..."
+                  <textarea id="chat-input" class="form-input chat-input" placeholder="Describe a change to Nester Compose"
                     rows="1"></textarea>
                 </div>
                 <button class="send-btn" type="button" id="chat-send-btn">

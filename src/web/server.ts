@@ -19,7 +19,8 @@ import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
-import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, isAuthEnabled } from './auth/index.js';
+import rateLimit from 'express-rate-limit';
+import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
 import { isDynamoEnabled, saveUserProject } from './db/index.js';
 
@@ -50,6 +51,9 @@ interface SessionEntry {
   conversation: LLMMessage[];
   llmProvider: string;
   frameworks: Framework[];
+  ownerFingerprint?: string;
+  ownerSub?: string;
+  refineCount: number;
 }
 
 const sessionStore = new Map<string, SessionEntry>();
@@ -78,7 +82,7 @@ function getSessionEntry(id: string): SessionEntry | undefined {
   return entry;
 }
 
-function setSession(id: string, result: ConversionResult, llmProvider?: string, frameworks?: Framework[]): void {
+function setSession(id: string, result: ConversionResult, llmProvider?: string, frameworks?: Framework[], ownerFingerprint?: string, ownerSub?: string): void {
   const existing = sessionStore.get(id);
   sessionStore.set(id, {
     result,
@@ -86,6 +90,10 @@ function setSession(id: string, result: ConversionResult, llmProvider?: string, 
     conversation: existing?.conversation || [],
     llmProvider: llmProvider || existing?.llmProvider || config.server.defaultLLM,
     frameworks: frameworks || existing?.frameworks || ['react'],
+    // Only set owner on initial creation, don't overwrite on re-hydration
+    ownerFingerprint: existing?.ownerFingerprint || ownerFingerprint,
+    ownerSub: existing?.ownerSub || ownerSub,
+    refineCount: existing?.refineCount || 0,
   });
 }
 
@@ -221,6 +229,44 @@ function getSessionWithDiskFallback(sessionId: string): ConversionResult | undef
   return diskResult;
 }
 
+/**
+ * Middleware: validates that the requesting user owns the session.
+ * Checks Cognito sub for auth'd users, fingerprint for guests.
+ * Legacy sessions (no owner) are allowed through for backward compat.
+ */
+function requireSessionOwner(req: any, res: any, next: any): void {
+  if (!isAuthEnabled()) { next(); return; }
+
+  const sessionId = req.params.sessionId || req.body?.sessionId;
+  if (!sessionId) { res.status(400).json({ error: 'sessionId required' }); return; }
+
+  const entry = getSessionEntry(sessionId);
+  if (!entry) {
+    // Session not in memory — try disk fallback so ownership check can proceed
+    const diskResult = loadResultFromDisk(sessionId);
+    if (!diskResult) { res.status(404).json({ error: 'Session not found' }); return; }
+    // Re-hydrate (no owner info from disk — legacy session, allow through)
+    setSession(sessionId, diskResult);
+    next();
+    return;
+  }
+
+  // Auth user: match by Cognito sub
+  if (req.user) {
+    if (entry.ownerSub && entry.ownerSub === req.user.sub) { next(); return; }
+    if (!entry.ownerSub && !entry.ownerFingerprint) { next(); return; }
+  }
+
+  // Guest user: match by fingerprint
+  const fp = req.headers['x-fingerprint'] || req.cookies?.[FINGERPRINT_COOKIE];
+  if (fp && entry.ownerFingerprint && entry.ownerFingerprint === fp) { next(); return; }
+
+  // Legacy session with no owner — allow (backward compat)
+  if (!entry.ownerSub && !entry.ownerFingerprint) { next(); return; }
+
+  res.status(403).json({ error: 'You do not have access to this session' });
+}
+
 // Periodic cleanup of expired sessions and tokens (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -240,6 +286,26 @@ setInterval(() => {
 app.use(express.json({ limit: config.server.jsonLimit }));
 app.use(cookieParser());
 app.use(attachUser as any);
+
+// Trust proxy (for correct req.ip behind load balancers)
+app.set('trust proxy', config.server.trustProxy);
+
+// Rate limiters
+const globalLimiter = rateLimit({
+  windowMs: config.rateLimit.globalWindowMs,
+  max: config.rateLimit.globalMaxRequests,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+app.use('/api', globalLimiter);
+
+const expensiveLimiter = rateLimit({
+  windowMs: config.rateLimit.expensiveWindowMs,
+  max: config.rateLimit.expensiveMaxRequests,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please wait before trying again.' },
+});
 
 // Required for WebContainer (SharedArrayBuffer needs cross-origin isolation)
 // Only set on HTTPS or localhost — browsers ignore these headers on plain HTTP
@@ -290,7 +356,7 @@ app.get('/api/verify-token/:id', (req: any, res: any) => {
  * Accepts JSON body: { figmaUrl, tokenId, frameworks }
  * Streams progress via Server-Sent Events, then sends completion data.
  */
-app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
+app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req: any, res: any) => {
   const { figmaUrl, tokenId, frameworks, name, llm: requestedLLM, template } = req.body;
 
   // Validate inputs
@@ -385,10 +451,16 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
         } else if (req.user) {
           await incrementAuthUsage(req.user.sub);
         }
+        // Also increment IP-based usage for anonymous users
+        if ((req as any)._clientIP && !req.user) {
+          await incrementIPUsage((req as any)._clientIP);
+        }
 
-        // Store result in session
+        // Store result in session (with owner binding)
         const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
-        setSession(sessionId, result, llmName, selectedFrameworks);
+        const ownerFp = (req as any)._fingerprint || getFingerprint(req, res);
+        const ownerSub = req.user?.sub;
+        setSession(sessionId, result, llmName, selectedFrameworks, ownerFp, ownerSub);
 
         // Persist project metadata to DynamoDB for authenticated users
         if (req.user && isDynamoEnabled()) {
@@ -722,7 +794,7 @@ function buildVisualEditSavePrompt(
  * Accepts JSON body: { sessionId, userRequest?, dataVeId?, variantLabel?, variantProps?, visualEdits? }
  * Streams progress via Server-Sent Events, then sends updated code.
  */
-app.post('/api/refine', (req: any, res: any) => {
+app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits } = req.body;
 
   if (!sessionId || typeof sessionId !== 'string') {
@@ -745,6 +817,17 @@ app.post('/api/refine', (req: any, res: any) => {
   }
   if (!session) {
     res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+
+  // Per-session refine limit
+  const maxRefines = req.user
+    ? config.freeTier.maxAuthRefinesPerSession
+    : config.freeTier.maxFreeRefinesPerSession;
+  if (session.refineCount >= maxRefines) {
+    res.status(429).json({
+      error: `Refine limit reached (${maxRefines} per session). ${req.user ? 'Please start a new conversion.' : 'Please sign in for a higher limit.'}`,
+    });
     return;
   }
 
@@ -915,6 +998,9 @@ app.post('/api/refine', (req: any, res: any) => {
       session.result.css = refined.css || session.result.css;
       if (refined.elementMap) session.result.elementMap = refined.elementMap;
 
+      // Increment per-session refine counter
+      session.refineCount += 1;
+
       // Append to conversation history
       session.conversation.push(
         { role: 'user', content: `[Current code provided]\n\n${effectivePrompt}` },
@@ -971,7 +1057,7 @@ app.post('/api/refine', (req: any, res: any) => {
  * If a wired app/ directory exists on disk, ZIPs the full runnable project
  * (Lovable-style). Otherwise falls back to component-only ZIP.
  */
-app.get('/api/download/:sessionId', requireAuth as any, (req: any, res: any) => {
+app.get('/api/download/:sessionId', requireAuth as any, requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = getSessionWithDiskFallback(sessionId);
 
@@ -1081,7 +1167,7 @@ function readDirToFilesMap(dirPath: string, baseDir: string = dirPath): Record<s
 /**
  * GET /api/session/:sessionId/wired-app-files — List and read all files in the wired app (template) directory
  */
-app.get('/api/session/:sessionId/wired-app-files', (req: any, res: any) => {
+app.get('/api/session/:sessionId/wired-app-files', requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId } = req.params;
   let result = getSession(sessionId);
 
@@ -1126,7 +1212,7 @@ const FILE_EXTENSIONS: Record<string, string> = {
 /**
  * POST /api/save-file — Save edited file content
  */
-app.post('/api/save-file', async (req: any, res: any) => {
+app.post('/api/save-file', requireAuthOrFree as any, requireSessionOwner as any, async (req: any, res: any) => {
   const { sessionId, fileKey, content } = req.body;
 
   if (!sessionId || !fileKey || typeof content !== 'string') {
@@ -1185,7 +1271,7 @@ app.get('/api/config', (_req: any, res: any) => {
 /**
  * GET /api/session/:sessionId/push-files — Returns file list for GitHub push
  */
-app.get('/api/session/:sessionId/push-files', (req: any, res: any) => {
+app.get('/api/session/:sessionId/push-files', requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId } = req.params;
   const { mode } = req.query;
   const result = getSessionWithDiskFallback(sessionId);
@@ -1279,7 +1365,7 @@ app.get('/auth/github/callback', (_req: any, res: any) => {
 /**
  * GET /api/preview/:sessionId — Standalone preview HTML
  */
-app.get('/api/preview/:sessionId', (req: any, res: any) => {
+app.get('/api/preview/:sessionId', requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId } = req.params;
   const result = getSessionWithDiskFallback(sessionId);
 
@@ -1332,8 +1418,15 @@ app.get('/api/preview/:sessionId', (req: any, res: any) => {
 /**
  * GET /api/preview/:sessionId/assets/:filename — Serve SVG assets for preview
  */
-app.get('/api/preview/:sessionId/assets/:filename', (req: any, res: any) => {
+app.get('/api/preview/:sessionId/assets/:filename', requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId, filename } = req.params;
+
+  // Reject path traversal attempts
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    res.status(400).send('Invalid filename');
+    return;
+  }
+
   let result = getSession(sessionId);
 
   // Try in-memory first, then disk fallback for asset file directly

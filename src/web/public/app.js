@@ -1,3 +1,36 @@
+// ── FingerprintJS ──
+let visitorFingerprint = null;
+
+async function initFingerprint() {
+  try {
+    if (typeof FingerprintJS !== 'undefined') {
+      const fp = await FingerprintJS.load();
+      const result = await fp.get();
+      visitorFingerprint = result.visitorId;
+      console.log('[fingerprint] initialized');
+    }
+  } catch (e) {
+    console.warn('[fingerprint] FingerprintJS failed, falling back to cookie:', e.message);
+  }
+}
+initFingerprint();
+
+/**
+ * Wrapper around fetch() that injects X-Fingerprint and Authorization headers.
+ * Use this for all API calls instead of raw fetch().
+ */
+function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (visitorFingerprint) {
+    headers['X-Fingerprint'] = visitorFingerprint;
+  }
+  const token = typeof authIdToken !== 'undefined' ? authIdToken : null;
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token;
+  }
+  return fetch(url, { ...options, headers });
+}
+
 // ── DOM Elements ──
 
 // Theme
@@ -348,7 +381,7 @@ async function loadSavedToken() {
   const tokenId = sessionStorage.getItem(TOKEN_ID_KEY);
   if (!tokenId) return;
   try {
-    const res = await fetch(`/api/verify-token/${tokenId}`);
+    const res = await apiFetch(`/api/verify-token/${tokenId}`);
     const data = await res.json();
     if (data.valid) {
       figmaTokenInput.value = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
@@ -777,7 +810,7 @@ function restoreProject(projectId) {
   previewEmpty.style.display = 'none';
   const chartComponents = project.chartComponents || [];
   setPreviewLoading(true, 'Loading preview...');
-  fetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
+  apiFetch(`/api/preview/${currentSessionId}`, { method: 'HEAD' })
     .then(r => {
       if (r.ok) {
         // Server session alive — use full preview pipeline
@@ -791,7 +824,7 @@ function restoreProject(projectId) {
 
   // Restore wired app files if template was wired
   if (templateWired) {
-    fetch(`/api/session/${currentSessionId}/wired-app-files`)
+    apiFetch(`/api/session/${currentSessionId}/wired-app-files`)
       .then(r => (r.ok ? r.json() : null))
       .then(res => {
         if (res && res.files) {
@@ -1475,7 +1508,7 @@ saveTokenBtn.addEventListener('click', async () => {
   const token = figmaTokenInput.value.trim();
   if (!token) return;
   try {
-    const res = await fetch('/api/store-token', {
+    const res = await apiFetch('/api/store-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ figmaToken: token }),
@@ -1685,7 +1718,7 @@ async function startConversion(skipDuplicateCheck) {
       return;
     }
     try {
-      const res = await fetch('/api/store-token', {
+      const res = await apiFetch('/api/store-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ figmaToken: rawToken }),
@@ -1775,9 +1808,9 @@ async function startConversion(skipDuplicateCheck) {
   if (refineAbortController) { refineAbortController.abort(); refineAbortController = null; }
   convertAbortController = new AbortController();
 
-  fetch('/api/convert', {
+  apiFetch('/api/convert', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body,
     signal: convertAbortController.signal,
   }).then(async (response) => {
@@ -2052,7 +2085,7 @@ function startPreviewForSession(frameworks, chartComponents) {
 
   if (hasReact && reactCode && !reactCode.startsWith('// Error') && isWebContainerSupported()) {
     const currentChartComponents = chartComponents || [];
-    return fetch(`/api/session/${currentSessionId}/push-files`)
+    return apiFetch(`/api/session/${currentSessionId}/push-files`)
       .then((r) => r.json())
       .then((res) => {
         const files = res.files || [];
@@ -2901,7 +2934,7 @@ function handleComplete(data) {
   // When template was wired, show toggle and fetch wired app files, then auto-switch to Project view
   if (templateWired && codeViewModeEl) {
     codeViewModeEl.style.display = 'flex';
-    fetch(`/api/session/${currentSessionId}/wired-app-files`)
+    apiFetch(`/api/session/${currentSessionId}/wired-app-files`)
       .then((r) => (r.ok ? r.json() : { files: {} }))
       .then((res) => {
         wiredAppFiles = res.files || {};
@@ -3368,9 +3401,9 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (refineAbortController) { refineAbortController.abort(); refineAbortController = null; }
   refineAbortController = new AbortController();
 
-  fetch('/api/refine', {
+  apiFetch('/api/refine', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body,
     signal: refineAbortController.signal,
   }).then((response) => {
@@ -4107,9 +4140,9 @@ codeSaveBtn.addEventListener('click', async () => {
   codeSaveBtn.textContent = 'Saving...';
 
   try {
-    const res = await fetch('/api/save-file', {
+    const res = await apiFetch('/api/save-file', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: currentSessionId, fileKey: activeFile, content }),
     });
     const data = await res.json();
@@ -4159,7 +4192,7 @@ codeCopyBtn.addEventListener('click', () => {
 // ── Download ──
 function performDownload() {
   if (!currentSessionId) return;
-  fetch(`/api/download/${currentSessionId}`, { headers: authHeaders() })
+  apiFetch(`/api/download/${currentSessionId}`)
     .then((r) => {
       if (r.status === 401) { showLoginModal(performDownload); return; }
       if (!r.ok) throw new Error('Download failed');
@@ -4339,7 +4372,7 @@ function initGitHubDialog() {
     updatePushState();
 
     const pushMode = templateWired ? 'wired' : codeViewMode;
-    fetch(`/api/session/${currentSessionId}/push-files?mode=${pushMode}`)
+    apiFetch(`/api/session/${currentSessionId}/push-files?mode=${pushMode}`)
       .then((r) => r.json())
       .then((data) => {
         githubFiles = data.files || [];
@@ -4363,7 +4396,7 @@ function initGitHubDialog() {
         updatePushState();
       });
 
-    fetch('/api/config')
+    apiFetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
         supabaseUrl = cfg.supabaseUrl || '';
@@ -5001,9 +5034,9 @@ function debouncedPersistProject(project) {
   clearTimeout(_syncDebounceTimer);
   _syncDebounceTimer = setTimeout(async () => {
     try {
-      await fetch('/api/auth/projects/sync', {
+      await apiFetch('/api/auth/projects/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projects: [{
             id: project.id,
@@ -5031,9 +5064,9 @@ async function syncProjectsAfterLogin() {
 
     // Push local projects to server
     if (localProjects.length > 0) {
-      await fetch('/api/auth/projects/sync', {
+      await apiFetch('/api/auth/projects/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projects: localProjects.map(p => ({
             id: p.id,
@@ -5050,7 +5083,7 @@ async function syncProjectsAfterLogin() {
     }
 
     // Fetch merged list from server
-    const res = await fetch('/api/auth/projects', { headers: authHeaders() });
+    const res = await apiFetch('/api/auth/projects');
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.projects)) {
@@ -5093,7 +5126,7 @@ function mergeRemoteProjects(remoteProjects) {
 
 async function initAuth() {
   try {
-    const res = await fetch('/api/auth/config');
+    const res = await apiFetch('/api/auth/config');
     const cfg = await res.json();
     authEnabled = cfg.authEnabled;
     if (!authEnabled) return;
@@ -5125,7 +5158,7 @@ async function initAuth() {
 
 async function fetchAuthMe() {
   try {
-    const res = await fetch('/api/auth/me', { headers: authHeaders() });
+    const res = await apiFetch('/api/auth/me');
     const data = await res.json();
     isAuthenticated = data.authenticated;
     currentUser = data.user;
@@ -5140,7 +5173,7 @@ async function fetchAuthMe() {
 async function updateFreeTierDisplay() {
   if (!authEnabled) return;
   try {
-    const res = await fetch('/api/auth/free-tier', { headers: authHeaders() });
+    const res = await apiFetch('/api/auth/free-tier');
     freeTierUsage = await res.json();
   } catch { /* ignore */ }
 

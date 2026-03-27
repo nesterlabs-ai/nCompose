@@ -21,20 +21,82 @@ import {
 // ── In-memory fallback ──────────────────────────────────────────────────
 const freeTierUsageMap = new Map<string, number>();
 const authUsageMap = new Map<string, number>();
+const ipUsageMap = new Map<string, number>();
 
-const FINGERPRINT_COOKIE = 'ftfp';
+// ── IP helpers ──────────────────────────────────────────────────────────
 
-function getFingerprint(req: any, res: any): string {
-  const cookies = req.cookies || {};
-  let fp = cookies[FINGERPRINT_COOKIE];
-  if (!fp) {
-    fp = crypto.randomUUID();
-    res.cookie(FINGERPRINT_COOKIE, fp, {
-      httpOnly: true,
-      maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year
-      sameSite: 'lax',
-    });
+export function getClientIP(req: any): string {
+  return req.ip || req.connection?.remoteAddress || '0.0.0.0';
+}
+
+export const FINGERPRINT_COOKIE = 'ftfp';
+
+// ── HMAC signing for fingerprint cookies ────────────────────────────────
+
+/** Resolve the HMAC secret: env var > auto-generated (ephemeral, resets on restart). */
+let _fpSecret: string | null = null;
+function getFingerprintSecret(): string {
+  if (!_fpSecret) {
+    _fpSecret = config.fingerprint.secret || crypto.randomBytes(32).toString('hex');
+    if (!config.fingerprint.secret) {
+      console.warn('[fingerprint] No FINGERPRINT_SECRET set — using ephemeral secret (cookies reset on restart)');
+    }
   }
+  return _fpSecret;
+}
+
+function signFingerprint(fp: string): string {
+  const hmac = crypto.createHmac('sha256', getFingerprintSecret()).update(fp).digest('hex');
+  return `${fp}.${hmac}`;
+}
+
+function verifySignedFingerprint(signed: string): string | null {
+  const dotIdx = signed.lastIndexOf('.');
+  if (dotIdx === -1) return null;
+  const fp = signed.slice(0, dotIdx);
+  const sig = signed.slice(dotIdx + 1);
+  const expected = crypto.createHmac('sha256', getFingerprintSecret()).update(fp).digest('hex');
+  // Timing-safe comparison to prevent timing attacks
+  if (sig.length !== expected.length) return null;
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expectedBuf.length) return null;
+  if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
+  return fp;
+}
+
+function setFingerprintCookie(res: any, req: any, signedValue: string): void {
+  res.cookie(FINGERPRINT_COOKIE, signedValue, {
+    httpOnly: true,
+    maxAge: config.fingerprint.cookieMaxAgeMs,
+    sameSite: 'lax',
+    secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+  });
+}
+
+export function getFingerprint(req: any, res: any): string {
+  // Primary: client-side FingerprintJS visitor ID sent via header (not HMAC'd — client-controlled)
+  const headerFp = req.headers['x-fingerprint'];
+  if (headerFp && typeof headerFp === 'string') {
+    return headerFp;
+  }
+
+  // Fallback: server-generated HMAC-signed cookie
+  const cookies = req.cookies || {};
+  const raw = cookies[FINGERPRINT_COOKIE];
+
+  if (raw) {
+    // Try to verify existing signed cookie
+    const verified = verifySignedFingerprint(raw);
+    if (verified) return verified;
+
+    // Invalid signature — forge attempt or legacy unsigned cookie. Issue a fresh one.
+    console.warn(`[fingerprint] Invalid cookie signature, issuing new fingerprint`);
+  }
+
+  // No cookie or invalid — generate fresh
+  const fp = crypto.randomUUID();
+  setFingerprintCookie(res, req, signFingerprint(fp));
   return fp;
 }
 
@@ -67,6 +129,40 @@ export async function incrementFreeTierUsage(fingerprint: string): Promise<void>
       await dynamoIncrementFreeTierUsage(fingerprint);
     } catch (err) {
       console.error('[free-tier] DynamoDB increment failed:', err);
+    }
+  }
+}
+
+// ── IP-based usage tracking ──────────────────────────────────────────
+
+export async function getIPUsageInfo(
+  ip: string,
+): Promise<{ used: number; limit: number; remaining: number }> {
+  const limit = config.freeTier.maxFreeConversions;
+  let used: number;
+
+  if (isDynamoEnabled()) {
+    try {
+      used = await dynamoGetFreeTierUsage(`IP#${ip}`);
+    } catch (err) {
+      console.error('[ip-usage] DynamoDB read failed, falling back to memory:', err);
+      used = ipUsageMap.get(ip) || 0;
+    }
+  } else {
+    used = ipUsageMap.get(ip) || 0;
+  }
+
+  return { used, limit, remaining: Math.max(0, limit - used) };
+}
+
+export async function incrementIPUsage(ip: string): Promise<void> {
+  ipUsageMap.set(ip, (ipUsageMap.get(ip) || 0) + 1);
+
+  if (isDynamoEnabled()) {
+    try {
+      await dynamoIncrementFreeTierUsage(`IP#${ip}`);
+    } catch (err) {
+      console.error('[ip-usage] DynamoDB increment failed:', err);
     }
   }
 }
@@ -128,6 +224,9 @@ export function requireAuth(req: any, res: any, next: any): void {
 export async function requireAuthOrFree(req: any, res: any, next: any): Promise<void> {
   if (!isAuthEnabled()) { next(); return; }
 
+  const ip = getClientIP(req);
+  (req as any)._clientIP = ip;
+
   // Authenticated users: check auth usage limit
   if (req.user) {
     const info = await getAuthUsageInfo(req.user.sub);
@@ -139,13 +238,23 @@ export async function requireAuthOrFree(req: any, res: any, next: any): Promise<
     return;
   }
 
-  // Anonymous users: check free tier limit
+  // Anonymous users: check BOTH fingerprint AND IP (block if either exceeds limit)
   const fp = getFingerprint(req, res);
-  const info = await getFreeTierInfo(fp);
-  if (info.remaining > 0) {
-    req._fingerprint = fp;
-    next();
+  const [fpInfo, ipInfo] = await Promise.all([
+    getFreeTierInfo(fp),
+    getIPUsageInfo(ip),
+  ]);
+
+  if (fpInfo.remaining <= 0 || ipInfo.remaining <= 0) {
+    if (fpInfo.remaining <= 0 && ipInfo.remaining <= 0) {
+      console.warn(`[abuse] Blocked: fp=${fp} fpUsed=${fpInfo.used} ip=${ip} ipUsed=${ipInfo.used}`);
+    } else if (ipInfo.remaining <= 0) {
+      console.warn(`[abuse] Blocked by IP: ip=${ip} ipUsed=${ipInfo.used} (fp=${fp} fpUsed=${fpInfo.used})`);
+    }
+    res.status(401).json({ error: 'Free tier limit reached. Please sign in to continue.' });
     return;
   }
-  res.status(401).json({ error: 'Free tier limit reached. Please sign in to continue.' });
+
+  req._fingerprint = fp;
+  next();
 }

@@ -97,6 +97,7 @@ export interface ServerConfig {
   outputDir: string;
   defaultLLM: string;
   defaultDepth: number;
+  trustProxy: boolean;
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────────
@@ -135,11 +136,31 @@ export interface CognitoConfig {
   region: string;
 }
 
+// ── Rate Limiting ─────────────────────────────────────────────────────────
+
+export interface RateLimitConfig {
+  globalMaxRequests: number;
+  globalWindowMs: number;
+  expensiveMaxRequests: number;
+  expensiveWindowMs: number;
+}
+
+// ── Fingerprint ───────────────────────────────────────────────────────────
+
+export interface FingerprintConfig {
+  /** HMAC secret for signing fingerprint cookies. Auto-generated if not set (resets on restart). */
+  secret: string;
+  /** Cookie max age in milliseconds */
+  cookieMaxAgeMs: number;
+}
+
 // ── Free Tier ─────────────────────────────────────────────────────────────
 
 export interface FreeTierConfig {
   maxFreeConversions: number;
   maxAuthConversions: number;
+  maxFreeRefinesPerSession: number;
+  maxAuthRefinesPerSession: number;
 }
 
 // ── Preview ────────────────────────────────────────────────────────────────
@@ -212,6 +233,7 @@ export const config = {
     outputDir: envStr('SERVER_OUTPUT_DIR', './web_output'),
     defaultLLM: envStr('SERVER_DEFAULT_LLM', 'deepseek'),
     defaultDepth: envInt('SERVER_DEFAULT_DEPTH', 25),
+    trustProxy: envBool('TRUST_PROXY', true),
   } as ServerConfig,
 
   cli: {
@@ -239,10 +261,24 @@ export const config = {
     region: envStr('COGNITO_REGION', 'us-west-2'),
   } as CognitoConfig,
 
+  fingerprint: {
+    secret: envStr('FINGERPRINT_SECRET', ''),
+    cookieMaxAgeMs: envInt('FINGERPRINT_COOKIE_MAX_AGE_MS', 90 * 24 * 60 * 60 * 1000), // 90 days
+  } as FingerprintConfig,
+
   freeTier: {
     maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 5),
     maxAuthConversions: envInt('AUTH_MAX_CONVERSIONS', 20),
+    maxFreeRefinesPerSession: envInt('FREE_TIER_MAX_REFINES_PER_SESSION', 20),
+    maxAuthRefinesPerSession: envInt('AUTH_MAX_REFINES_PER_SESSION', 50),
   } as FreeTierConfig,
+
+  rateLimit: {
+    globalMaxRequests: envInt('RATE_LIMIT_GLOBAL_MAX', 60),
+    globalWindowMs: envInt('RATE_LIMIT_GLOBAL_WINDOW_MS', 60_000),
+    expensiveMaxRequests: envInt('RATE_LIMIT_EXPENSIVE_MAX', 10),
+    expensiveWindowMs: envInt('RATE_LIMIT_EXPENSIVE_WINDOW_MS', 900_000),
+  } as RateLimitConfig,
 
   preview: {
     port: envInt('PREVIEW_PORT', 5173),

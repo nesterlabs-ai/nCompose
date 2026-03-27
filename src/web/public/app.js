@@ -759,9 +759,9 @@ function restoreProject(projectId) {
   // Set URL input
   figmaUrlInput.value = project.figmaUrl || '';
 
-  // Sync framework checkboxes
+  // Sync framework checkboxes (hero only; panel URL bar has no duplicate chips)
   const frameworks = project.frameworks || [];
-  mainSplit.querySelectorAll('input[name="framework"]').forEach(cb => {
+  mainHero.querySelectorAll('input[name="framework"]').forEach(cb => {
     cb.checked = frameworks.includes(cb.value);
   });
 
@@ -1643,8 +1643,7 @@ function getActiveUrlInput() {
 }
 
 function getSelectedFrameworks() {
-  const scope = mainHero.classList.contains('hidden') ? mainSplit : mainHero;
-  const checkboxes = scope.querySelectorAll('input[name="framework"]:checked');
+  const checkboxes = mainHero.querySelectorAll('input[name="framework"]:checked');
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 
@@ -1759,12 +1758,8 @@ async function startConversion(skipDuplicateCheck) {
   mainHero.closest('.main')?.classList.add('split-visible');
   syncSidebarPrimaryNavToShellView();
 
-  // Sync URL and framework selection to panel for "convert another"
+  // Sync URL to panel for "convert another" (frameworks stay on hero inputs)
   figmaUrlInput.value = figmaUrl;
-  mainHero.querySelectorAll('input[name="framework"]').forEach((cb) => {
-    const panelCb = mainSplit.querySelector(`input[name="framework"][value="${cb.value}"]`);
-    if (panelCb) panelCb.checked = cb.checked;
-  });
   if (frameworks.length === 0) {
     showError('Please select at least one framework.');
     return;
@@ -4803,16 +4798,18 @@ if (chatPanelExpandBtn) {
   chatPanelExpandBtn.addEventListener('click', () => applyChatPanelCollapsed(false, true));
 }
 
+const PANEL_LEFT_MIN_PX = 280;
+const PANEL_LEFT_MAX_PX = 360;
+
 document.addEventListener('mousemove', (e) => {
   if (!isResizing) return;
   if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
   const mainEl = document.querySelector('.main');
   const mainRect = mainEl.getBoundingClientRect();
-  const newWidth = e.clientX - mainRect.left;
-  const percent = (newWidth / mainRect.width) * 100;
-  if (percent > 20 && percent < 65) {
-    panelLeft.style.width = percent + '%';
-  }
+  const rawPx = e.clientX - mainRect.left;
+  const clampedPx = Math.max(PANEL_LEFT_MIN_PX, Math.min(rawPx, PANEL_LEFT_MAX_PX));
+  const percent = (clampedPx / mainRect.width) * 100;
+  panelLeft.style.width = percent + '%';
 });
 
 document.addEventListener('mouseup', () => {

@@ -887,22 +887,34 @@ body {
   width: 0 !important;
   min-width: 0 !important;
   max-width: 0 !important;
-  border-right: none;
+  border-right-width: 0;
+  border-right-color: transparent;
   margin: 0;
   padding: 0;
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
-  transition: width 0.22s ease, min-width 0.22s ease, opacity 0.18s ease;
 }
 
 .main-split--chat-collapsed .resize-handle {
-  display: none;
+  width: 0 !important;
+  min-width: 0 !important;
+  opacity: 0;
+  cursor: default;
+  pointer-events: none;
 }
 
 .main-split--chat-collapsed .panel--right {
   flex: 1;
   min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel--left,
+  .resize-handle {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
 }
 
 .chat-panel-toggle {
@@ -1353,9 +1365,21 @@ body {
 }
 
 .panel--left {
+  flex: 0 0 auto;
   width: 35%;
   min-width: 280px;
+  max-width: 360px;
   border-right: 1px solid var(--border);
+  box-sizing: border-box;
+  transition:
+    width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    max-width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.34s ease,
+    border-width 0.28s ease,
+    border-color 0.28s ease,
+    margin 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.38s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .panel--right {
@@ -1569,7 +1593,11 @@ body {
   background: transparent;
   flex-shrink: 0;
   position: relative;
-  transition: background 0.2s ease;
+  transition:
+    width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.32s ease,
+    background 0.2s ease;
 }
 
 .resize-handle::after {
@@ -3146,9 +3174,19 @@ body {
   .panel--left {
     width: 100% !important;
     min-width: 0;
+    max-width: none;
     max-height: 45vh;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    transition:
+      max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+      opacity 0.35s ease,
+      border-bottom-width 0.28s ease,
+      border-bottom-color 0.28s ease,
+      margin 0.35s ease,
+      padding 0.35s ease,
+      width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+      min-width 0.38s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .panel--right {
@@ -3159,8 +3197,24 @@ body {
     display: none;
   }
 
+  /* Stack chat above preview; collapse animates height (desktop rules use width: 0) */
+  .main-split.visible {
+    flex-direction: column;
+  }
+
   .main-split--chat-collapsed .panel--left {
-    display: none;
+    width: 100% !important;
+    max-width: none;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    border-bottom-width: 0;
+    border-bottom-color: transparent;
+    margin: 0;
+    padding: 0;
+    flex: 0 0 auto;
   }
 
   .main-split--chat-collapsed .panel--right {

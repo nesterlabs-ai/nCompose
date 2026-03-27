@@ -139,6 +139,7 @@ export interface CognitoConfig {
 
 export interface FreeTierConfig {
   maxFreeConversions: number;
+  maxAuthConversions: number;
 }
 
 // ── Preview ────────────────────────────────────────────────────────────────
@@ -239,7 +240,8 @@ export const config = {
   } as CognitoConfig,
 
   freeTier: {
-    maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 10),
+    maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 5),
+    maxAuthConversions: envInt('AUTH_MAX_CONVERSIONS', 20),
   } as FreeTierConfig,
 
   preview: {

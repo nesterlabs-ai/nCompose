@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import archiver from 'archiver';
@@ -18,7 +19,7 @@ import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
-import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, isAuthEnabled } from './auth/index.js';
+import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, isAuthEnabled } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
 import { isDynamoEnabled, saveUserProject } from './db/index.js';
 
@@ -52,6 +53,10 @@ interface SessionEntry {
 }
 
 const sessionStore = new Map<string, SessionEntry>();
+
+// In-memory token storage with TTL (24 hours)
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const tokenStore = new Map<string, { token: string; createdAt: number }>();
 
 function getSession(id: string): ConversionResult | undefined {
   const entry = sessionStore.get(id);
@@ -172,6 +177,20 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     }
   } catch { /* skip */ }
 
+  // For shadcn PATH A: derive updatedShadcnSource + shadcnComponentName from
+  // shadcnSubComponents (which were read from {name}.tsx files on disk).
+  // If there's exactly one sub-component AND the main mitosis source has the
+  // shadcn/ui codegen marker, it's a PATH A shadcn result.
+  let updatedShadcnSource: string | undefined;
+  let shadcnComponentName: string | undefined;
+  if (
+    shadcnSubComponents.length === 1 &&
+    mitosisSource.includes('shadcn/ui codegen')
+  ) {
+    shadcnComponentName = shadcnSubComponents[0].shadcnComponentName;
+    updatedShadcnSource = shadcnSubComponents[0].updatedShadcnSource;
+  }
+
   return {
     componentName,
     mitosisSource,
@@ -180,6 +199,8 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     componentPropertyDefinitions,
     chartComponents,
     shadcnSubComponents: shadcnSubComponents.length > 0 ? shadcnSubComponents : undefined,
+    updatedShadcnSource,
+    shadcnComponentName,
     elementMap,
   } as ConversionResult;
 }
@@ -200,12 +221,17 @@ function getSessionWithDiskFallback(sessionId: string): ConversionResult | undef
   return diskResult;
 }
 
-// Periodic cleanup of expired sessions (every 10 minutes)
+// Periodic cleanup of expired sessions and tokens (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
   for (const [id, entry] of sessionStore) {
     if (now - entry.createdAt > SESSION_TTL_MS) {
       sessionStore.delete(id);
+    }
+  }
+  for (const [id, entry] of tokenStore) {
+    if (now - entry.createdAt > TOKEN_TTL_MS) {
+      tokenStore.delete(id);
     }
   }
 }, 10 * 60 * 1000);
@@ -234,23 +260,55 @@ app.use(express.static(join(__dirname, 'public')));
 app.use('/api/auth', authRoutes);
 
 /**
+ * POST /api/store-token — Store Figma token server-side, return a tokenId
+ */
+app.post('/api/store-token', (req: any, res: any) => {
+  const { figmaToken } = req.body;
+  if (!figmaToken || typeof figmaToken !== 'string') {
+    return res.status(400).json({ error: 'figmaToken is required' });
+  }
+  const tokenId = crypto.randomUUID();
+  tokenStore.set(tokenId, { token: figmaToken, createdAt: Date.now() });
+  res.json({ tokenId });
+});
+
+/**
+ * GET /api/verify-token/:id — Check if a stored token is still valid
+ */
+app.get('/api/verify-token/:id', (req: any, res: any) => {
+  const entry = tokenStore.get(req.params.id);
+  if (!entry || Date.now() - entry.createdAt > TOKEN_TTL_MS) {
+    if (entry) tokenStore.delete(req.params.id);
+    return res.json({ valid: false });
+  }
+  res.json({ valid: true });
+});
+
+/**
  * POST /api/convert — SSE endpoint
  *
- * Accepts JSON body: { figmaUrl, figmaToken, frameworks }
+ * Accepts JSON body: { figmaUrl, tokenId, frameworks }
  * Streams progress via Server-Sent Events, then sends completion data.
  */
 app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
-  const { figmaUrl, figmaToken, frameworks, name, llm: requestedLLM, template } = req.body;
+  const { figmaUrl, tokenId, frameworks, name, llm: requestedLLM, template } = req.body;
 
   // Validate inputs
   if (!figmaUrl || typeof figmaUrl !== 'string') {
     res.status(400).json({ error: 'figmaUrl is required' });
     return;
   }
-  if (!figmaToken || typeof figmaToken !== 'string') {
-    res.status(400).json({ error: 'figmaToken is required' });
+  if (!tokenId || typeof tokenId !== 'string') {
+    res.status(400).json({ error: 'tokenId is required' });
     return;
   }
+  const tokenEntry = tokenStore.get(tokenId);
+  if (!tokenEntry || Date.now() - tokenEntry.createdAt > TOKEN_TTL_MS) {
+    if (tokenEntry) tokenStore.delete(tokenId);
+    res.status(401).json({ error: 'Token expired. Please re-enter your Figma token.' });
+    return;
+  }
+  const figmaToken = tokenEntry.token;
 
   const selectedFrameworks: Framework[] = (frameworks || ['react'])
     .filter((f: string) => SUPPORTED_FRAMEWORKS.includes(f as Framework));
@@ -321,9 +379,11 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
       clearInterval(heartbeat);
 
       try {
-        // Increment free tier usage for anonymous users
+        // Increment usage counters
         if ((req as any)._fingerprint) {
           await incrementFreeTierUsage((req as any)._fingerprint);
+        } else if (req.user) {
+          await incrementAuthUsage(req.user.sub);
         }
 
         // Store result in session
@@ -452,20 +512,225 @@ app.post('/api/convert', requireAuthOrFree as any, (req: any, res: any) => {
 });
 
 /**
+ * Fallback: apply visual edit CSS changes directly to the original CSS string.
+ * Used when the LLM drops the CSS section during a visual-edit refinement.
+ */
+function applyVisualEditsToCSS(
+  css: string,
+  visualEdits: Record<string, { changes: Record<string, string | boolean>; tagName?: string; textContent?: string }>,
+  elementMap: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>,
+): string {
+  let result = css;
+
+  for (const [veId, item] of Object.entries(visualEdits)) {
+    const entry = elementMap[veId];
+    // Build effective element info: prefer elementMap, fall back to client-provided metadata
+    const effectiveTagName = entry?.tagName || item.tagName || 'unknown';
+    const effectiveClassName = entry?.className || '';
+    const effectiveTextContent = entry?.textContent || item.textContent || '';
+
+    if (!entry && !item.tagName) {
+      console.log(`[visual-edit-css] No elementMap entry and no client metadata for veId="${veId}", skipping`);
+      continue;
+    }
+
+    console.log(`[visual-edit-css] Processing veId="${veId}" tag=<${effectiveTagName}> class="${effectiveClassName || '(none)'}" text="${effectiveTextContent.substring(0, 30)}"`);
+
+    // Alias entry for remaining code that uses entry.className / entry.tagName
+    const entryForCSS = { tagName: effectiveTagName, className: effectiveClassName, textContent: effectiveTextContent };
+
+    for (const [prop, value] of Object.entries(item.changes)) {
+      if (prop === 'delete' || typeof value !== 'string') continue;
+
+      // Convert camelCase CSS prop to kebab-case
+      const kebabProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
+      console.log(`[visual-edit-css]   Applying ${kebabProp}: ${value}`);
+
+      let applied = false;
+
+      // Strategy 1: Match by className (most reliable)
+      if (entryForCSS.className) {
+        const classNames = entryForCSS.className.split(/\s+/);
+        for (const cls of classNames) {
+          const escaped = cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // Try to update existing property in a rule for this class
+          const selectorPattern = new RegExp(
+            `(\\.${escaped}\\s*\\{[^}]*?)(${kebabProp}\\s*:\\s*)[^;]*(;)`,
+          );
+          if (selectorPattern.test(result)) {
+            result = result.replace(selectorPattern, `$1$2${value}$3`);
+            applied = true;
+            console.log(`[visual-edit-css]   ✓ Updated existing "${kebabProp}" in .${cls}`);
+            break;
+          }
+        }
+
+        // If property wasn't found in existing rules, append it to the first matching class block
+        if (!applied) {
+          for (const cls of classNames) {
+            const escaped = cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const blockPattern = new RegExp(
+              `(\\.${escaped}\\s*\\{)([^}]*)\\}`,
+            );
+            const match = result.match(blockPattern);
+            if (match) {
+              const existingBlock = match[2].trimEnd();
+              const semi = existingBlock.endsWith(';') ? '' : ';';
+              result = result.replace(
+                blockPattern,
+                `$1${existingBlock}${semi}\n  ${kebabProp}: ${value};\n}`,
+              );
+              applied = true;
+              console.log(`[visual-edit-css]   ✓ Appended "${kebabProp}" to .${cls}`);
+              break;
+            }
+          }
+        }
+
+        // Strategy 1c: No CSS rule exists for any class — create one
+        if (!applied) {
+          const primaryClass = classNames[0];
+          result += `\n.${primaryClass} {\n  ${kebabProp}: ${value};\n}\n`;
+          applied = true;
+          console.log(`[visual-edit-css]   ✓ Created new rule .${primaryClass} { ${kebabProp}: ${value} }`);
+        }
+      }
+
+      // Strategy 2: Match by tagName (for elements without className)
+      if (!applied && entryForCSS.tagName) {
+        const tag = entryForCSS.tagName.toLowerCase();
+        const tagSelectorPattern = new RegExp(
+          `((?:^|\\n)\\s*${tag}\\s*\\{[^}]*?)(${kebabProp}\\s*:\\s*)[^;]*(;)`,
+        );
+        if (tagSelectorPattern.test(result)) {
+          result = result.replace(tagSelectorPattern, `$1$2${value}$3`);
+          applied = true;
+          console.log(`[visual-edit-css]   ✓ Updated existing "${kebabProp}" in ${tag} selector`);
+        }
+      }
+
+      if (!applied) {
+        console.log(`[visual-edit-css]   ✗ Could not apply "${kebabProp}: ${value}" — no matching selector found`);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Strip previously-injected CSS from framework output so we can re-inject with updated CSS.
+ * Each framework injects CSS differently; this reverses that injection.
+ */
+function stripInjectedCSS(code: string, framework: Framework): string {
+  switch (framework) {
+    case 'react':
+    case 'solid':
+      return code.replace(/<style>\{`[\s\S]*?`\}<\/style>/g, '');
+    case 'vue':
+      // Remove the entire <style scoped>...</style> section
+      return code.replace(/<style scoped>[\s\S]*?<\/style>\s*/g, '');
+    case 'svelte':
+      return code.replace(/<style>[\s\S]*?<\/style>\s*/g, '');
+    case 'angular':
+      // Reset styles array to empty
+      return code.replace(/styles:\s*\[\s*`[\s\S]*?`\s*,?\s*\]/g, 'styles: []');
+    default:
+      return code;
+  }
+}
+
+/**
+ * Build a floating-edit prompt server-side from the user's raw request + element metadata.
+ */
+function buildFloatingEditPrompt(
+  userRequest: string,
+  elementMap: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>,
+  dataVeId: string,
+  variantLabel?: string | null,
+): string {
+  const entry = elementMap[dataVeId];
+  if (!entry) return userRequest;
+
+  let variantDetails = '';
+  if (variantLabel && variantLabel !== 'undefined / undefined') {
+    variantDetails = ` [Clicked inside variant state: "${variantLabel}"]`;
+  }
+  const textSnippet = (entry.textContent || '').replace(/\n/g, ' ').substring(0, 30).trim();
+
+  return `You are an expert Frontend Developer. Please update the underlying React component code based on the following user request.
+
+IMPORTANT: Only modify the SPECIFIC element identified below. Do NOT change any other elements in the component.
+
+Target Element: <${entry.tagName.toUpperCase()}> (data-ve-id="${dataVeId}") containing text "${textSnippet}"${variantDetails}
+
+User Request: "${userRequest}"
+
+Return the fully rewritten React component code incorporating this requested modification ONLY to the target element. Leave all other elements unchanged.`;
+}
+
+/**
+ * Build a batch visual-edit save prompt server-side.
+ */
+function buildVisualEditSavePrompt(
+  visualEdits: Record<string, { changes: Record<string, string | boolean>; tagName?: string; textContent?: string }>,
+  elementMap: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>,
+  isShadcn: boolean,
+): string {
+  const cssHint = isShadcn
+    ? 'Apply these changes using Tailwind utility classes or inline styles within the React source.'
+    : 'Apply these changes by updating the CSS rules in the ---CSS--- section. Find the CSS selector that targets the element (by its class name) and update the relevant CSS property there. Do NOT use inline styles or css={{}}. You MUST include the complete ---CSS--- section with ALL existing rules plus the modifications.';
+
+  const lines: string[] = [
+    'You are an expert Frontend Developer. Please update the component code to permanently apply the following visual style edits.',
+    cssHint,
+    '',
+  ];
+
+  let i = 1;
+  for (const [veId, item] of Object.entries(visualEdits)) {
+    const entry = elementMap[veId];
+    // Use elementMap entry when available, fall back to client-provided metadata
+    const tagName = entry?.tagName || item.tagName || 'UNKNOWN';
+    const textSnippet = (entry?.textContent || item.textContent || '').replace(/\n/g, ' ').substring(0, 30).trim();
+    const className = entry?.className || '';
+
+    lines.push(`${i}. Target Element: <${tagName.toUpperCase()}>${className ? ` class="${className}"` : ''} containing text "${textSnippet}"`);
+    lines.push('   Updates to apply:');
+
+    for (const [prop, value] of Object.entries(item.changes)) {
+      if (prop === 'delete') {
+        lines.push('   - -> Remove/Delete this element completely');
+      } else {
+        lines.push(`   - -> Change CSS property '${prop}' to '${value}'`);
+      }
+    }
+    lines.push('');
+    i++;
+  }
+
+  if (!isShadcn) {
+    lines.push('IMPORTANT: Output the complete .lite.tsx code followed by ---CSS--- and the complete updated CSS. Do NOT omit the CSS section.');
+  }
+  lines.push('Return the fully rewritten component code containing these exact modifications.');
+  return lines.join('\n');
+}
+
+/**
  * POST /api/refine — SSE endpoint for iterative refinement
  *
- * Accepts JSON body: { sessionId, prompt }
+ * Accepts JSON body: { sessionId, userRequest?, dataVeId?, variantLabel?, variantProps?, visualEdits? }
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', (req: any, res: any) => {
-  const { sessionId, prompt, selectedElement, chatHistory } = req.body;
+  const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits } = req.body;
 
   if (!sessionId || typeof sessionId !== 'string') {
     res.status(400).json({ error: 'sessionId is required' });
     return;
   }
-  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-    res.status(400).json({ error: 'prompt is required' });
+  if (!userRequest && !visualEdits) {
+    res.status(400).json({ error: 'userRequest or visualEdits is required' });
     return;
   }
 
@@ -481,13 +746,6 @@ app.post('/api/refine', (req: any, res: any) => {
   if (!session) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
-  }
-
-  // Seed conversation from client chat history if server has none (re-hydrated session)
-  if (session.conversation.length === 0 && Array.isArray(chatHistory) && chatHistory.length > 0) {
-    session.conversation = chatHistory
-      .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-      .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
   }
 
   // Set SSE headers
@@ -522,6 +780,7 @@ app.post('/api/refine', (req: any, res: any) => {
   try {
     llmProvider = createLLMProvider(session.llmProvider as any);
   } catch (err) {
+    clearInterval(heartbeat);
     const msg = err instanceof Error ? err.message : String(err);
     sendEvent('error', { message: `Failed to create LLM provider: ${msg}` });
     res.end();
@@ -539,22 +798,90 @@ app.post('/api/refine', (req: any, res: any) => {
     currentCSS = session.result.css;
   }
 
+  // For shadcn components, the thin wrapper just imports the sub-component.
+  // The actual editable elements live in updatedShadcnSource.
+  // Swap currentMitosis to the sub-component code so the LLM can see and modify it.
+  let refiningShadcnSub = false;
+  const isShadcnWrapper = currentMitosis.includes('shadcn/ui codegen');
+  if (isShadcnWrapper && session.result.updatedShadcnSource) {
+    currentMitosis = `// shadcn/ui codegen\n${session.result.updatedShadcnSource}`;
+    refiningShadcnSub = true;
+    console.log(`[refine] Shadcn sub-component swap: sending updatedShadcnSource (${session.result.updatedShadcnSource.length} chars) instead of thin wrapper`);
+  }
+
+  // Construct the effective prompt server-side from raw payload data
+  let effectivePrompt: string;
+  let resolvedSelectedElement: any;
+
+  const eMap = session.result.elementMap || {};
+  const isShadcn = currentMitosis.includes('shadcn/ui codegen');
+  if (visualEdits && typeof visualEdits === 'object') {
+    // Batch visual edit save
+    effectivePrompt = buildVisualEditSavePrompt(visualEdits, eMap, isShadcn);
+  } else if (dataVeId && typeof dataVeId === 'string' && eMap[dataVeId]) {
+    // Floating prompt targeting a specific element
+    effectivePrompt = buildFloatingEditPrompt(userRequest.trim(), eMap, dataVeId, variantLabel);
+    const entry = eMap[dataVeId];
+    resolvedSelectedElement = {
+      dataVeId,
+      tagName: entry.tagName,
+      textContent: entry.textContent,
+      variantLabel: variantLabel || null,
+      variantProps: variantProps || null,
+    };
+  } else {
+    // Regular chat — raw user request
+    effectivePrompt = userRequest.trim();
+  }
+
   refineComponent({
     currentMitosis,
     currentCSS,
-    userPrompt: prompt.trim(),
+    userPrompt: effectivePrompt,
     conversation: session.conversation,
     llmProvider,
     frameworks: session.frameworks,
     componentName: session.result.componentName,
-    selectedElement: selectedElement && typeof selectedElement === 'object' ? selectedElement : undefined,
+    selectedElement: resolvedSelectedElement,
     elementMap: session.result.elementMap,
     onStep: (step) => sendEvent('step', { message: step }),
   })
     .then((refined) => {
       clearInterval(heartbeat);
-      // Safety net: if LLM dropped CSS during refinement, re-inject the original CSS
-      if (!refined.css && currentCSS) {
+
+      // For visual edits: always ensure CSS changes are applied,
+      // regardless of whether the LLM included/updated CSS correctly.
+      if (visualEdits && typeof visualEdits === 'object') {
+        console.log(`[refine] Visual edits detected. LLM returned css: ${refined.css ? refined.css.length + ' chars' : '(none)'}. currentCSS: ${currentCSS ? currentCSS.length + ' chars' : '(none)'}`);
+        console.log(`[refine] Visual edits payload:`, JSON.stringify(visualEdits));
+        console.log(`[refine] ElementMap keys for edits:`, Object.keys(visualEdits).map(k => `${k} → ${JSON.stringify(eMap[k] || 'NOT FOUND')}`));
+        const baseCSS = refined.css || currentCSS;
+        if (baseCSS) {
+          const patchedCSS = applyVisualEditsToCSS(baseCSS, visualEdits, eMap);
+          if (patchedCSS !== baseCSS) {
+            console.log(`[refine] CSS was patched (base ${baseCSS.length} → patched ${patchedCSS.length} chars)`);
+          } else {
+            console.log(`[refine] CSS patch produced no changes — edits may already be applied by LLM or no matching selectors`);
+          }
+          // Always set the patched CSS (even if unchanged, to guarantee consistency)
+          refined.css = patchedCSS;
+          // Update mitosis source with patched CSS
+          if (refined.mitosisSource.includes('---CSS---')) {
+            refined.mitosisSource = refined.mitosisSource.replace(/---CSS---[\s\S]*$/, `---CSS---\n${patchedCSS}`);
+          } else {
+            refined.mitosisSource = `${refined.mitosisSource}\n---CSS---\n${patchedCSS}`;
+          }
+          // Strip existing CSS injection from framework outputs and re-inject with patched CSS
+          for (const fw of session.frameworks) {
+            const code = refined.frameworkOutputs[fw];
+            if (code && !code.startsWith('// Error')) {
+              const stripped = stripInjectedCSS(code, fw);
+              refined.frameworkOutputs[fw] = injectCSS(stripped, patchedCSS, fw);
+            }
+          }
+        }
+      } else if (!refined.css && currentCSS) {
+        // Regular (non-visual-edit) refine: re-inject original CSS if LLM dropped it
         console.log(`[refine] LLM dropped CSS — re-injecting original CSS (${currentCSS.length} chars)`);
         refined.css = currentCSS;
         refined.mitosisSource = `${refined.mitosisSource}\n---CSS---\n${currentCSS}`;
@@ -567,16 +894,30 @@ app.post('/api/refine', (req: any, res: any) => {
       }
 
       // Update session
-      session.result.mitosisSource = refined.mitosisSource;
-      for (const [fw, code] of Object.entries(refined.frameworkOutputs)) {
-        session.result.frameworkOutputs[fw as Framework] = code;
+      if (refiningShadcnSub) {
+        // Shadcn sub-component refinement: update the sub-component source, NOT the wrapper
+        const updatedSubSource = refined.frameworkOutputs.react || refined.mitosisSource.replace(/^\/\/ shadcn\/ui codegen\n?/, '');
+        session.result.updatedShadcnSource = updatedSubSource;
+        // Also update the shadcnSubComponents array entry
+        if (session.result.shadcnSubComponents && session.result.shadcnComponentName) {
+          const sub = session.result.shadcnSubComponents.find(
+            (s: any) => s.shadcnComponentName === session.result.shadcnComponentName,
+          );
+          if (sub) sub.updatedShadcnSource = updatedSubSource;
+        }
+        console.log(`[refine] Shadcn sub-component updated (${updatedSubSource.length} chars). Wrapper unchanged.`);
+      } else {
+        session.result.mitosisSource = refined.mitosisSource;
+        for (const [fw, code] of Object.entries(refined.frameworkOutputs)) {
+          session.result.frameworkOutputs[fw as Framework] = code;
+        }
       }
       session.result.css = refined.css || session.result.css;
       if (refined.elementMap) session.result.elementMap = refined.elementMap;
 
       // Append to conversation history
       session.conversation.push(
-        { role: 'user', content: `[Current code provided]\n\n${prompt.trim()}` },
+        { role: 'user', content: `[Current code provided]\n\n${effectivePrompt}` },
         { role: 'assistant', content: refined.assistantMessage },
       );
 
@@ -585,13 +926,35 @@ app.post('/api/refine', (req: any, res: any) => {
         session.conversation = session.conversation.slice(-40);
       }
 
-      console.log(`[refine] Session updated. React code length: ${session.result.frameworkOutputs.react?.length || 0}`);
+      console.log(`[refine] Session updated. React code length: ${session.result.frameworkOutputs.react?.length || 0}. CSS length: ${session.result.css?.length || 0}`);
+      if (refiningShadcnSub) {
+        console.log(`[refine] Shadcn updatedShadcnSource length: ${session.result.updatedShadcnSource?.length || 0}`);
+      }
 
-      sendEvent('complete', {
+      // Verification: check if visual edit values are present in the final output
+      if (visualEdits && typeof visualEdits === 'object') {
+        const checkTarget = refiningShadcnSub ? (session.result.updatedShadcnSource || '') : (session.result.frameworkOutputs.react || '');
+        for (const [veId, item] of Object.entries(visualEdits as Record<string, { changes: Record<string, string | boolean> }>)) {
+          for (const [prop, value] of Object.entries(item.changes)) {
+            if (typeof value !== 'string') continue;
+            const inCSS = (session.result.css || '').includes(value);
+            const inCode = checkTarget.includes(value);
+            console.log(`[refine-verify] veId="${veId}" ${prop}="${value}" → inCSS: ${inCSS}, inCode: ${inCode}`);
+          }
+        }
+      }
+
+      const completePayload: any = {
         frameworkOutputs: session.result.frameworkOutputs,
         mitosisSource: session.result.mitosisSource,
         elementMap: session.result.elementMap,
-      });
+      };
+      // Include updated shadcn data so the client can update its state
+      if (refiningShadcnSub) {
+        completePayload.updatedShadcnSource = session.result.updatedShadcnSource;
+        completePayload.shadcnSubComponents = session.result.shadcnSubComponents;
+      }
+      sendEvent('complete', completePayload);
       res.end();
     })
     .catch((err) => {

@@ -735,7 +735,7 @@ export function cleanLLMOutput(code: string, expectedRootTag?: string, rootWidth
   const { jsx, css } = extractStyleBlock(cleaned);
   const fixedClassName = fixClassNameAttribute(jsx.trim());
   const fixedSVG = fixSVGAttributes(fixedClassName);
-  const fixedStyles = fixInlineStyleStrings(fixedSVG);
+  const fixedStyles = stripInlineCSS(fixInlineStyleStrings(fixedSVG)); // strip any new css={{}} created by fixInlineStyleStrings
   const strippedSVG = stripRedundantSVGFills(fixedStyles);
   const wrapped = wrapBareJSX(strippedSVG);
   const fixedRoot = fixRootElement(wrapped, expectedRootTag);

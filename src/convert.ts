@@ -50,7 +50,7 @@ import { generateFrameworkCode } from './compile/generate.js';
 import { injectDataVeIds } from './compile/element-mapping.js';
 import { config } from './config.js';
 import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent, ShadcnSubComponent } from './types/index.js';
-import { isChartSection, extractChartMetadata } from './figma/chart-detection.js';
+import { isChartSection, isChartSectionAsync, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
 import { isShadcnSupported, getShadcnComponentType } from './shadcn/shadcn-types.js';
 import { generateShadcnComponentSet, generateShadcnSingleComponent, generateShadcnStructuralComponent } from './shadcn/shadcn-codegen.js';
@@ -893,9 +893,26 @@ export async function convertFigmaToCode(
     && isShadcnSupported(rootNameFormRole);
   console.log(`[convert] isStructuralShadcn=${isStructuralShadcn}`);
   const isPage = !isCompSet && !isStructuralShadcn && isMultiSectionPage(enhanced);
-  const isChart = !isCompSet && !isPage && !isStructuralShadcn && isChartSection(rawDocumentNode);
+
+  // Create LLM provider early for chart detection (async verification of ambiguous cases)
+  const chartDetectionLlm = createLLMProvider(options.llm);
+  const isChart = !isCompSet && !isPage && !isStructuralShadcn
+    && await isChartSectionAsync(rawDocumentNode, chartDetectionLlm);
+
+  // For COMPONENT_SET, check if any variant is a chart
+  let isCompSetChart = false;
+  if (isCompSet) {
+    const rawChildren = rawDocumentNode?.children ?? [];
+    for (const v of rawChildren) {
+      if (v && await isChartSectionAsync(v, chartDetectionLlm)) {
+        isCompSetChart = true;
+        break;
+      }
+    }
+  }
+
   const selectedPath = isCompSet
-    ? (rawDocumentNode?.children?.[0] && isChartSection(rawDocumentNode.children[0]) ? 'A-Chart' : 'A')
+    ? (isCompSetChart ? 'A-Chart' : 'A')
     : isStructuralShadcn ? 'B-Structural' : isPage ? 'C' : isChart ? 'Chart' : 'B';
   const pathLabels: Record<string, string> = {
     'A': 'A (COMPONENT_SET — variant-aware)',
@@ -920,11 +937,7 @@ export async function convertFigmaToCode(
   // For chart COMPONENT_SETs, generate a chart for EACH variant.
   if (isComponentSet(enhanced)) {
     const rawChildren = rawDocumentNode?.children ?? [];
-    // Check if ANY variant is a chart — not just the first one.
-    // The first variant may be a minimal "condensed" version with few shapes,
-    // while fuller variants have complete chart structures with axes and grid.
-    const chartVariant = rawChildren.find((v: any) => v && isChartSection(v));
-    if (chartVariant) {
+    if (isCompSetChart) {
       // Derive component name from the COMPONENT_SET name (e.g. "_Activitiy gauge" → "ActivityGaugeChart")
       const setName = rawDocumentNode?.name ?? enhanced?.nodes?.[0]?.name ?? '';
 

@@ -332,6 +332,7 @@ export async function generateCompoundSection(
   templateMode?: boolean,
   rawSectionNode?: any,
   existingChartNames?: Set<string>,
+  detectedChartNodeNames?: Set<string>,
 ): Promise<CompoundSectionResult> {
   const slug = sectionName.toLowerCase().replace(/\s+/g, '-');
 
@@ -340,9 +341,14 @@ export async function generateCompoundSection(
   // widgets (plain FRAMEs used as inputs, buttons, etc. in Figma designs
   // that don't use component instances). These are then routed through
   // shadcn codegen instead of being rendered as raw <div>s.
+  // Pass LLM-detected chart names so discovery uses those instead of
+  // fragile keyword matching (prevents tables from being misidentified as charts).
   const discovery = discoverComponents(
     sectionNode, rawSectionNode,
-    templateMode ? { deepRecurse: true } : undefined,
+    {
+      ...(templateMode ? { deepRecurse: true } : {}),
+      ...(detectedChartNodeNames ? { chartNodeNames: detectedChartNodeNames } : {}),
+    },
   );
 
   if (discovery.components.length === 0) {
@@ -407,6 +413,16 @@ export async function generateCompoundSection(
         .replace(/^[0-9]+/, ''); // strip leading digits — JS identifiers can't start with numbers
       const safePascal = pascal || 'Component'; // fallback if name was all digits
       let chartComponentName = safePascal + (safePascal.toLowerCase().endsWith('chart') ? '' : 'Chart');
+      // Avoid collision with Recharts component names (BarChart, PieChart, LineChart, etc.)
+      const RECHARTS_RESERVED = new Set([
+        'BarChart', 'LineChart', 'AreaChart', 'PieChart', 'RadarChart', 'RadialBarChart',
+        'ScatterChart', 'FunnelChart', 'Treemap', 'ComposedChart', 'ResponsiveContainer',
+        'CartesianGrid', 'XAxis', 'YAxis', 'Tooltip', 'Legend', 'Cell', 'Label', 'LabelList',
+        'Pie', 'Bar', 'Line', 'Area', 'Radar', 'Scatter', 'Funnel', 'RadialBar',
+      ]);
+      if (RECHARTS_RESERVED.has(chartComponentName)) {
+        chartComponentName = `Custom${chartComponentName}`;
+      }
       // Deduplicate: if another chart already has this name, append a suffix
       if (usedChartNames.has(chartComponentName)) {
         let suffix = 2;

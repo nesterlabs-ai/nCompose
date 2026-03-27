@@ -20,6 +20,7 @@ import {
 
 // ── In-memory fallback ──────────────────────────────────────────────────
 const freeTierUsageMap = new Map<string, number>();
+const authUsageMap = new Map<string, number>();
 
 const FINGERPRINT_COOKIE = 'ftfp';
 
@@ -70,6 +71,40 @@ export async function incrementFreeTierUsage(fingerprint: string): Promise<void>
   }
 }
 
+// ── Authenticated user usage tracking ───────────────────────────────
+
+export async function getAuthUsageInfo(
+  userSub: string,
+): Promise<{ used: number; limit: number; remaining: number }> {
+  const limit = config.freeTier.maxAuthConversions;
+  let used: number;
+
+  if (isDynamoEnabled()) {
+    try {
+      used = await dynamoGetFreeTierUsage(`auth:${userSub}`);
+    } catch (err) {
+      console.error('[auth-usage] DynamoDB read failed, falling back to memory:', err);
+      used = authUsageMap.get(userSub) || 0;
+    }
+  } else {
+    used = authUsageMap.get(userSub) || 0;
+  }
+
+  return { used, limit, remaining: Math.max(0, limit - used) };
+}
+
+export async function incrementAuthUsage(userSub: string): Promise<void> {
+  authUsageMap.set(userSub, (authUsageMap.get(userSub) || 0) + 1);
+
+  if (isDynamoEnabled()) {
+    try {
+      await dynamoIncrementFreeTierUsage(`auth:${userSub}`);
+    } catch (err) {
+      console.error('[auth-usage] DynamoDB increment failed:', err);
+    }
+  }
+}
+
 // ── Middleware ───────────────────────────────────────────────────────────
 
 export async function attachUser(req: any, _res: any, next: any): Promise<void> {
@@ -92,8 +127,19 @@ export function requireAuth(req: any, res: any, next: any): void {
 
 export async function requireAuthOrFree(req: any, res: any, next: any): Promise<void> {
   if (!isAuthEnabled()) { next(); return; }
-  if (req.user) { next(); return; }
 
+  // Authenticated users: check auth usage limit
+  if (req.user) {
+    const info = await getAuthUsageInfo(req.user.sub);
+    if (info.remaining > 0) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'auth_limit_reached', message: 'You have reached your conversion limit. Please contact NesterLabs for more conversions.' });
+    return;
+  }
+
+  // Anonymous users: check free tier limit
   const fp = getFingerprint(req, res);
   const info = await getFreeTierInfo(fp);
   if (info.remaining > 0) {

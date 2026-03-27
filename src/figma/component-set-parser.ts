@@ -961,8 +961,14 @@ function collectVariantTextDiffs(
   const defaultTexts = collectTextContentFromNode(defaultVariantNode, '', 0, 12);
   if (defaultTexts.size === 0) return [];
 
-  // Collect text content from all non-default variant nodes
-  // Map: layerKey → { variantLabel → text }
+  // Minimal/targeted axis selection:
+  // 1) Prefer state axis (toast text usually changes by State)
+  // 2) Else first non-state prop axis
+  // 3) Else first available axis
+  const propAxes = stateAxis ? axes.filter((a) => a !== stateAxis) : axes;
+  const textAxis = stateAxis ?? propAxes[0] ?? axes[0] ?? null;
+
+  // Map: layerKey -> { axisValue -> text }
   const allTexts = new Map<string, Map<string, string>>();
 
   // Initialize with default texts
@@ -976,12 +982,7 @@ function collectVariantTextDiffs(
     const props = parseVariantName(variantNode.name) ?? parseVariantProperties(variantNode);
     if (!props) continue;
 
-    // Build a label for this variant (e.g., "Warning" or "Primary / Hover")
-    const variantLabel = Object.entries(props)
-      .filter(([k]) => !stateAxis || k !== stateAxis.name)
-      .map(([, v]) => v)
-      .join(' / ') || variantNode.name;
-
+    const variantLabel = (textAxis ? props[textAxis.name] : '') || variantNode.name;
     const texts = collectTextContentFromNode(variantNode, '', 0, 12);
 
     for (const [key, text] of texts) {
@@ -1010,20 +1011,11 @@ function collectVariantTextDiffs(
 
     if (!hasDiff) continue;
 
-    // Determine which axis drives this text change by finding the axis
-    // whose values best correlate with the text changes
-    let axisName = axes.length > 0 ? axes[0].name : 'variant';
-    if (stateAxis) {
-      // Exclude state axis — text diffs are typically driven by prop axes
-      const propAxes = axes.filter(a => a !== stateAxis);
-      if (propAxes.length > 0) axisName = propAxes[0].name;
-    }
-
     diffs.push({
       layerKey,
       defaultText,
       variantTexts,
-      axisName,
+      axisName: textAxis?.name ?? (axes.length > 0 ? axes[0].name : 'variant'),
     });
   }
 

@@ -167,7 +167,7 @@ function injectAngularCSS(code: string, css: string): string {
 
   // If no styles array found, try to add one before standalone
   const standaloneMatch = code.indexOf('standalone:');
-  if (standaloneMatch > 0) {
+  if (standaloneMatch !== -1) {
     return (
       code.substring(0, standaloneMatch) +
       `styles: [\n    \`\n      :host {\n        display: contents;\n      }\n${indentedCSS}\n    \`,\n  ],\n  ` +

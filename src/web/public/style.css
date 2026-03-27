@@ -10,6 +10,18 @@
   box-sizing: border-box;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Tokens (Dark theme default) ── */
 :root {
   --bg: #000000;
@@ -523,6 +535,18 @@ body {
   gap: 0;
 }
 
+.sidebar.collapsed .sidebar__project-item.active {
+  background: var(--surface-hover);
+  border-radius: var(--radius-sm);
+}
+
+/* Double ring: page bg gap + text color — reads on any thumb hue (accent blended with reds) */
+.sidebar.collapsed .sidebar__project-item.active .sidebar__project-thumb {
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--text);
+}
+
 .sidebar.collapsed .sidebar__project-info,
 .sidebar.collapsed .sidebar__project-delete,
 .sidebar.collapsed .sidebar__new-project-btn span {
@@ -745,6 +769,10 @@ body {
 
 .token-status.saved {
   color: var(--success);
+}
+
+.token-status.expired {
+  color: var(--warning, #f59e0b);
 }
 
 /* ── Main Area ── */
@@ -1267,12 +1295,34 @@ body {
   gap: 8px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.panel__header-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.panel__header-project {
+  font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel__header-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  flex-shrink: 0;
 }
 
 /* ── Panel Body (chat-like scroll area) ── */
@@ -2451,6 +2501,186 @@ body {
   display: flex;
 }
 
+/* ── Command palette (⌘K) ── */
+.command-palette-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.command-palette-overlay[aria-hidden="false"] {
+  display: flex;
+}
+
+.command-palette-overlay[aria-hidden="true"] {
+  display: none;
+}
+
+[data-theme="light"] .command-palette-overlay {
+  background: rgba(24, 24, 27, 0.35);
+}
+
+.command-palette {
+  width: 100%;
+  max-width: 520px;
+  max-height: min(420px, 70vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  font-family: var(--font-body);
+}
+
+[data-theme="light"] .command-palette {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.18);
+}
+
+.command-palette__search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--code-block-header-bg);
+}
+
+.command-palette__search-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.command-palette__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+
+.command-palette__input::placeholder {
+  color: var(--text-muted);
+}
+
+.command-palette__hint {
+  padding: 6px 14px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.command-palette__list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 6px;
+}
+
+.command-palette__section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 8px 10px 4px;
+}
+
+.command-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 10px;
+  margin: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.command-palette__row:hover,
+.command-palette__row--selected {
+  background: var(--surface-hover);
+}
+
+.command-palette__row--selected {
+  outline: 1px solid var(--border-light);
+}
+
+.command-palette__row.command-palette__row--converting .sidebar__project-date {
+  color: var(--accent);
+  animation: pulse-text 1.5s ease-in-out infinite;
+}
+
+.command-palette__row .sidebar__project-info {
+  text-align: left;
+}
+
+.command-palette__row-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.command-palette__row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+}
+
+.command-palette__row-title {
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-palette__row-sub {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-palette__empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .modal-dialog {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3598,6 +3828,113 @@ body {
   outline: 2px solid #3b82f6 !important;
   outline-offset: -2px !important;
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important;
+}
+
+/* ── Contact NesterLabs Modal ──────────────────────────────────────── */
+.modal-dialog--contact {
+  max-width: 440px;
+}
+
+.contact-limit-message {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+
+.contact-limit-icon {
+  margin-bottom: 12px;
+}
+
+.contact-limit-heading {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.contact-limit-subtext {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.contact-info-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.contact-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.contact-info-row svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.contact-info-row a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.contact-info-row a:hover {
+  text-decoration: underline;
+}
+
+.contact-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.contact-cta-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.contact-cta-btn:hover {
+  opacity: 0.9;
+}
+
+.contact-linkedin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.contact-linkedin-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
 }
 
 /* ── Login Modal ───────────────────────────────────────────────────── */

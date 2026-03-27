@@ -51,6 +51,11 @@ const statusText = document.getElementById('status-text');
 // Project list
 const projectListEl = document.getElementById('sidebar-project-list');
 const allProjectsBtn = document.getElementById('all-projects-btn');
+const sidebarSearchBtn = document.getElementById('sidebar-search-btn');
+const commandPaletteOverlay = document.getElementById('command-palette-overlay');
+const commandPaletteInput = document.getElementById('command-palette-input');
+const commandPaletteResults = document.getElementById('command-palette-results');
+const commandPaletteHint = document.getElementById('command-palette-hint');
 
 // Hero
 const mainHero = document.getElementById('main-hero');
@@ -131,7 +136,7 @@ const floatingTag = document.getElementById('ve-floating-tag');
 const floatingInput = document.getElementById('ve-ai-input');
 const floatingSendBtn = document.getElementById('ve-ai-send');
 const panelHeaderActions = document.getElementById('panel-header-actions');
-const panelHeaderText = document.querySelector('.panel__header span');
+const panelHeaderText = document.getElementById('panel-header-label');
 const panelInputBar = document.querySelector('.panel__input-bar');
 
 // Draft / Unsaved Edits
@@ -247,7 +252,10 @@ let codeViewMode = 'generated'; // 'generated' | 'wired'
 let wiredAppFiles = {}; // path -> content (when template was wired)
 let generatedTabsData = [];
 let templateWired = false;
+let tabsNeedRefresh = false;
 let activeConversionSessionId = null; // sessionId of in-flight SSE conversion
+let convertAbortController = null;   // AbortController for in-flight conversion SSE
+let refineAbortController = null;    // AbortController for in-flight refine SSE
 let currentUpdatedShadcnSource = null;
 let currentShadcnComponentName = null;
 let currentShadcnSubComponents = null;
@@ -273,7 +281,7 @@ let isAuthenticated = false;
 let currentUser = null;
 let authIdToken = null;
 let cognitoUserPool = null;
-let freeTierUsage = { used: 0, limit: 10, remaining: 10 };
+let freeTierUsage = { used: 0, limit: 5, remaining: 5, tier: 'free' };
 let loginSuccessCallback = null;
 
 /** Explorer icon config: folder, chevron, fileIcons. Loaded from /explorer-icons.config.json; merged with these defaults. */
@@ -333,20 +341,30 @@ function renderExplorerIcon(value, size = 16) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 16 16"><use href="#${escapeHtml(value)}"/></svg>`;
 }
 
-// ── LocalStorage ──
-const STORAGE_KEY = 'figma-to-code-token';
+// ── Token Storage (server-side) ──
+const TOKEN_ID_KEY = 'figma-to-code-tokenId';
 
-function loadSavedToken() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    figmaTokenInput.value = saved;
-    tokenStatus.textContent = 'Token saved';
-    tokenStatus.className = 'token-status saved';
+async function loadSavedToken() {
+  const tokenId = sessionStorage.getItem(TOKEN_ID_KEY);
+  if (!tokenId) return;
+  try {
+    const res = await fetch(`/api/verify-token/${tokenId}`);
+    const data = await res.json();
+    if (data.valid) {
+      figmaTokenInput.value = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+      figmaTokenInput.disabled = true;
+      tokenStatus.textContent = 'Token connected';
+      tokenStatus.className = 'token-status saved';
+      if (saveTokenBtn) saveTokenBtn.textContent = 'Disconnect';
+    } else {
+      sessionStorage.removeItem(TOKEN_ID_KEY);
+      tokenStatus.textContent = 'Session expired \u2014 please re-enter token';
+      tokenStatus.className = 'token-status expired';
+    }
+  } catch {
+    // Server unreachable, clear stale tokenId
+    sessionStorage.removeItem(TOKEN_ID_KEY);
   }
-}
-
-function saveToken(token) {
-  localStorage.setItem(STORAGE_KEY, token);
 }
 
 // ── Project History Store ──
@@ -534,6 +552,36 @@ function generatePlaceholderThumbnail(name) {
   return canvas.toDataURL('image/png');
 }
 
+/** Active project title above "Import Design" (visible when split view is open, including collapsed sidebar). */
+function updatePanelHeaderProject() {
+  const el = document.getElementById('panel-header-project');
+  if (!el) return;
+  const splitVisible = mainSplit?.classList.contains('visible');
+  let display = '';
+  if (splitVisible) {
+    const p = currentProjectId ? getProject(currentProjectId) : null;
+    display = (p?.name || currentComponentName || '').trim();
+    if (display === 'Converting...' && currentComponentName) display = currentComponentName.trim();
+  }
+  if (display) {
+    el.hidden = false;
+    el.textContent = display;
+  } else {
+    el.hidden = true;
+    el.textContent = '';
+  }
+}
+
+/** Thumbnail block shared by sidebar project list and command palette (square tile, image or letter on hue). */
+function projectThumbMarkup(p) {
+  const thumbStyle = p.thumbnail
+    ? `background-image: url(${p.thumbnail}); background-size: cover;`
+    : `background: hsl(200, 55%, 45%);`;
+  const letter = (p.name || '?')[0].toUpperCase();
+  const inner = p.thumbnail ? '' : escapeHtml(letter);
+  return `<span class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${inner}</span>`;
+}
+
 function renderProjectList() {
   if (!projectListEl) return;
   const projects = loadProjects();
@@ -545,14 +593,10 @@ function renderProjectList() {
   let html = '';
   for (const p of items) {
     const isActive = currentProjectId === p.id;
-    const thumbStyle = p.thumbnail
-      ? `background-image: url(${p.thumbnail}); background-size: cover;`
-      : `background: hsl(200, 55%, 45%);`;
-    const letter = (p.name || '?')[0].toUpperCase();
     const convertingClass = p.converting ? ' converting' : '';
     const dateLabel = p.converting ? 'Converting...' : formatTimeAgo(p.updatedAt || p.createdAt);
     html += `<div class="sidebar__project-item${isActive ? ' active' : ''}${convertingClass}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name)}">
-      <div class="sidebar__project-thumb sidebar__project-thumb--placeholder" style="${thumbStyle}">${p.thumbnail ? '' : letter}</div>
+      ${projectThumbMarkup(p)}
       <div class="sidebar__project-info">
         <div class="sidebar__project-name">${escapeHtml(p.name)}</div>
         <div class="sidebar__project-date">${dateLabel}</div>
@@ -589,11 +633,17 @@ function renderProjectList() {
   });
   const newBtn = projectListEl.querySelector('#new-project-btn');
   if (newBtn) newBtn.addEventListener('click', resetToHero);
+  updatePanelHeaderProject();
 }
 
 function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
+
+  // Abort in-flight refine stream (interactive, tied to current view).
+  // Conversion stream is NOT aborted — it continues in background and
+  // handleComplete() will save results to the project when done.
+  if (refineAbortController) { refineAbortController.abort(); refineAbortController = null; }
 
   // If project is still converting, restore the full progress UI
   if (project.converting) {
@@ -641,6 +691,7 @@ function restoreProject(projectId) {
       updateMenuButtonVisibility();
     }
 
+    syncSidebarPrimaryNavToShellView();
     return;
   }
 
@@ -781,6 +832,7 @@ function restoreProject(projectId) {
 
   setStatus('done', 'Conversion complete');
   renderProjectList();
+  syncSidebarPrimaryNavToShellView();
 }
 
 function transformForBrowser(reactCode, componentName) {
@@ -1309,6 +1361,7 @@ function resetToHero() {
 
   setStatus('ready', 'Ready to convert');
   renderProjectList();
+  syncSidebarPrimaryNavToShellView();
 }
 
 // ── Framework Extensions Map ──
@@ -1347,6 +1400,7 @@ sidebarToggle.addEventListener('click', () => {
     updateSidebarToggleTitle();
   }
   updateMenuButtonVisibility();
+  syncSidebarPrimaryNavToShellView();
 });
 
 if (mainMenuBtn) {
@@ -1360,6 +1414,7 @@ if (mainMenuBtn) {
       updateSidebarToggleTitle();
     }
     updateMenuButtonVisibility();
+    syncSidebarPrimaryNavToShellView();
   });
 }
 
@@ -1376,8 +1431,9 @@ window.addEventListener('resize', () => {
 updateMenuButtonVisibility();
 updateSidebarToggleTitle();
 
-// Sidebar nav item selection
+// Sidebar nav item selection (Search opens command palette; All projects has its own handler)
 document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
+  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
     document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
@@ -1403,12 +1459,39 @@ tokenToggle.addEventListener('click', () => {
 });
 
 // ── Save Token Button ──
-saveTokenBtn.addEventListener('click', () => {
+saveTokenBtn.addEventListener('click', async () => {
+  const existingId = sessionStorage.getItem(TOKEN_ID_KEY);
+  if (existingId) {
+    // Disconnect
+    sessionStorage.removeItem(TOKEN_ID_KEY);
+    figmaTokenInput.value = '';
+    figmaTokenInput.disabled = false;
+    tokenStatus.textContent = '';
+    tokenStatus.className = 'token-status';
+    saveTokenBtn.textContent = 'Save Token';
+    return;
+  }
+  // Connect
   const token = figmaTokenInput.value.trim();
-  if (token) {
-    saveToken(token);
-    tokenStatus.textContent = 'Token saved';
-    tokenStatus.className = 'token-status saved';
+  if (!token) return;
+  try {
+    const res = await fetch('/api/store-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ figmaToken: token }),
+    });
+    const data = await res.json();
+    if (data.tokenId) {
+      sessionStorage.setItem(TOKEN_ID_KEY, data.tokenId);
+      figmaTokenInput.value = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+      figmaTokenInput.disabled = true;
+      tokenStatus.textContent = 'Token connected';
+      tokenStatus.className = 'token-status saved';
+      saveTokenBtn.textContent = 'Disconnect';
+    }
+  } catch {
+    tokenStatus.textContent = 'Failed to save token';
+    tokenStatus.className = 'token-status expired';
   }
 });
 
@@ -1561,7 +1644,6 @@ function hideHeroChatResponse() {
 async function startConversion(skipDuplicateCheck) {
   const urlInput = getActiveUrlInput();
   const figmaUrl = urlInput.value.trim();
-  const figmaToken = figmaTokenInput.value.trim();
   const frameworks = getSelectedFrameworks();
 
   if (!figmaUrl) {
@@ -1590,13 +1672,36 @@ async function startConversion(skipDuplicateCheck) {
     return;
   }
 
-  if (!figmaToken) {
-    if (sidebar.classList.contains('collapsed')) {
-      sidebar.classList.remove('collapsed');
+  // Resolve tokenId — auto-store if user typed a raw token
+  let tokenId = sessionStorage.getItem(TOKEN_ID_KEY);
+  if (!tokenId) {
+    const rawToken = figmaTokenInput.value.trim();
+    if (!rawToken) {
+      if (sidebar.classList.contains('collapsed')) {
+        sidebar.classList.remove('collapsed');
+      }
+      figmaTokenInput.focus();
+      showError('Please enter your Figma Access Token in the sidebar.');
+      return;
     }
-    figmaTokenInput.focus();
-    showError('Please enter your Figma Access Token in the sidebar.');
-    return;
+    try {
+      const res = await fetch('/api/store-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ figmaToken: rawToken }),
+      });
+      const data = await res.json();
+      tokenId = data.tokenId;
+      sessionStorage.setItem(TOKEN_ID_KEY, tokenId);
+      figmaTokenInput.value = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+      figmaTokenInput.disabled = true;
+      tokenStatus.textContent = 'Token connected';
+      tokenStatus.className = 'token-status saved';
+      if (saveTokenBtn) saveTokenBtn.textContent = 'Disconnect';
+    } catch {
+      showError('Failed to save token. Please try again.');
+      return;
+    }
   }
 
   // Check for duplicate URL before starting conversion
@@ -1612,6 +1717,7 @@ async function startConversion(skipDuplicateCheck) {
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
   mainHero.closest('.main')?.classList.add('split-visible');
+  syncSidebarPrimaryNavToShellView();
 
   // Sync URL and framework selection to panel for "convert another"
   figmaUrlInput.value = figmaUrl;
@@ -1623,9 +1729,6 @@ async function startConversion(skipDuplicateCheck) {
     showError('Please select at least one framework.');
     return;
   }
-
-  // Save token
-  saveToken(figmaToken);
 
   // Reset UI
   setLoading(true);
@@ -1665,17 +1768,40 @@ async function startConversion(skipDuplicateCheck) {
   chatRefining = false;
 
   // Start SSE request (always enable template wiring for now)
-  const body = JSON.stringify({ figmaUrl, figmaToken, frameworks, template: true });
+  const body = JSON.stringify({ figmaUrl, tokenId, frameworks, template: true });
+
+  // Abort any in-flight conversion/refine before starting a new one
+  if (convertAbortController) { convertAbortController.abort(); convertAbortController = null; }
+  if (refineAbortController) { refineAbortController.abort(); refineAbortController = null; }
+  convertAbortController = new AbortController();
 
   fetch('/api/convert', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body,
-  }).then((response) => {
+    signal: convertAbortController.signal,
+  }).then(async (response) => {
     if (response.status === 401) {
+      const errData = await response.json().catch(() => ({}));
+      if (errData.error && errData.error.includes('Token expired')) {
+        sessionStorage.removeItem(TOKEN_ID_KEY);
+        figmaTokenInput.value = '';
+        figmaTokenInput.disabled = false;
+        tokenStatus.textContent = 'Session expired \u2014 please re-enter token';
+        tokenStatus.className = 'token-status expired';
+        if (saveTokenBtn) saveTokenBtn.textContent = 'Save Token';
+        setLoading(false);
+        showError('Figma token expired. Please re-enter your token and try again.');
+        return Promise.reject(new Error('__token_expired__'));
+      }
       setLoading(false);
       showLoginModal(() => startConversion(true));
       return Promise.reject(new Error('__auth_redirect__'));
+    }
+    if (response.status === 403) {
+      setLoading(false);
+      showContactNesterLabsModal();
+      return Promise.reject(new Error('__auth_limit__'));
     }
     if (!response.ok) {
       return response.json().then((data) => {
@@ -1690,6 +1816,7 @@ async function startConversion(skipDuplicateCheck) {
     function readStream() {
       reader.read().then(({ done, value }) => {
         if (done) {
+          convertAbortController = null;
           setLoading(false);
           return;
         }
@@ -1706,6 +1833,8 @@ async function startConversion(skipDuplicateCheck) {
 
         readStream();
       }).catch((err) => {
+        convertAbortController = null;
+        if (err.name === 'AbortError') return; // intentional abort
         setLoading(false);
         setStatus('error', 'Connection lost');
         showError(`Connection lost: ${err.message}`);
@@ -1714,7 +1843,9 @@ async function startConversion(skipDuplicateCheck) {
 
     readStream();
   }).catch((err) => {
-    if (err.message === '__auth_redirect__') return; // handled by login modal
+    convertAbortController = null;
+    if (err.name === 'AbortError') return; // intentional abort
+    if (err.message === '__auth_redirect__' || err.message === '__auth_limit__') return; // handled by modal
     activeConversionSessionId = null;
     setLoading(false);
     setStatus('error', 'Error occurred');
@@ -1749,13 +1880,13 @@ function parseSSEEvent(eventStr) {
       handleSessionCreated(data);
       break;
     case 'step':
+      addProgressStep(data.message);
       if (currentProjectId === activeConversionSessionId) {
-        addProgressStep(data.message);
         setStatus('converting', data.message);
       }
       break;
     case 'attempt':
-      if (data.error && currentProjectId === activeConversionSessionId) {
+      if (data.error) {
         markLastStepWarning(data.error);
       }
       break;
@@ -3188,10 +3319,10 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (
     customText != null &&
     typeof customText === 'object' &&
-    typeof customText.prompt === 'string'
+    customText.prompt != null
   ) {
     apiPrompt = customText.prompt;
-    displayText = customText.displayText != null ? customText.displayText : apiPrompt;
+    displayText = customText.displayText != null ? customText.displayText : (typeof apiPrompt === 'string' ? apiPrompt : 'Visual edits applied');
   } else if (typeof customText === 'string') {
     apiPrompt = customText;
     displayText = customText;
@@ -3216,26 +3347,32 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
 
   // Use saved selection (from floating prompt) or current global selection
   const selElement = savedSelectedElement || selectedElementInfo;
-  const project = getProject(currentProjectId);
-  const body = JSON.stringify({
-    sessionId: currentSessionId,
-    prompt: apiPrompt,
-    selectedElement: selectedElementInfo && (selectedElementInfo.dataVeId || selectedElementInfo.variantLabel)
-      ? {
-        dataVeId: selElement.dataVeId,
-        tagName: selElement.tagName,
-        textContent: selElement.textContent,
-        variantLabel: selElement.variantLabel,
-        variantProps: selElement.variantProps,
-      }
-      : undefined,
-    chatHistory: project?.chatHistory || [],
-  });
+  const payload = { sessionId: currentSessionId };
+
+  if (typeof apiPrompt === 'object' && apiPrompt._visualEdits) {
+    // Batch visual-edit save — send only the edits map
+    payload.visualEdits = apiPrompt._visualEdits;
+  } else if (selElement && selElement.dataVeId) {
+    // Floating prompt targeting a specific element — send raw text + targeting info
+    payload.userRequest = typeof apiPrompt === 'string' ? apiPrompt : apiPrompt._rawText || apiPrompt;
+    payload.dataVeId = selElement.dataVeId;
+    if (selElement.variantLabel) payload.variantLabel = selElement.variantLabel;
+    if (selElement.variantProps) payload.variantProps = selElement.variantProps;
+  } else {
+    // Regular chat — send raw user text
+    payload.userRequest = apiPrompt;
+  }
+
+  const body = JSON.stringify(payload);
+
+  if (refineAbortController) { refineAbortController.abort(); refineAbortController = null; }
+  refineAbortController = new AbortController();
 
   fetch('/api/refine', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body,
+    signal: refineAbortController.signal,
   }).then((response) => {
     if (!response.ok) {
       return response.json().then((data) => {
@@ -3250,6 +3387,7 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
     function readStream() {
       reader.read().then(({ done, value }) => {
         if (done) {
+          refineAbortController = null;
           setChatLoading(false);
           return;
         }
@@ -3263,6 +3401,8 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
         }
         readStream();
       }).catch((err) => {
+        refineAbortController = null;
+        if (err.name === 'AbortError') return; // intentional abort
         setChatLoading(false);
         removeChatMessage(loadingMsg);
         addChatMessage('system', `Connection lost: ${err.message}`);
@@ -3270,6 +3410,8 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
     }
     readStream();
   }).catch((err) => {
+    refineAbortController = null;
+    if (err.name === 'AbortError') return; // intentional abort
     setChatLoading(false);
     removeChatMessage(loadingMsg);
     addChatMessage('system', `Error: ${err.message}`);
@@ -3333,6 +3475,23 @@ function handleRefineComplete(data) {
     const mitosisTab = tabsData.find(t => t.key === 'mitosis');
     if (mitosisTab) mitosisTab.code = data.mitosisSource;
   }
+  // Update shadcn sub-component data when refined
+  if (data.updatedShadcnSource) {
+    currentUpdatedShadcnSource = data.updatedShadcnSource;
+  }
+  if (data.shadcnSubComponents) {
+    currentShadcnSubComponents = data.shadcnSubComponents;
+    // Update wired app files AND tab data for shadcn sub-components
+    for (const sub of data.shadcnSubComponents) {
+      if (sub.shadcnComponentName && sub.updatedShadcnSource) {
+        const shadcnPath = `src/components/ui/${sub.shadcnComponentName}.tsx`;
+        if (wiredAppFiles) wiredAppFiles[shadcnPath] = sub.updatedShadcnSource;
+        // Also update the tab so the code editor shows the latest code
+        const shadcnTab = tabsData.find(t => t.key === shadcnPath);
+        if (shadcnTab) shadcnTab.code = sub.updatedShadcnSource;
+      }
+    }
+  }
   // Update framework tab data
   for (const [fw, code] of Object.entries(currentFrameworkOutputs)) {
     const tab = tabsData.find(t => t.key === fw);
@@ -3367,18 +3526,22 @@ function handleRefineComplete(data) {
   if (currentProjectId) {
     const update = { frameworkOutputs: currentFrameworkOutputs };
     if (data.elementMap) update.elementMap = data.elementMap;
+    if (data.updatedShadcnSource) update.updatedShadcnSource = data.updatedShadcnSource;
+    if (data.shadcnSubComponents) update.shadcnSubComponents = data.shadcnSubComponents;
     updateProjectField(currentProjectId, update);
   }
 
   // Clear stale visual-edit selection so the next click starts fresh
   selectedElementInfo = null;
 
-  // Refresh Monaco if a tab is open
+  // Refresh Monaco if a tab is open, otherwise defer to switchMode
   if (activeFile && monacoEditor) {
     const currentTab = tabsData.find(t => t.key === activeFile);
     if (currentTab) {
       monacoEditor.setValue(currentTab.code || '');
     }
+  } else {
+    tabsNeedRefresh = true;
   }
 
   // Update preview
@@ -3416,11 +3579,25 @@ function handleRefineComplete(data) {
         `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
       delete webContainerLastWritten[appJsxPath];
 
-      writeWebContainerFiles({
+      // Include updated shadcn sub-component files so WebContainer serves the latest code
+      const wcFiles = {
         [wcPath]: finalCode,
         [cssPath]: css || `/* ${currentComponentName} */`,
         [appJsxPath]: appJsx,
-      }).then(() => {
+      };
+      if (data.updatedShadcnSource && currentShadcnComponentName) {
+        const shadcnPath = `src/components/ui/${currentShadcnComponentName}.tsx`;
+        wcFiles[shadcnPath] = data.updatedShadcnSource;
+        delete webContainerLastWritten[shadcnPath];
+      }
+      if (data.shadcnSubComponents) {
+        for (const sub of data.shadcnSubComponents) {
+          const shadcnPath = `src/components/ui/${sub.shadcnComponentName}.tsx`;
+          wcFiles[shadcnPath] = sub.updatedShadcnSource;
+          delete webContainerLastWritten[shadcnPath];
+        }
+      }
+      writeWebContainerFiles(wcFiles).then(() => {
         // Force reload after Vite processes file changes
         setTimeout(() => {
           if (previewFrame && webContainerPreviewUrl) {
@@ -3479,11 +3656,23 @@ function setMonacoValidation(useStandardSyntax) {
   monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions(opts);
 }
 
+let monacoLoading = false;
 function initMonaco(callback) {
   if (monacoReady && monacoEditor) {
     callback?.();
     return;
   }
+  if (monacoLoading) {
+    // Already loading — queue callback for when it finishes
+    const waitForMonaco = setInterval(() => {
+      if (monacoReady && monacoEditor) {
+        clearInterval(waitForMonaco);
+        callback?.();
+      }
+    }, 100);
+    return;
+  }
+  monacoLoading = true;
   if (typeof require === 'undefined') {
     console.error('Monaco loader not loaded');
     callback?.();
@@ -3515,6 +3704,7 @@ function initMonaco(callback) {
       padding: { top: 12 },
     });
     monacoReady = true;
+    monacoLoading = false;
     let syncDebounce = null;
     monacoEditor.onDidChangeModelContent(() => {
       if (!webContainerSyncEnabled) return;
@@ -3553,6 +3743,11 @@ function switchMode(mode) {
     toggleVisualEditMode(false);
   }
   if (mode === 'code') {
+    if (tabsNeedRefresh && activeFile && monacoEditor) {
+      const currentTab = tabsData.find(t => t.key === activeFile);
+      if (currentTab) monacoEditor.setValue(currentTab.code || '');
+      tabsNeedRefresh = false;
+    }
     requestAnimationFrame(() => {
       layoutMonaco();
       requestAnimationFrame(layoutMonaco);
@@ -3751,6 +3946,7 @@ function openFile(key) {
   }
 
   activeFile = key;
+  tabsNeedRefresh = false;
   setEditMode(false);
 
   document.querySelectorAll('.editor-tab').forEach((el) => {
@@ -4508,6 +4704,281 @@ if (allProjectsBtn) {
   });
 }
 
+// ── Command palette (⌘K / Ctrl+K) ──
+
+const COMMAND_PALETTE_ACTIONS = [
+  {
+    id: 'new',
+    label: 'New conversion',
+    subtitle: 'Start from a Figma URL',
+    icon: '+',
+    keywords: 'new start hero figma url convert create',
+  },
+];
+
+let commandPaletteSelected = 0;
+/** @type {Array<{ kind: 'action' | 'project', action?: object, project?: object }>} */
+let commandPaletteFlat = [];
+
+function commandPaletteFuzzyScore(haystack, query) {
+  if (!query || !String(query).trim()) return 1;
+  const h = String(haystack).toLowerCase();
+  const q = String(query).toLowerCase().trim();
+  if (!q) return 1;
+  const idx = h.indexOf(q);
+  if (idx >= 0) return 2000 - idx;
+  let qi = 0;
+  let score = 0;
+  let lastTi = -99;
+  for (let ti = 0; ti < h.length && qi < q.length; ti++) {
+    if (h[ti] === q[qi]) {
+      score += ti === lastTi + 1 ? 5 : 1;
+      const atWord = ti === 0 || /[\s/:=\-_]/.test(h[ti - 1]);
+      if (atWord) score += 3;
+      lastTi = ti;
+      qi++;
+    }
+  }
+  return qi === q.length ? 50 + score : 0;
+}
+
+function updateCommandPaletteHintText() {
+  if (!commandPaletteHint) return;
+  const isMac =
+    typeof navigator !== 'undefined' &&
+    (navigator.platform?.includes('Mac') || navigator.userAgent?.includes('Mac'));
+  const mod = isMac ? '⌘K' : 'Ctrl+K';
+  commandPaletteHint.textContent = `${mod} to toggle · ↑↓ navigate · Enter to open · Esc to close`;
+}
+
+function rebuildCommandPalette(query) {
+  const q = (query || '').trim();
+  const actionEntries = COMMAND_PALETTE_ACTIONS.map((a) => {
+    const blob = `${a.label} ${a.subtitle} ${a.keywords}`;
+    const score = q ? commandPaletteFuzzyScore(blob, q) : 9999;
+    return { kind: 'action', score, action: a };
+  })
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const projects = loadProjects()
+    .slice()
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const projectEntries = projects
+    .map((p) => {
+      const blob = `${p.name || ''} ${p.figmaUrl || ''}`;
+      const score = q ? commandPaletteFuzzyScore(blob, q) : 1;
+      return { kind: 'project', score, project: p };
+    })
+    .filter((e) => e.score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score || (b.project.updatedAt || 0) - (a.project.updatedAt || 0),
+    );
+
+  commandPaletteFlat = [
+    ...actionEntries.map(({ action }) => ({ kind: 'action', action })),
+    ...projectEntries.map(({ project }) => ({ kind: 'project', project })),
+  ];
+}
+
+function renderCommandPaletteRow(row, index) {
+  const sel = index === commandPaletteSelected ? ' command-palette__row--selected' : '';
+  const ariaSel = index === commandPaletteSelected ? 'true' : 'false';
+  if (row.kind === 'action') {
+    const a = row.action;
+    return `<button type="button" class="command-palette__row${sel}" role="option" data-index="${index}" aria-selected="${ariaSel}">
+      <span class="command-palette__row-icon">${escapeHtml(a.icon)}</span>
+      <span class="command-palette__row-body">
+        <span class="command-palette__row-title">${escapeHtml(a.label)}</span>
+        <span class="command-palette__row-sub">${escapeHtml(a.subtitle)}</span>
+      </span>
+    </button>`;
+  }
+  const p = row.project;
+  const dateLabel = p.converting ? 'Converting...' : formatTimeAgo(p.updatedAt || p.createdAt);
+  const title = escapeHtml(p.name || 'Untitled');
+  const convClass = p.converting ? ' command-palette__row--converting' : '';
+  return `<button type="button" class="command-palette__row${sel}${convClass}" role="option" data-index="${index}" aria-selected="${ariaSel}">
+    ${projectThumbMarkup(p)}
+    <span class="sidebar__project-info">
+      <span class="sidebar__project-name">${title}</span>
+      <span class="sidebar__project-date">${escapeHtml(dateLabel)}</span>
+    </span>
+  </button>`;
+}
+
+function renderCommandPaletteDOM() {
+  if (!commandPaletteResults) return;
+  if (commandPaletteFlat.length === 0) {
+    commandPaletteResults.innerHTML =
+      '<div class="command-palette__empty" role="status">No matching projects or actions</div>';
+    return;
+  }
+  const parts = [];
+  let lastKind = null;
+  for (let i = 0; i < commandPaletteFlat.length; i++) {
+    const row = commandPaletteFlat[i];
+    if (row.kind !== lastKind) {
+      lastKind = row.kind;
+      parts.push(
+        `<div class="command-palette__section-label">${row.kind === 'action' ? 'Actions' : 'Projects'}</div>`,
+      );
+    }
+    parts.push(renderCommandPaletteRow(row, i));
+  }
+  commandPaletteResults.innerHTML = parts.join('');
+  commandPaletteResults.querySelectorAll('.command-palette__row').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.index);
+      if (!Number.isNaN(idx)) runCommandPaletteIndex(idx);
+    });
+  });
+}
+
+function scrollCommandPaletteSelectionIntoView() {
+  commandPaletteResults
+    ?.querySelector('.command-palette__row--selected')
+    ?.scrollIntoView({ block: 'nearest' });
+}
+
+function refreshCommandPalette() {
+  const q = commandPaletteInput?.value ?? '';
+  rebuildCommandPalette(q);
+  if (commandPaletteFlat.length > 0) {
+    commandPaletteSelected = Math.min(
+      commandPaletteSelected,
+      commandPaletteFlat.length - 1,
+    );
+    if (commandPaletteSelected < 0) commandPaletteSelected = 0;
+  } else {
+    commandPaletteSelected = 0;
+  }
+  renderCommandPaletteDOM();
+  scrollCommandPaletteSelectionIntoView();
+}
+
+function runCommandPaletteIndex(index) {
+  const row = commandPaletteFlat[index];
+  if (!row) return;
+  closeCommandPalette();
+  if (row.kind === 'action' && row.action.id === 'new') {
+    resetToHero();
+    return;
+  }
+  if (row.kind === 'project' && row.project?.id) {
+    restoreProject(row.project.id);
+  }
+}
+
+/** Home / Search / Profile only — skips All projects. */
+function setSidebarPrimaryNavActive(activeEl) {
+  document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
+    if (item.id === 'all-projects-btn') return;
+    item.classList.toggle('active', activeEl != null && item === activeEl);
+  });
+}
+
+/** Home highlighted only on landing; split/project view clears primary nav (project list shows selection). */
+function syncSidebarPrimaryNavToShellView() {
+  if (!isCommandPaletteOpen()) {
+    const onHero = mainHero && !mainHero.classList.contains('hidden');
+    if (onHero) {
+      const homeNav = document.querySelector('.sidebar__nav-item[title="Home"]');
+      if (homeNav) setSidebarPrimaryNavActive(homeNav);
+    } else {
+      setSidebarPrimaryNavActive(null);
+    }
+  }
+  updatePanelHeaderProject();
+}
+
+function openCommandPalette() {
+  if (!commandPaletteOverlay || !commandPaletteInput) return;
+  if (sidebarSearchBtn) setSidebarPrimaryNavActive(sidebarSearchBtn);
+  commandPaletteOverlay.setAttribute('aria-hidden', 'false');
+  updateCommandPaletteHintText();
+  commandPaletteInput.value = '';
+  commandPaletteSelected = 0;
+  rebuildCommandPalette('');
+  renderCommandPaletteDOM();
+  requestAnimationFrame(() => {
+    commandPaletteInput.focus();
+    commandPaletteInput.select?.();
+  });
+  if (window.innerWidth <= 768) {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('visible');
+    updateMenuButtonVisibility();
+  }
+}
+
+function closeCommandPalette() {
+  if (!commandPaletteOverlay) return;
+  commandPaletteOverlay.setAttribute('aria-hidden', 'true');
+  commandPaletteSelected = 0;
+  commandPaletteFlat = [];
+  syncSidebarPrimaryNavToShellView();
+}
+
+function isCommandPaletteOpen() {
+  return commandPaletteOverlay?.getAttribute('aria-hidden') === 'false';
+}
+
+function initCommandPalette() {
+  updateCommandPaletteHintText();
+  sidebarSearchBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openCommandPalette();
+  });
+
+  commandPaletteOverlay?.addEventListener('click', (e) => {
+    if (e.target === commandPaletteOverlay) closeCommandPalette();
+  });
+
+  commandPaletteInput?.addEventListener('input', () => {
+    commandPaletteSelected = 0;
+    refreshCommandPalette();
+  });
+
+  commandPaletteInput?.addEventListener('keydown', (e) => {
+    if (!isCommandPaletteOpen()) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!commandPaletteFlat.length) return;
+      commandPaletteSelected =
+        (commandPaletteSelected + 1) % commandPaletteFlat.length;
+      renderCommandPaletteDOM();
+      scrollCommandPaletteSelectionIntoView();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!commandPaletteFlat.length) return;
+      commandPaletteSelected =
+        (commandPaletteSelected - 1 + commandPaletteFlat.length) %
+        commandPaletteFlat.length;
+      renderCommandPaletteDOM();
+      scrollCommandPaletteSelectionIntoView();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (commandPaletteFlat.length === 0) return;
+      runCommandPaletteIndex(commandPaletteSelected);
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isCommandPaletteOpen()) {
+      e.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      if (isCommandPaletteOpen()) closeCommandPalette();
+      else openCommandPalette();
+    }
+  });
+}
+
 // ── Auth: Cognito Integration ──
 
 function authHeaders() {
@@ -4669,7 +5140,7 @@ async function fetchAuthMe() {
 async function updateFreeTierDisplay() {
   if (!authEnabled) return;
   try {
-    const res = await fetch('/api/auth/free-tier');
+    const res = await fetch('/api/auth/free-tier', { headers: authHeaders() });
     freeTierUsage = await res.json();
   } catch { /* ignore */ }
 
@@ -4677,22 +5148,31 @@ async function updateFreeTierDisplay() {
   const text = document.getElementById('free-tier-text');
   if (!badge || !text) return;
 
-  if (isAuthenticated) {
-    badge.style.display = 'none';
-    return;
-  }
-
   badge.style.display = 'block';
   badge.classList.remove('free-tier-badge--warning', 'free-tier-badge--exhausted');
 
-  if (freeTierUsage.remaining <= 0) {
-    text.textContent = 'Free conversions used up — sign in to continue';
-    badge.classList.add('free-tier-badge--exhausted');
-  } else if (freeTierUsage.remaining <= 3) {
-    text.textContent = `${freeTierUsage.remaining} free conversion${freeTierUsage.remaining === 1 ? '' : 's'} remaining`;
-    badge.classList.add('free-tier-badge--warning');
+  if (isAuthenticated) {
+    // Authenticated user — show auth usage
+    if (freeTierUsage.remaining <= 0) {
+      text.textContent = 'Conversion limit reached — contact NesterLabs for more';
+      badge.classList.add('free-tier-badge--exhausted');
+    } else if (freeTierUsage.remaining <= 5) {
+      text.textContent = `${freeTierUsage.remaining} conversion${freeTierUsage.remaining === 1 ? '' : 's'} remaining`;
+      badge.classList.add('free-tier-badge--warning');
+    } else {
+      text.textContent = `${freeTierUsage.remaining} of ${freeTierUsage.limit} conversions remaining`;
+    }
   } else {
-    text.textContent = `${freeTierUsage.remaining} free conversions remaining`;
+    // Anonymous user — show free tier usage
+    if (freeTierUsage.remaining <= 0) {
+      text.textContent = 'Free conversions used up — sign in to continue';
+      badge.classList.add('free-tier-badge--exhausted');
+    } else if (freeTierUsage.remaining <= 2) {
+      text.textContent = `${freeTierUsage.remaining} free conversion${freeTierUsage.remaining === 1 ? '' : 's'} remaining`;
+      badge.classList.add('free-tier-badge--warning');
+    } else {
+      text.textContent = `${freeTierUsage.remaining} free conversions remaining`;
+    }
   }
 }
 
@@ -4746,6 +5226,20 @@ function closeLoginModal() {
   overlay.classList.remove('visible');
   overlay.setAttribute('aria-hidden', 'true');
   loginSuccessCallback = null;
+}
+
+function showContactNesterLabsModal() {
+  const overlay = document.getElementById('contact-nesterlabs-overlay');
+  if (!overlay) return;
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.classList.add('visible');
+}
+
+function closeContactNesterLabsModal() {
+  const overlay = document.getElementById('contact-nesterlabs-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  overlay.setAttribute('aria-hidden', 'true');
 }
 
 function initLoginModal() {
@@ -4977,6 +5471,14 @@ function initLoginModal() {
   });
 }
 
+function initContactModal() {
+  const overlay = document.getElementById('contact-nesterlabs-overlay');
+  if (!overlay) return;
+  const closeBtn = document.getElementById('contact-dialog-close');
+  closeBtn?.addEventListener('click', closeContactNesterLabsModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeContactNesterLabsModal(); });
+}
+
 function cognitoSignOut() {
   if (cognitoUserPool) {
     const cogUser = cognitoUserPool.getCurrentUser();
@@ -5002,18 +5504,21 @@ setInterval(() => {
 }, 50 * 60 * 1000);
 
 initLoginModal();
+initContactModal();
 
 // ── Init ──
 loadSavedToken();
 loadExplorerIconConfig();
 updateCodeActionsState();
 renderProjectList();
+initCommandPalette();
 initAuth();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');
 mainSplit.classList.remove('visible');
 mainHero.closest('.main')?.classList.remove('split-visible');
+syncSidebarPrimaryNavToShellView();
 
 // ── Visual Edit ──
 
@@ -5410,12 +5915,10 @@ if (floatingInput) {
 
       // Capture selection BEFORE toggle clears it
       const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
-      const displayMsg = buildVisualEditDisplayMessage(promptText);
-      const context = generateContextFromFloatingInput(promptText);
       const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
       toggleVisualEditMode(false);
       if (chatInput) chatInput.value = '';
-      sendChatMessage({ displayText: displayLine, prompt: context });
+      sendChatMessage({ displayText: displayLine, prompt: promptText }, savedSelection);
       floatingInput.value = '';
     }
   });
@@ -5427,12 +5930,10 @@ if (floatingSendBtn) {
     if (!promptText) return;
     // Capture selection BEFORE toggle clears it
     const savedSelection = selectedElementInfo ? { ...selectedElementInfo } : null;
-    const displayMsg = buildVisualEditDisplayMessage(promptText);
-    const context = generateContextFromFloatingInput(promptText);
     const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = '';
-    sendChatMessage({ displayText: displayLine, prompt: context });
+    sendChatMessage({ displayText: displayLine, prompt: promptText }, savedSelection);
     floatingInput.value = '';
   });
 }
@@ -5542,46 +6043,23 @@ if (veUnsavedSave) {
   veUnsavedSave.addEventListener('click', () => {
     if (Object.keys(pendingVisualEdits).length === 0) return;
 
-    let promptLines = [
-      "You are an expert Frontend Developer. Please update the underlying React component code to permanently apply the following visual style edits.",
-      "Below is the precise list of elements visually edited by the user. Convert these native CSS property changes into equivalent Tailwind classes (or inline styles) within the React source.",
-      ""
-    ];
-
-    let i = 1;
-    for (const [key, item] of Object.entries(pendingVisualEdits)) {
-      let variantDetails = "";
-      if (item.variantLabel && item.variantLabel !== 'undefined / undefined') {
-        variantDetails = ` [Clicked inside variant state: "${item.variantLabel}"]`;
-      }
-
-      let line = `${i}. Target Element: <${item.tagName.toUpperCase()}> containing text "${item.textContent.replace(/\n/g, ' ').substring(0, 30).trim()}"${variantDetails}`;
-      promptLines.push(line);
-
-      let propList = [];
-      for (const [p, v] of Object.entries(item.changes)) {
-        if (p === 'delete') {
-          propList.push(`   - -> Remove/Delete this element completely`);
-        } else {
-          propList.push(`   - -> Change CSS property '${p}' to '${v}'`);
-        }
-      }
-      promptLines.push(`   Updates to apply:`);
-      promptLines.push(propList.join('\n'));
-      promptLines.push("");
-      i++;
+    // Send structured edits including element metadata for server-side prompt construction
+    const editsPayload = {};
+    for (const [veId, item] of Object.entries(pendingVisualEdits)) {
+      editsPayload[veId] = {
+        changes: item.changes,
+        tagName: item.tagName,
+        textContent: (item.textContent || '').substring(0, 80),
+      };
     }
 
-    promptLines.push("Return the fully rewritten React component code containing these exact modifications.");
-
-    const promptStr = promptLines.join('\n');
     const displayLine = buildVisualEditsChatSummary(pendingVisualEdits);
     pendingVisualEdits = {};
     updateUnsavedBar();
 
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = '';
-    sendChatMessage({ displayText: displayLine, prompt: promptStr });
+    sendChatMessage({ displayText: displayLine, prompt: { _visualEdits: editsPayload } });
   });
 }
 

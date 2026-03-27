@@ -303,6 +303,14 @@
               <span class="panel__header-project" id="panel-header-project" hidden></span>
               <span class="panel__header-label" id="panel-header-label">Import Design</span>
             </div>
+            <button type="button" class="chat-panel-toggle" id="chat-panel-collapse" aria-expanded="true"
+              aria-label="Collapse chat panel" title="Hide chat — full width preview">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="11 17 6 12 11 7" />
+                <polyline points="18 17 13 12 18 7" />
+              </svg>
+            </button>
             <div class="panel__header-actions" id="panel-header-actions" style="display: none;">
               <button class="header-back-btn" id="visual-edit-back" title="Back to Chat">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -606,25 +614,45 @@
             </div>
             <!-- Chat input group (shown post-conversion) -->
             <div id="chat-input-group" class="chat-input-group" style="display: none;">
-              <div class="input-row">
-                <button class="ve-inline-btn" id="enter-visual-edit" title="Visual edits">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                  </svg>
-                  Visual edits
-                </button>
-                <div class="chat-input-wrap">
-                  <textarea id="chat-input" class="form-input chat-input" placeholder="Describe a change to Nester Compose"
-                    rows="1"></textarea>
+              <div class="chat-composer">
+                <div class="chat-composer__body">
+                  <textarea id="chat-input" class="chat-composer__textarea" rows="1"
+                    placeholder="Ask Nester…"
+                    aria-label="Describe a change to your component"></textarea>
                 </div>
-                <button class="send-btn" type="button" id="chat-send-btn">
-                  <span class="spinner" id="chat-spinner" style="display: none;"></span>
-                  <svg id="chat-send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                      stroke-linejoin="round" />
-                  </svg>
-                </button>
+                <div class="chat-composer__footer">
+                  <div class="chat-composer__footer-left">
+                    <button type="button" class="chat-composer__visual-btn" id="enter-visual-edit"
+                      title="Visual edits">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                      </svg>
+                      Visual edits
+                    </button>
+                  </div>
+                  <div class="chat-composer__footer-right">
+                    <button type="button" class="hero__prompt-mic" id="chat-mic-btn" aria-label="Voice input"
+                      title="Voice input — speak to add text">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
+                    </button>
+                    <button type="button" class="hero__prompt-send" id="chat-send-btn" aria-label="Send message"
+                      title="Send">
+                      <span class="spinner" id="chat-spinner" style="display: none;"></span>
+                      <svg id="chat-send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -636,21 +664,31 @@
         <!-- RIGHT PANEL: Preview + Code -->
         <div class="panel panel--right" id="panel-right">
           <div class="panel__toolbar">
-            <div class="toolbar-tabs">
-              <button class="toolbar-btn active" id="mode-preview" data-mode="preview">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" />
+            <div class="toolbar__start">
+              <button type="button" class="chat-panel-toggle chat-panel-toggle--expand" id="chat-panel-expand"
+                aria-label="Show chat panel" title="Show chat" style="display: none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="13 17 18 12 13 7" />
+                  <polyline points="6 17 11 12 6 7" />
                 </svg>
-                Preview
               </button>
-              <button class="toolbar-btn" id="mode-code" data-mode="code">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                </svg>
-                Code
-              </button>
+              <div class="toolbar-tabs">
+                <button class="toolbar-btn active" id="mode-preview" data-mode="preview">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                  Preview
+                </button>
+                <button class="toolbar-btn" id="mode-code" data-mode="code">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                  </svg>
+                  Code
+                </button>
+              </div>
             </div>
             <div class="toolbar-actions">
               <button class="btn btn--outline btn--sm" id="push-github-btn" style="display: none;"

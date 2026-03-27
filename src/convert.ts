@@ -50,7 +50,7 @@ import { generateFrameworkCode } from './compile/generate.js';
 import { injectDataVeIds } from './compile/element-mapping.js';
 import { config } from './config.js';
 import type { ConvertOptions, ConversionResult, Framework, AssetEntry, ChartComponent, ShadcnSubComponent } from './types/index.js';
-import { isChartSection, isChartSectionAsync, extractChartMetadata } from './figma/chart-detection.js';
+import { isChartSection, detectChartsInPage, extractChartMetadata } from './figma/chart-detection.js';
 import { generateChartCode } from './compile/chart-codegen.js';
 import { isShadcnSupported, getShadcnComponentType } from './shadcn/shadcn-types.js';
 import { generateShadcnComponentSet, generateShadcnSingleComponent, generateShadcnStructuralComponent } from './shadcn/shadcn-codegen.js';
@@ -894,19 +894,25 @@ export async function convertFigmaToCode(
   console.log(`[convert] isStructuralShadcn=${isStructuralShadcn}`);
   const isPage = !isCompSet && !isStructuralShadcn && isMultiSectionPage(enhanced);
 
-  // Create LLM provider early for chart detection (async verification of ambiguous cases)
+  // LLM-first chart detection — one call identifies all charts + types.
+  // Runs for ALL paths (including pages) so chart info is available everywhere.
   const chartDetectionLlm = createLLMProvider(options.llm);
-  const isChart = !isCompSet && !isPage && !isStructuralShadcn
-    && await isChartSectionAsync(rawDocumentNode, chartDetectionLlm);
+  const detectedCharts = !isCompSet && !isStructuralShadcn
+    ? await detectChartsInPage(rawDocumentNode, chartDetectionLlm)
+    : [];
+  const isChart = !isPage && detectedCharts.length > 0;
 
-  // For COMPONENT_SET, check if any variant is a chart
+  // For COMPONENT_SET, check if any variant has charts
   let isCompSetChart = false;
   if (isCompSet) {
     const rawChildren = rawDocumentNode?.children ?? [];
     for (const v of rawChildren) {
-      if (v && await isChartSectionAsync(v, chartDetectionLlm)) {
-        isCompSetChart = true;
-        break;
+      if (v) {
+        const variantCharts = await detectChartsInPage(v, chartDetectionLlm);
+        if (variantCharts.length > 0) {
+          isCompSetChart = true;
+          break;
+        }
       }
     }
   }
@@ -1136,7 +1142,7 @@ export async function convertFigmaToCode(
 
   // --- PATH C: Multi-section page ---
   if (isMultiSectionPage(enhanced)) {
-    return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode)
+    return convertPage(enhanced, fileKey, client, options, callbacks, rawDocumentNode, detectedCharts)
       .then((r) => { _logDone(r); return r; });
   }
 
@@ -2135,10 +2141,34 @@ async function convertChart(
  *   where content-wrapper has no fills/border and contains [card1, card2, card3]
  *   → flattened: [header, breadcrumbs, card1, card2, card3]
  */
-function flattenWrapperFrames(children: any[], parentWidth: number): any[] {
+function flattenWrapperFrames(
+  children: any[],
+  parentWidth: number,
+  chartNames?: Set<string>,
+  rawChildren?: any[],
+): any[] {
+  // Build a map of raw children by ID for fallback unwrapping.
+  // The simplifier may merge/rename raw nodes, so when unwrapping a wrapper
+  // frame, we prefer raw children (which preserve original Figma names like "table").
+  const rawById = new Map<string, any>();
+  if (rawChildren) {
+    const buildMap = (nodes: any[]) => {
+      for (const n of nodes) {
+        if (n?.id) rawById.set(n.id, n);
+        if (n?.children) buildMap(n.children);
+      }
+    };
+    buildMap(rawChildren);
+  }
+
   const result: any[] = [];
   for (const child of children) {
     if (child.type !== 'FRAME' || !child.children || child.children.length < 2) {
+      result.push(child);
+      continue;
+    }
+    // Never unwrap frames that the LLM identified as charts
+    if (chartNames && chartNames.size > 0 && chartNames.has(child.name ?? '')) {
       result.push(child);
       continue;
     }
@@ -2162,8 +2192,12 @@ function flattenWrapperFrames(children: any[], parentWidth: number): any[] {
       if (frameWidth > 0 && gcw >= frameWidth * 0.8) wideCount++;
     }
     if (wideCount >= 2) {
-      // Unwrap: use this frame's children directly
-      result.push(...child.children);
+      // Unwrap: prefer raw children over simplified children.
+      // The simplifier may merge nodes and lose important names (e.g. "table" → "Frame 2147225802").
+      // Raw children preserve the original Figma node names.
+      const rawChild = rawById.get(child.id);
+      const unwrapChildren = rawChild?.children ?? child.children;
+      result.push(...unwrapChildren);
     } else {
       result.push(child);
     }
@@ -2238,10 +2272,12 @@ function areSpatiallyRelated(a: any, b: any): boolean {
  * Prevents the LLM from re-rendering axes, grid lines, and gradient fills
  * that the Recharts codegen already handles.
  */
-function mergeChartAdjacentSiblings(children: any[], rawChildren: any[]): { children: any[] } {
-  // Build a lookup map from raw children by node ID, so we can find the
-  // matching raw node for each (possibly flattened) simplified child.
-  // isChartSection needs the raw node (arcData, strokes, fills).
+function mergeChartAdjacentSiblings(
+  children: any[],
+  rawChildren: any[],
+  detectedChartNames?: Set<string>,
+): { children: any[] } {
+  // Build a lookup map from raw children by node ID
   const rawById = new Map<string, any>();
   const buildRawMap = (nodes: any[]) => {
     for (const n of nodes) {
@@ -2251,11 +2287,14 @@ function mergeChartAdjacentSiblings(children: any[], rawChildren: any[]): { chil
   };
   buildRawMap(rawChildren);
 
+  // Use LLM-detected chart names when available, fall back to sync name check
   const isChart: boolean[] = children.map((child) => {
     if (!child || child.visible === false) return false;
     const type = child.type;
     if (type !== 'FRAME' && type !== 'GROUP' && type !== 'INSTANCE') return false;
-    // Find matching raw node by ID for accurate chart detection
+    if (detectedChartNames && detectedChartNames.size > 0) {
+      return detectedChartNames.has(child.name ?? '');
+    }
     const raw = rawById.get(child.id) ?? child;
     return isChartSection(raw);
   });
@@ -2340,12 +2379,18 @@ async function convertPage(
   options: ConvertOptions,
   callbacks?: ConvertCallbacks,
   rawDocumentNode?: any,
+  detectedCharts?: Array<{ name: string; chartType: string }>,
 ): Promise<ConversionResult> {
   const { onStep, onAttempt } = callbacks ?? {};
   const rootNode = enhanced.nodes[0];
   let children: any[] = rootNode.children || [];
   // Raw Figma children for chart detection (preserves arcData, padding, etc.)
   const rawChildren: any[] = rawDocumentNode?.children ?? children;
+
+  // Compute detected chart names BEFORE flattening so chart containers aren't unwrapped
+  const detectedChartNames = new Set((detectedCharts ?? []).map((c) => c.name));
+  console.log(`[convertPage] detectedChartNames: [${[...detectedChartNames].join(', ')}]`);
+  console.log(`[convertPage] children before flatten: [${children.map((c: any) => c.name).join(', ')}]`);
 
   // Flatten wrapper frames: when a direct child is a plain container frame
   // (no fills, no border — purely layout) with ≥2 wide children, "unwrap" it
@@ -2354,13 +2399,14 @@ async function convertPage(
   //   where content-wrapper holds the actual form cards/sections.
   const parentWidth =
     rootNode.absoluteBoundingBox?.width ?? rootNode.dimensions?.width ?? rootNode.size?.x ?? 0;
-  children = flattenWrapperFrames(children, parentWidth);
+  children = flattenWrapperFrames(children, parentWidth, detectedChartNames, rawChildren);
+  console.log(`[convertPage] children after flatten: [${children.map((c: any) => c.name).join(', ')}]`);
 
   // Merge chart-adjacent siblings: when a child is detected as a chart,
   // remove neighboring siblings that are structurally part of the same chart
   // (axis labels, grid overlays, gradient fills). These are already handled
   // by the Recharts codegen — rendering them via LLM creates duplicate overlays.
-  const mergeResult = mergeChartAdjacentSiblings(children, rawChildren);
+  const mergeResult = mergeChartAdjacentSiblings(children, rawChildren, detectedChartNames);
   children = mergeResult.children;
 
   // Step C1: Extract page layout CSS
@@ -2400,12 +2446,24 @@ async function convertPage(
     pageBackground,
   };
 
-  // Build a list of visible children to match the sections array (which also skips hidden)
+  // Build a list of visible children to match the sections array (which also skips hidden).
+  // Use ID-based lookup for raw children since flattenWrapperFrames may change indices.
+  const rawChildById = new Map<string, any>();
+  const buildRawChildMap = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (n?.id) rawChildById.set(n.id, n);
+      if (n?.children) buildRawChildMap(n.children);
+    }
+  };
+  buildRawChildMap(rawChildren);
+
   const visibleChildren: Array<{ child: any; rawChild: any }> = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
+    const _raw = rawChildById.get(child.id);
+    console.log(`[convertPage] section[${i}] name="${child.name}" id=${child.id} rawName="${_raw?.name ?? 'NOT FOUND'}" rawChildren=${(_raw?.children ?? []).length}`);
     if (child.visible === false) continue;
-    visibleChildren.push({ child, rawChild: rawChildren[i] ?? child });
+    visibleChildren.push({ child, rawChild: rawChildById.get(child.id) ?? child });
   }
 
   // Generate all sections in parallel — each section is independent
@@ -2524,6 +2582,7 @@ async function convertPage(
           options.templateMode,
           rawChild,
           usedChartNames,
+          detectedChartNames,
         );
 
         // Store chart components directly on the section output for reliable mapping.
@@ -2760,15 +2819,16 @@ async function convertPage(
               return usageRe.test(reactCode);
             });
 
-            // Fallback: if no exports found or none used, import the PascalCase base name
+            // Skip components that aren't actually used in the generated code
             if (usedExports.length === 0) {
-              const pascal = sc.shadcnComponentName.charAt(0).toUpperCase() + sc.shadcnComponentName.slice(1);
-              usedExports.push(pascal);
+              return '';
             }
 
             return `import { ${usedExports.join(', ')} } from "@/components/ui/${sc.shadcnComponentName}";`;
-          }).join('\n');
-          reactCode = shadcnImports + '\n' + reactCode;
+          }).filter(Boolean).join('\n');
+          if (shadcnImports) {
+            reactCode = shadcnImports + '\n' + reactCode;
+          }
         }
 
         frameworkOutputs[fw] = mergedCSS

@@ -387,6 +387,46 @@ export const STRUCTURAL_FORM_ROLES = new Set([
   'sidebar', 'table',
 ]);
 
+/**
+ * Detects if a FRAME looks like a data table structurally:
+ * - Has a header row + multiple body rows (≥3 total)
+ * - Rows are FRAMEs of similar width
+ * - Rows have a consistent number of cell-children (±1)
+ * This catches tables whose Figma name is generic (e.g. "Frame 2147225802").
+ */
+function isStructuralTable(node: any): boolean {
+  const children = (node.children ?? []).filter((c: any) => c.visible !== false);
+  if (children.length < 3) return false;
+
+  // All children should be FRAME/GROUP (rows)
+  const rows = children.filter((c: any) =>
+    c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE',
+  );
+  if (rows.length < 3 || rows.length < children.length * 0.7) return false;
+
+  // Check consistent child count (cells per row) — allow ±1
+  const cellCounts = rows.map((r: any) =>
+    (r.children ?? []).filter((c: any) => c.visible !== false).length,
+  );
+  if (cellCounts.length === 0) return false;
+  const median = cellCounts.sort((a: number, b: number) => a - b)[Math.floor(cellCounts.length / 2)];
+  if (median < 3) return false; // need at least 3 columns
+  const consistent = cellCounts.filter((c: number) => Math.abs(c - median) <= 1).length;
+  if (consistent < cellCounts.length * 0.7) return false;
+
+  // Check similar width across rows
+  const widths = rows.map((r: any) => {
+    const bb = r.absoluteBoundingBox;
+    return bb?.width ?? r.dimensions?.width ?? r.size?.x ?? 0;
+  }).filter((w: number) => w > 0);
+  if (widths.length < 3) return false;
+  const maxW = Math.max(...widths);
+  const minW = Math.min(...widths);
+  if (maxW > 0 && minW / maxW < 0.8) return false;
+
+  return true;
+}
+
 function detectFrameBasedWidget(node: any, rawNode?: any): string | null {
   // First try name-based patterns (same as for INSTANCE nodes)
   const nameRole = matchComponentPattern(node.name ?? '');
@@ -523,19 +563,26 @@ function walkForComponents(
   path: number[],
   results: Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>,
   deepRecurse?: boolean,
+  chartNodeNames?: Set<string>,
 ): void {
   if (!node || node.visible === false) return;
 
-  // Check if this FRAME/GROUP is a chart/graph section (uses raw node for detection).
-  // Only check at depth 0 (the section root itself) to match the old behavior
-  // where only top-level page sections were tested. Checking inner frames causes
-  // false positives (navigation groups, text containers, etc.).
+  // Check if this FRAME/GROUP is a chart/graph section.
+  // Deep recurse at ALL depths — designers don't always name charts "chart" or "graph".
+  // When chartNodeNames is provided (from LLM detection), match at any depth since
+  // the LLM might return a child name (e.g. "BarLineChart" inside "Group 17").
+  // Without LLM, use structural analysis (detectChartType via isChartSection) which
+  // checks actual shapes, arcs, and grid lines — not names.
   const depth = path.length;
   const nodeType = rawNode?.type ?? node.type;
-  if (depth === 0 && (nodeType === 'FRAME' || nodeType === 'GROUP' || nodeType === 'INSTANCE')) {
-    if (rawNode && isChartSection(rawNode)) {
-      const chartName = node.name ?? rawNode.name ?? 'Chart';
-      // Unique key per chart instance (by position in tree)
+  if (nodeType === 'FRAME' || nodeType === 'GROUP' || nodeType === 'INSTANCE') {
+    const nodeName = node.name ?? rawNode?.name ?? '';
+
+    const isChart = chartNodeNames
+      ? chartNodeNames.has(nodeName)
+      : (rawNode && isChartSection(rawNode));
+    if (isChart) {
+      const chartName = nodeName || 'Chart';
       const key = `chart::${chartName}::${path.join('-')}`;
       if (!results.has(key)) {
         results.set(key, { formRole: 'chart', componentName: chartName, instances: [] });
@@ -546,8 +593,37 @@ function walkForComponents(
         props: {},
         treePath: [...path],
       });
-      // Don't recurse into charts — they're leaf units
       return;
+    }
+
+    // Check if the section root itself is a structural component (table, sidebar).
+    // This only applies at depth 0 — structural roles are section-level patterns.
+    if (depth === 0) {
+      let rootStructRole = matchComponentPattern(nodeName);
+      if (!rootStructRole && rawNode?.name && rawNode.name !== nodeName) {
+        rootStructRole = matchComponentPattern(rawNode.name);
+      }
+      if (!rootStructRole && isStructuralTable(rawNode ?? node)) {
+        rootStructRole = 'table';
+      }
+      if (rootStructRole && STRUCTURAL_FORM_ROLES.has(rootStructRole)) {
+        if (rootStructRole === 'sidebar' && !validateSidebarFormRole(node, rawNode)) {
+          rootStructRole = null;
+        }
+      }
+      if (rootStructRole && STRUCTURAL_FORM_ROLES.has(rootStructRole)) {
+        const key = `frame::${nodeName}::${rootStructRole}`;
+        if (!results.has(key)) {
+          results.set(key, { formRole: rootStructRole, componentName: nodeName, instances: [] });
+        }
+        results.get(key)!.instances.push({
+          node,
+          rawNode,
+          props: {},
+          treePath: [...path],
+        });
+        // Fall through — continue recursing to find leaf widgets inside
+      }
     }
   }
 
@@ -561,7 +637,15 @@ function walkForComponents(
     // First check for structural components (sidebar, table) by name.
     // These are collected AND recursion continues into their children
     // so leaf widgets inside (checkboxes, switches, badges) are also found.
+    // Check both simplified and raw node names — the simplifier may rename
+    // "table" to "Frame 2147225802" but the raw node retains the original name.
     let structNameRole = matchComponentPattern(node.name ?? '');
+    if (!structNameRole && rawNode?.name && rawNode.name !== node.name) {
+      structNameRole = matchComponentPattern(rawNode.name);
+    }
+    if (process.env.DISCOVERY_DEBUG) {
+      console.log(`[discovery] depth=${path.length} type=${node.type} name="${node.name}" rawName="${rawNode?.name ?? '?'}" structRole=${structNameRole} children=${(node.children ?? []).length}`);
+    }
     // Validate structural roles using Figma dimensions — e.g. "Navbar" matches
     // the sidebar regex but is wider than tall, so it's not actually a sidebar.
     if (structNameRole && STRUCTURAL_FORM_ROLES.has(structNameRole)) {
@@ -569,6 +653,13 @@ function walkForComponents(
         structNameRole = null; // not a sidebar — let it fall through
       }
     }
+    // If name matching didn't find a table, try structural detection:
+    // a FRAME with ≥3 same-width child rows each having ≥3 cells is a table
+    // regardless of its Figma name (handles "Frame 2147225802" etc.)
+    if (!structNameRole && isStructuralTable(rawNode ?? node)) {
+      structNameRole = 'table';
+    }
+
     if (structNameRole && STRUCTURAL_FORM_ROLES.has(structNameRole)) {
       const key = `frame::${node.name}::${structNameRole}`;
       if (!results.has(key)) {
@@ -672,7 +763,7 @@ function walkForComponents(
       const child = node.children[i];
       const rawChild = rawChildren[i] ?? child;
       if (child && child.visible !== false) {
-        walkForComponents(child, rawChild, [...path, i], results, deepRecurse);
+        walkForComponents(child, rawChild, [...path, i], results, deepRecurse, chartNodeNames);
       }
     }
   }
@@ -695,11 +786,11 @@ function walkForComponents(
 export function discoverComponents(
   sectionNode: any,
   rawSectionNode?: any,
-  options?: { deepRecurse?: boolean },
+  options?: { deepRecurse?: boolean; chartNodeNames?: Set<string> },
 ): ComponentDiscoveryResult {
   const componentMap = new Map<string, { formRole: string; componentName: string; instances: ComponentInstance[] }>();
 
-  walkForComponents(sectionNode, rawSectionNode ?? sectionNode, [], componentMap, options?.deepRecurse);
+  walkForComponents(sectionNode, rawSectionNode ?? sectionNode, [], componentMap, options?.deepRecurse, options?.chartNodeNames);
 
   const components: DiscoveredComponent[] = [];
   let totalInstances = 0;

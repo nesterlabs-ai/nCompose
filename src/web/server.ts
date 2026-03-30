@@ -24,6 +24,7 @@ import rateLimit from 'express-rate-limit';
 import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
 import { isDynamoEnabled, saveUserProject } from './db/index.js';
+import { getOAuthUrl, exchangeCode, getUser, getRepos, createRepo, pushFiles } from './github.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1361,17 +1362,128 @@ app.post('/api/save-file', requireAuthOrFree as any, requireSessionOwner as any,
 });
 
 /**
- * GET /api/config — Returns Supabase config for GitHub push (if configured)
+ * GET /api/config — Returns feature flags for the client
  */
 app.get('/api/config', (_req: any, res: any) => {
-  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-  const supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
   res.json({
-    supabaseUrl: supabaseUrl || null,
-    supabaseKey: supabaseKey || null,
-    githubPushConfigured: Boolean(supabaseUrl && supabaseKey),
+    githubPushConfigured: Boolean(config.github.clientId && config.github.clientSecret),
     authEnabled: isAuthEnabled(),
   });
+});
+
+// ── GitHub API routes ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/github/oauth-url — Returns GitHub OAuth authorization URL
+ */
+app.get('/api/github/oauth-url', (req: any, res: any) => {
+  try {
+    const redirectUri = req.query.redirect_uri as string;
+    if (!redirectUri) {
+      res.status(400).json({ error: 'redirect_uri is required' });
+      return;
+    }
+    const result = getOAuthUrl(redirectUri);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /api/github/exchange-code — Exchanges OAuth code for access token
+ */
+app.post('/api/github/exchange-code', async (req: any, res: any) => {
+  try {
+    const { code, redirectUri } = req.body;
+    if (!code || !redirectUri) {
+      res.status(400).json({ error: 'code and redirectUri are required' });
+      return;
+    }
+    const result = await exchangeCode(code, redirectUri);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as any).status === 401 ? 401 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/github/user — Returns authenticated GitHub user info
+ */
+app.get('/api/github/user', async (req: any, res: any) => {
+  try {
+    const token = req.headers['x-github-token'] as string;
+    if (!token) {
+      res.status(401).json({ error: 'x-github-token header is required' });
+      return;
+    }
+    const user = await getUser(token);
+    res.json(user);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as any).status === 401 ? 401 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/github/repos — Returns authenticated user's repositories
+ */
+app.get('/api/github/repos', async (req: any, res: any) => {
+  try {
+    const token = req.headers['x-github-token'] as string;
+    if (!token) {
+      res.status(401).json({ error: 'x-github-token header is required' });
+      return;
+    }
+    const repos = await getRepos(token);
+    res.json(repos);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as any).status === 401 ? 401 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * POST /api/github/create-repo — Creates a new GitHub repository
+ */
+app.post('/api/github/create-repo', async (req: any, res: any) => {
+  try {
+    const { githubToken, repo: name, repoDescription, isPrivate } = req.body;
+    if (!githubToken || !name) {
+      res.status(400).json({ error: 'githubToken and repo are required' });
+      return;
+    }
+    const result = await createRepo(githubToken, name, repoDescription || '', Boolean(isPrivate));
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as any).status === 401 ? 401 : (err as any).status === 422 ? 422 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * POST /api/github/push — Pushes files to a GitHub repository
+ */
+app.post('/api/github/push', async (req: any, res: any) => {
+  try {
+    const { githubToken, owner, repo, branch, commitMessage, files } = req.body;
+    if (!githubToken || !owner || !repo || !branch || !commitMessage || !Array.isArray(files)) {
+      res.status(400).json({ error: 'githubToken, owner, repo, branch, commitMessage, and files are required' });
+      return;
+    }
+    const result = await pushFiles(githubToken, owner, repo, branch, commitMessage, files);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as any).status === 401 ? 401 : (err as any).status === 404 ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
 });
 
 /**

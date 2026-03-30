@@ -34,196 +34,139 @@ export interface SeriesInfo {
 }
 
 export interface ChartMetadata {
+  // ── Structural fields (always required — identity & data) ──
+
   chartType: ChartType;
   width: number;
   height: number;
-  /** All chart series (multi-series support) */
   series: SeriesInfo[];
-  /** PascalCase component name, e.g. "InterestEarnedChart" */
   componentName: string;
-  /** Kebab-case BEM base class, e.g. "interest-earned-chart" */
   bemBase: string;
-  /** X-axis labels from Figma, e.g. ["Jan", ..., "Dec"] */
   xAxisLabels: string[];
-  /** Y-axis min value */
   yAxisMin: number;
-  /** Y-axis max value */
   yAxisMax: number;
-  /** Y-axis tick values extracted from Figma (sorted ascending) */
   yAxisTicks: number[];
-  /** Number of data points */
   dataPointCount: number;
-  /** Chart container background color */
-  backgroundColor: string;
-  /** Axis label text color */
-  axisLabelColor: string;
-  /** Period options from switcher, e.g. ["Lifetime", "Year-to-date"] */
   periodOptions: string[];
   hasSwitcher: boolean;
   hasLegend: boolean;
-
-  // ── Title/subtitle/summary text extracted from non-chart children ──
-
-  /** Chart section title, e.g. "Earning Potential" */
-  chartTitle: string;
-  /** Chart section subtitle, e.g. "See how much your money could grow with Banky" */
-  chartSubtitle: string;
-  /** Summary amount displayed below the chart, e.g. "$1,525" */
-  summaryAmount: string;
-  /** Summary description text below the amount */
-  summaryText: string;
-  /** CTA button text, e.g. "Learn how this is calculated here" */
-  summaryCtaText: string;
-
-  // ── Title/subtitle styling ──
-  titleFontSize: number;
-  titleFontWeight: number;
-  titleColor: string;
-  subtitleFontSize: number;
-  subtitleColor: string;
-
-  // ── Summary container styling ──
-  summaryBg: string;
-  summaryBorderRadius: number;
-  summaryBorderColor: string;
-  summaryBorderWidth: number;
-  summaryPadding: string;
-
-  // ── Amount styling ──
-  amountFontSize: number;
-  amountFontWeight: number;
-  amountColor: string;
-
-  // ── Summary text styling ──
-  summaryTextFontSize: number;
-  summaryTextColor: string;
-
-  // ── CTA button styling ──
-  ctaFontSize: number;
-  ctaFontWeight: number;
-  ctaColor: string;
-  ctaBg: string;
-  ctaBorderColor: string;
-  ctaBorderRadius: number;
-  ctaPadding: string;
-
-  // ── Styling extracted from Figma (no hardcoded values) ──
-
-  /** Grid line color from LINE/VECTOR nodes in grid frames */
-  gridLineColor: string;
-  /** Grid stroke dash array, e.g. "3 3" or "" for solid */
-  gridStrokeDasharray: string;
-
+  /** Bar chart data extracted from Figma bar structure. Null if not detected. */
+  barData: Array<{ name: string; value: number; color?: string }> | null;
+  /** Radar chart axis labels extracted from radially arranged TEXT nodes. */
+  radarAxes: string[];
+  /** Concentric ring data for radial charts. */
+  rings: Array<{ name: string; color: string; trackColor: string; progress: number; innerRadius: number; outerRadius: number }>;
+  /** Inner radius ratio for donut charts (0–1, from Figma arcData.innerRadius). */
+  innerRadiusRatio: number;
   /** Chart content area height (excluding legends/switcher) */
   chartAreaHeight: number;
 
-  /** Inner radius ratio for donut charts (0–1, from Figma arcData.innerRadius).
-   *  0 = pie (no hole), >0 = donut. Defaults to 0. */
-  innerRadiusRatio: number;
+  // ── Text content (empty string when not found in Figma) ──
 
-  /** Concentric ring data for radial charts. Each ring has a name, color, and progress (0–100). */
-  rings: Array<{ name: string; color: string; trackColor: string; progress: number; innerRadius: number; outerRadius: number }>;
-
-  /** Center text inside a donut/radial chart hole, e.g. "9.2K" */
+  chartTitle: string;
+  chartSubtitle: string;
+  summaryAmount: string;
+  summaryText: string;
+  summaryCtaText: string;
   donutCenterText: string;
-  /** Font size of the donut center text */
-  donutCenterFontSize: number;
-  /** Font weight of the donut center text */
-  donutCenterFontWeight: number;
-  /** Color of the donut center text */
-  donutCenterColor: string;
-  /** Secondary center text (subtitle below the main center text), e.g. "Active users" */
   centerSubtext: string;
-  /** Font size of the center subtext */
-  centerSubtextFontSize: number;
-  /** Font weight of the center subtext */
-  centerSubtextFontWeight: number;
-  /** Color of the center subtext */
-  centerSubtextColor: string;
 
-  /** Container corner radius */
-  containerBorderRadius: number;
-  /** Container padding from auto-layout */
-  containerPadding: { top: number; right: number; bottom: number; left: number };
+  // ── All styling fields below are OPTIONAL ──
+  // Only populated when Figma provides the value.
+  // When undefined, codegen omits the prop and lets Recharts use its own defaults.
 
-  /** Axis tick font size */
-  axisFontSize: number;
-  /** Y-axis frame width */
-  yAxisWidth: number;
+  // Container
+  backgroundColor?: string;
+  containerBorderRadius?: number;
+  containerPadding?: { top: number; right: number; bottom: number; left: number };
 
-  /** Series line/bar stroke width */
-  seriesStrokeWidth: number;
+  // Title/subtitle styling
+  titleFontSize?: number;
+  titleFontWeight?: number;
+  titleColor?: string;
+  subtitleFontSize?: number;
+  subtitleColor?: string;
 
-  /** Data dot radius */
-  dotRadius: number;
-  /** Data dot stroke (border) color */
-  dotStrokeColor: string;
-  /** Data dot stroke width */
-  dotStrokeWidth: number;
+  // Summary container styling
+  summaryBg?: string;
+  summaryBorderRadius?: number;
+  summaryBorderColor?: string;
+  summaryBorderWidth?: number;
+  summaryPadding?: string;
 
-  /** Gradient start opacity for area charts */
-  gradientStartOpacity: number;
+  // Amount styling
+  amountFontSize?: number;
+  amountFontWeight?: number;
+  amountColor?: string;
 
-  /** Bar corner radius [topLeft, topRight, bottomLeft, bottomRight] */
-  barRadius: [number, number, number, number];
+  // Summary text styling
+  summaryTextFontSize?: number;
+  summaryTextColor?: string;
 
-  /** Bar chart data extracted from Figma bar structure (labels + values from heights).
-   *  When present, codegen uses these instead of generating synthetic data.
-   *  Each entry may include a color if bars have different fills. */
-  barData: Array<{ name: string; value: number; color?: string }> | null;
+  // CTA button styling
+  ctaFontSize?: number;
+  ctaFontWeight?: number;
+  ctaColor?: string;
+  ctaBg?: string;
+  ctaBorderColor?: string;
+  ctaBorderRadius?: number;
+  ctaPadding?: string;
 
-  /** Radar chart axis labels (e.g. ["Extensions", "Site Content", "Clipboard Paste", ...]).
-   *  Extracted from TEXT nodes arranged radially around the chart center. */
-  radarAxes: string[];
+  // Axis styling
+  axisLabelColor?: string;
+  axisFontSize?: number;
+  yAxisWidth?: number;
 
-  /** Chart area margin */
-  chartMargin: { top: number; right: number; bottom: number; left: number };
+  // Grid styling
+  gridLineColor?: string;
+  gridStrokeDasharray?: string;
 
-  // ── Legend styling ──
+  // Series / line / area styling
+  seriesStrokeWidth?: number;
+  gradientStartOpacity?: number;
 
-  /** Gap between legend items */
-  legendGap: number;
-  /** Gap between legend dot and label */
-  legendItemGap: number;
-  /** Legend dot size (width/height) */
-  legendDotSize: number;
-  /** Legend dot border-radius ('50%' for circle, 'Npx' for rounded rect) */
-  legendDotBorderRadius: string;
-  /** Legend dot opacity */
-  legendDotOpacity: number;
-  /** Legend label font size */
-  legendLabelFontSize: number;
-  /** Legend label text color */
-  legendLabelColor: string;
-  /** Margin below legends section */
-  legendMarginBottom: number;
+  // Dot styling
+  dotRadius?: number;
+  dotStrokeColor?: string;
+  dotStrokeWidth?: number;
 
-  // ── Switcher/tab styling ──
+  // Bar styling
+  barRadius?: [number, number, number, number];
 
-  /** Switcher container background */
-  switcherBg: string;
-  /** Switcher container border-radius */
-  switcherBorderRadius: number;
-  /** Switcher container padding */
-  switcherPadding: string;
-  /** Margin above switcher */
-  switcherMarginTop: number;
-  /** Switcher button padding */
-  switcherButtonPadding: string;
-  /** Switcher button font size */
-  switcherButtonFontSize: number;
-  /** Switcher button text color (inactive) */
-  switcherButtonColor: string;
-  /** Switcher button border-radius */
-  switcherButtonBorderRadius: number;
-  /** Active tab background */
-  switcherActiveBg: string;
-  /** Active tab text color */
-  switcherActiveColor: string;
-  /** Active tab font weight */
-  switcherActiveFontWeight: number;
-  /** Active tab box-shadow */
-  switcherActiveBoxShadow: string;
+  // Chart area margin
+  chartMargin?: { top: number; right: number; bottom: number; left: number };
+
+  // Donut/radial center text styling
+  donutCenterFontSize?: number;
+  donutCenterFontWeight?: number;
+  donutCenterColor?: string;
+  centerSubtextFontSize?: number;
+  centerSubtextFontWeight?: number;
+  centerSubtextColor?: string;
+
+  // Legend styling
+  legendGap?: number;
+  legendItemGap?: number;
+  legendDotSize?: number;
+  legendDotBorderRadius?: string;
+  legendDotOpacity?: number;
+  legendLabelFontSize?: number;
+  legendLabelColor?: string;
+  legendMarginBottom?: number;
+
+  // Switcher/tab styling
+  switcherBg?: string;
+  switcherBorderRadius?: number;
+  switcherPadding?: string;
+  switcherMarginTop?: number;
+  switcherButtonPadding?: string;
+  switcherButtonFontSize?: number;
+  switcherButtonColor?: string;
+  switcherButtonBorderRadius?: number;
+  switcherActiveBg?: string;
+  switcherActiveColor?: string;
+  switcherActiveFontWeight?: number;
+  switcherActiveBoxShadow?: string;
 }
 
 // ── Structural thresholds (named constants, not magic numbers) ──────────────
@@ -381,369 +324,101 @@ function collectVisualNodes(root: any): VisualNode[] {
   return results;
 }
 
-// ── Semantic Name Analysis ──────────────────────────────────────────────────
-//
-// Before running expensive geometric heuristics, analyse the Figma node names
-// in the subtree to determine whether the section is semantically a chart/graph
-// or a known UI pattern (form, navigation, table, etc.).
-//
-// The approach is data-driven:
-//  1. Tokenize every node name in the subtree into lowercase words.
-//  2. Score each token against two weighted maps (chart-positive, UI-negative).
-//  3. If the aggregate score crosses a threshold → early accept/reject.
-//  4. If ambiguous (generic names like "Frame 1") → fall through to geometry.
-//
-// The maps are intentionally broad categories, NOT exact component names.
-// Designers can name things anything — we match *semantic categories* not
-// specific strings.
-
-/** Tokens whose presence strongly suggests the node IS a chart/graph. */
-const CHART_POSITIVE_TOKENS: ReadonlyMap<string, number> = new Map([
-  // data-visualisation vocabulary
-  ['chart',       3], ['graph',       3], ['plot',        3],
-  ['histogram',   3], ['sparkline',   3], ['visualisation', 2], ['visualization', 2],
-  // chart types
-  ['pie',         2], ['donut',       2], ['doughnut',    2],
-  ['bar',         1], ['column',      1], ['line',        1],
-  ['area',        1], ['scatter',     1], ['radar',       1],
-  ['funnel',      1], ['treemap',     1], ['heatmap',     1],
-  ['candlestick', 2], ['waterfall',   2], ['gauge',       2],
-  // chart parts
-  ['axis',        2], ['legend',      1], ['tooltip',     1],
-  ['gridline',    2], ['tick',        1], ['datapoint',   2],
-  ['series',      2], ['dataset',     2],
-]);
-
-/** Tokens whose presence strongly suggests the node is NOT a chart. */
-const UI_NEGATIVE_TOKENS: ReadonlyMap<string, number> = new Map([
-  // navigation & layout
-  ['nav',         3], ['navbar',      3], ['sidebar',     3],
-  ['header',      2], ['footer',      2], ['toolbar',     2],
-  ['menu',        2], ['breadcrumb',  2], ['pagination',  2],
-  ['tab',         1], ['drawer',      2], ['appbar',      2],
-  ['statusbar',   3], ['status',      1],
-  // form elements
-  ['form',        3], ['input',       2], ['textarea',    2],
-  ['select',      2], ['dropdown',    2], ['checkbox',    3],
-  ['radio',       3], ['toggle',      3], ['switch',      3],
-  ['slider',      1], ['picker',      2], ['datepicker',  2],
-  ['timepicker',  2], ['upload',      2], ['file',        1],
-  // interactive components
-  ['button',      2], ['btn',         2], ['cta',         1],
-  ['modal',       2], ['dialog',      2], ['popover',     2],
-  ['toast',       2], ['snackbar',    2], ['alert',       2],
-  // content containers
-  ['card',        1], ['list',        1], ['table',       2],
-  ['row',         1], ['cell',        1], ['grid',        1],
-  ['avatar',      2], ['badge',       2], ['chip',        2],
-  ['tag',         1], ['icon',        1], ['logo',        2],
-  // status & indicators
-  ['spinner',     2], ['loader',      2], ['skeleton',    2],
-  ['progress',    1], ['stepper',     2],
-]);
+// ── LLM-First Chart Detection ────────────────────────────────────────────────
 
 /**
- * Tokenize a Figma node name into lowercase words.
- *
- * Handles camelCase, PascalCase, kebab-case, snake_case, and spaces.
- * E.g. "SidebarNavigation" → ["sidebar", "navigation"]
- *      "bar-chart-section" → ["bar", "chart", "section"]
- *      "_Application nav menu button" → ["application", "nav", "menu", "button"]
+ * Detects ALL charts in a page/section with a single LLM call.
+ * The LLM understands context — distinguishes chart data from icons, maps,
+ * tables, and decorative elements better than structural heuristics.
  */
-function tokenizeName(name: string): string[] {
-  if (!name) return [];
-  // Insert space before uppercase letters (camelCase/PascalCase split)
-  const spaced = name.replace(/([a-z])([A-Z])/g, '$1 $2')
-                      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
-  // Split on non-alphanumeric characters and lowercase
-  return spaced
-    .split(/[^a-zA-Z0-9]+/)
-    .map(t => t.toLowerCase())
-    .filter(t => t.length > 0);
-}
+export async function detectChartsInPage(
+  node: any,
+  llm: LLMProvider,
+): Promise<Array<{ name: string; chartType: ChartType }>> {
+  if (!node) return [];
 
-/**
- * Semantic pre-filter: analyse the names of a node and its descendants to
- * decide whether the subtree looks like a chart or a UI component.
- *
- * Returns:
- *   'chart'     → high confidence this IS a chart (skip geometry, accept)
- *   'ui'        → high confidence this is NOT a chart (skip geometry, reject)
- *   'ambiguous' → names are generic, fall through to geometric analysis
- */
-function semanticNameSignal(node: any): 'chart' | 'ui' | 'ambiguous' {
-  let chartScore = 0;
-  let uiScore = 0;
-
-  // Collect names: the node itself + all descendants (limit depth to avoid
-  // pathologically deep trees in big pages)
-  const names: string[] = [];
-  (function collect(n: any, depth: number) {
-    if (!n || depth > 6) return;
-    if (n.name) names.push(n.name);
-    for (const child of n.children ?? []) {
-      collect(child, depth + 1);
-    }
-  })(node, 0);
-
-  // Also check the node's own name with extra weight (×2) since the top-level
-  // name is the most intentional label a designer assigns.
-  const rootTokens = tokenizeName(node.name ?? '');
-
-  // Score root tokens with double weight
-  for (const token of rootTokens) {
-    const cw = CHART_POSITIVE_TOKENS.get(token);
-    if (cw) chartScore += cw * 2;
-    const uw = UI_NEGATIVE_TOKENS.get(token);
-    if (uw) uiScore += uw * 2;
-  }
-
-  // Score all descendant names
-  for (const name of names) {
-    const tokens = tokenizeName(name);
-    for (const token of tokens) {
-      const cw = CHART_POSITIVE_TOKENS.get(token);
-      if (cw) chartScore += cw;
-      const uw = UI_NEGATIVE_TOKENS.get(token);
-      if (uw) uiScore += uw;
-    }
-  }
-
-  const _dbg = process.env.CHART_DEBUG
-    ? (msg: string) => console.log(`[semanticName "${node.name ?? '?'}"] ${msg}`)
-    : () => {};
-  _dbg(`chartScore=${chartScore} uiScore=${uiScore} names=${names.length}`);
-
-  // Decision thresholds — these determine how confident we need to be.
-  // A chart-positive name like "Bar Chart" scores 3+3 = 6 on root alone (×2 = 12).
-  // A UI name like "Sidebar navigation" scores 3+0 = 3 for sidebar (×2 = 6).
-  //
-  // We only override geometry when the signal is clear.
-  // If both scores are low or close → ambiguous → let geometry decide.
-
-  // Strong chart signal and no meaningful UI signal
-  if (chartScore >= 4 && chartScore > uiScore * 2) {
-    _dbg(`→ CHART (chartScore dominates)`);
-    return 'chart';
-  }
-
-  // Strong UI signal and no meaningful chart signal
-  if (uiScore >= 4 && uiScore > chartScore * 2) {
-    _dbg(`→ UI (uiScore dominates)`);
-    return 'ui';
-  }
-
-  _dbg(`→ AMBIGUOUS`);
-  return 'ambiguous';
-}
-
-// ── Detection ───────────────────────────────────────────────────────────────
-
-/**
- * Returns true if a node looks like a chart/graph section.
- *
- * Two-phase detection:
- *   Phase 1 — Semantic name analysis (fast, uses Figma node names)
- *   Phase 2 — Geometric heuristics (3-signal system, more expensive)
- *
- * Phase 1 can early-accept or early-reject with high confidence,
- * avoiding false positives from geometric analysis on UI elements
- * (navbars, checkboxes, sliders, etc.).
- */
-/**
- * Async version of isChartSection that uses LLM for ambiguous cases.
- * When structural analysis can't confidently decide, asks the LLM.
- * Falls back to structural-only when no LLM is provided or LLM fails.
- */
-export async function isChartSectionAsync(node: any, llmProvider?: LLMProvider): Promise<boolean> {
-  // Run structural analysis first
-  const structuralResult = isChartSectionStructural(node);
-  if (structuralResult !== 'ambiguous') {
-    return structuralResult === 'accept';
-  }
-
-  // Ambiguous — ask LLM if available
-  if (!llmProvider) return false; // no LLM, be conservative
-
-  try {
-    const summary = buildNodeSummary(node, 0, 5);
-    const systemPrompt = `You are a design analysis expert. Given a Figma layer tree, determine if this is a data chart/graph (bar, line, area, pie, donut, radar, etc.) or a regular UI section (form, card, navigation, contact page, etc.).
-
-Respond with ONLY a JSON object — no markdown, no explanation:
-{"isChart": true} or {"isChart": false}
-
-Key differences:
-- Charts have DATA SHAPES (bars, lines, pie slices) arranged to visualize data values
-- UI sections have ICONS, BUTTONS, TEXT FIELDS, CARDS, MAPS — not data visualization
-- A section with colored icons aligned vertically is NOT a chart — it's a UI list
-- A Google Maps mockup with pins is NOT a chart
-- Colored shapes are only chart data when they represent numerical values (varying heights/widths/angles)`;
-
-    const userPrompt = `Is this Figma section a data chart/graph?\n\n${summary}`;
-    const response = await llmProvider.generate(userPrompt, systemPrompt);
-    const match = response.match(/\{[\s\S]*?"isChart"\s*:\s*(true|false)[\s\S]*?\}/);
-    if (match) {
-      const isChart = match[1] === 'true';
-      const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSectionAsync "${node.name ?? '?'}"] ${msg}`) : () => {};
-      _dbg(`LLM says isChart=${isChart}`);
-      return isChart;
-    }
-  } catch {
-    // LLM failed — fall back to conservative reject
-  }
-
-  return false; // ambiguous + LLM failed = reject
-}
-
-/**
- * Sync version — uses structural analysis only. Returns boolean.
- * For backward compatibility with callers that can't await.
- */
-export function isChartSection(node: any): boolean {
-  const result = isChartSectionStructural(node);
-  // Ambiguous cases without LLM: accept if at least 1 supporting signal
-  if (result === 'ambiguous') return false;
-  return result === 'accept';
-}
-
-/**
- * Core structural analysis. Returns 'accept', 'reject', or 'ambiguous'.
- * 'ambiguous' means Signal A found shapes but confidence is unclear.
- */
-function isChartSectionStructural(node: any): 'accept' | 'reject' | 'ambiguous' {
-  if (!node) return 'reject';
-  const _dbg = process.env.CHART_DEBUG ? (msg: string) => console.log(`[isChartSection "${node.name ?? '?'}"] ${msg}`) : () => {};
-
-  // ── Phase 0: Minimum size gate ──
-  // Charts need meaningful vertical and horizontal space. Very shallow frames
-  // (status bars, nav bars, headers) or extremely narrow strips cannot be charts.
   const bb = node.absoluteBoundingBox;
   if (bb) {
-    const w = bb.width ?? 0;
     const h = bb.height ?? 0;
-    // Reject if height < 15% of width (too shallow — status bars, headers, breadcrumbs)
-    // or if height < 60px absolute (even a sparkline chart needs ~60px vertical space)
-    if (h < w * 0.15 || h < 60) {
-      _dbg(`→ REJECT: too shallow (${w}×${h}, ratio=${(h/w).toFixed(2)})`);
-      return 'reject';
-    }
+    const w = bb.width ?? 0;
+    if (h < 60 || h < w * 0.15) return [];
   }
 
-  // ── Phase 0b: Complexity gate ──
-  // A chart section typically has few direct children (chart area, legend, title,
-  // axes, switcher — rarely more than 6-7). A full page or dashboard with 8+
-  // direct visible children is too complex to be a single chart.
-  // Uses the node's own children count from Figma, not a hardcoded pixel value.
-  const visibleDirectChildren = (node.children ?? []).filter((c: any) => c.visible !== false);
-  if (visibleDirectChildren.length > 7) {
-    _dbg(`→ REJECT: too many direct children (${visibleDirectChildren.length}) — likely a page/section, not a chart`);
-    return 'reject';
-  }
+  try {
+    const summary = buildNodeSummary(node, 0, 6);
 
-  // ── Phase 1: Semantic name analysis ──
-  // Check Figma node names in the subtree for chart vs UI signals.
-  // This is ADVISORY — it influences scoring but does NOT hard-reject.
-  // A chart inside a "Widget" frame with "Tag" and "Icon" children is still
-  // a chart. Signal A (actual data shapes) is the definitive gate.
-  const nameSignal = semanticNameSignal(node);
+    const systemPrompt = `You are a Figma design analyzer. Given a page's node tree, identify ALL chart/graph sections and their types.
 
-  // ── Phase 2: Geometric heuristics ──
+Charts have DATA SHAPES (bars, lines, pie slices, radar polygons, area fills) arranged to visualize numerical values. Look for:
+- VECTOR/RECTANGLE nodes arranged as bars (varying heights, aligned edges)
+- VECTOR nodes with strokes forming lines or area fills with gradients
+- ELLIPSE/ARC nodes with arcData forming pie or donut slices
+- Concentric shapes forming radar/spider grids
+- Axis labels (numeric text at edges), grid lines, legends (colored dots + text)
 
-  // If the node has multiple children that are each independently chart sections,
-  // it's a multi-chart container (e.g. a row of 3 pie charts), not a single chart.
-  // Return false so the pipeline routes it to PATH C (multi-section page) or PATH B.
-  const children: any[] = node.children ?? [];
-  if (children.length >= 2) {
-    let chartChildCount = 0;
-    for (const child of children) {
-      if (child.visible === false) continue;
-      if (child.type === 'FRAME' || child.type === 'GROUP' || child.type === 'INSTANCE') {
-        // Skip small children (legends, labels, headings) — they can't be independent chart sections.
-        const childBB = child.absoluteBoundingBox;
-        const childH = childBB?.height ?? 0;
-        if (childH < 50) continue;
-        const childSignalA = hasDataShapeCluster(child);
-        if (childSignalA.detected && childSignalA.highConfidence) chartChildCount++;
+NOT charts:
+- Tables with rows/columns of data (even if they have colored cells or status indicators)
+- Icons, logos, or decorative illustrations
+- Google Maps or map mockups
+- Forms, input fields, buttons, cards, navigation
+- Decorative chart previews inside promotional/CTA pages
+- Progress bars or loading indicators
+- Sidebars, navbars, or any navigation elements
+
+Chart types: line, area, bar, pie, donut, radar, radial, scatter, funnel, treemap, composed
+
+For EACH chart found (even if multiple charts share the same name), provide:
+- "name": the Figma node name exactly as shown in the tree
+- "chartType": the chart type
+
+IMPORTANT: If the tree has multiple charts with the same name, list EACH one separately.
+
+Respond with ONLY JSON — no markdown, no explanation:
+{"charts": [{"name": "exact node name", "chartType": "bar"}]}
+or {"charts": []} if no charts found.`;
+
+    const userPrompt = `Identify all charts in this Figma node tree:\n\n${summary}`;
+
+    const response = await llm.generate(userPrompt, systemPrompt);
+    const jsonMatch = response.match(/\{[\s\S]*?"charts"\s*:\s*\[[\s\S]*?\]\s*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed.charts)) {
+        return parsed.charts
+          .filter((c: any) => c.name && c.chartType && c.chartType !== 'unknown')
+          .map((c: any) => ({ name: c.name, chartType: c.chartType as ChartType }));
       }
-      if (chartChildCount >= 2) return 'reject';
     }
+  } catch {
+    // LLM failed — return empty
   }
 
-  const signalA = hasDataShapeCluster(node);
-  const signalB = hasAxisLikeTextArrangement(node);
-  const signalC = hasParallelGridLines(node);
+  return [];
+}
 
-  const signalCount = [signalA.detected, signalB, signalC].filter(Boolean).length;
+/**
+ * Sync chart detection using structural analysis — does NOT rely on node names.
+ * Requires MULTIPLE confirming signals to avoid false positives on UI sections
+ * (maps, card grids, icon layouts) that have colored shapes.
+ * Used as fallback when LLM detection is unavailable.
+ */
+export function isChartSection(node: any): boolean {
+  if (!node) return false;
+  const bb = node.absoluteBoundingBox;
+  if (bb && (bb.height < 60 || bb.height < bb.width * 0.15)) return false;
 
+  // Require at least 2 of 3 signals: data shapes (via chart type), axis text, grid lines
+  const chartType = detectChartType(node);
+  if (chartType === 'unknown') return false;
 
-  // Count all TEXT nodes to distinguish UI-heavy sections (nav, forms) from charts
-  const allTextNodes = findAllNodes(node, (n: any) => n.type === 'TEXT');
-  const totalTextCount = allTextNodes.length;
-  const longTextCount = allTextNodes.filter((t: any) => {
-    const chars = (t.characters ?? '').length;
-    return chars > 20;
-  }).length;
+  const hasAxes = hasAxisLikeTextArrangement(node);
+  const hasGrid = hasParallelGridLines(node);
 
-  _dbg(`nameSignal=${nameSignal} signalA=${JSON.stringify(signalA)} signalB=${signalB} signalC=${signalC} signals=${signalCount} texts=${totalTextCount} longTexts=${longTextCount}`);
-  if (process.env.CHART_DEBUG && signalA.detected) {
-    // Dump what shapes were found
-    const debugVN = collectVisualNodes(node);
-    const pieE = debugVN.filter((vn) => (vn.hasArcData || (vn.bbox.w > 0 && vn.bbox.h > 0 && Math.max(vn.bbox.w, vn.bbox.h) / Math.min(vn.bbox.w, vn.bbox.h) <= 1.3)) && Math.max(vn.bbox.w, vn.bbox.h) >= 20);
-    const barS = debugVN.filter((vn) => vn.fills.length > 0 && vn.bbox.w >= 3 && vn.bbox.h >= 3);
-    _dbg(`  pieEllipses=${pieE.length} barShapes=${barS.length}`);
-    for (const bvn of barS.slice(0, 15)) {
-      const bb = bvn.node.absoluteBoundingBox;
-      const fill = (bvn.node.fills ?? []).find((f: any) => f.type === 'SOLID');
-      const c = fill?.color;
-      const rgb = c ? `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})` : '?';
-      _dbg(`    bar: "${bvn.node.name}" type=${bvn.type} ${bb?.width}x${bb?.height} @(${bb?.x},${bb?.y}) fill=${rgb}`);
-    }
-    if (barS.length > 15) _dbg(`    ... and ${barS.length - 15} more`);
-    // Dump text nodes
-    for (const t of allTextNodes) {
-      _dbg(`    text: "${(t.characters ?? '').slice(0, 40)}" (${(t.characters ?? '').length} chars)`);
-    }
-  }
+  // Arc-based charts (pie/donut/radial) are high confidence from shape alone
+  if (chartType === 'pie' || chartType === 'donut' || chartType === 'radial') return true;
 
-  // ── Gate: Signal A (data shapes) is REQUIRED ─────────────────────────────
-  if (!signalA.detected) {
-    _dbg(`→ REJECT: no data shapes (Signal A required)`);
-    return 'reject';
-  }
-
-  // When semantic names say "UI" and Signal A is low confidence + no supporting signals → reject
-  if (nameSignal === 'ui' && !signalA.highConfidence && signalCount < 2) {
-    _dbg(`→ REJECT: semantic names say UI + low confidence Signal A + no supporting signals`);
-    return 'reject';
-  }
-
-  // ── Clear ACCEPT cases (no LLM needed) ─────────────────────────────────
-
-  // Data shapes + chart name ON THE ROOT NODE → accept.
-  // Only the root node's own name counts — child names like "Pie chart"
-  // inside a CTA page shouldn't auto-accept the entire page.
-  const rootName = (node.name ?? '').toLowerCase();
-  const rootHasChartName = /chart|graph|plot|histogram|sparkline/.test(rootName);
-  if (rootHasChartName && signalA.highConfidence) {
-    _dbg(`→ ACCEPT: root name "${node.name}" has chart keyword + highConf data shapes`);
-    return 'accept';
-  }
-
-  // Data shapes + 2+ supporting signals (axes + grid) → accept
-  if (signalCount >= 3) {
-    _dbg(`→ ACCEPT: data shapes + ${signalCount - 1} supporting signals`);
-    return 'accept';
-  }
-
-  // High-confidence shapes + at least 1 supporting signal → accept
-  if (signalA.highConfidence && signalCount >= 2) {
-    _dbg(`→ ACCEPT: highConf shapes + supporting signal`);
-    return 'accept';
-  }
-
-  // ── Everything else is AMBIGUOUS → LLM decides ─────────────────────────
-  _dbg(`→ AMBIGUOUS: signalA=${JSON.stringify(signalA)} signals=${signalCount} nameSignal=${nameSignal}`);
-  return 'ambiguous';
+  // Cartesian charts need at least one supporting signal (axes or grid)
+  return hasAxes || hasGrid;
 }
 
 // ── Signal A: Data shape cluster ────────────────────────────────────────────
@@ -755,9 +430,6 @@ interface ShapeClusterResult {
   count?: number;
 }
 
-export function _debugHasDataShapeCluster(node: any): ShapeClusterResult { return hasDataShapeCluster(node); }
-export function _debugHasAxisLikeTextArrangement(node: any): boolean { return hasAxisLikeTextArrangement(node); }
-export function _debugHasParallelGridLines(node: any): boolean { return hasParallelGridLines(node); }
 /**
  * Validates that a group of aligned shapes actually looks like chart bars,
  * not UI elements (cards, buttons, list items).
@@ -815,219 +487,6 @@ function isBarLikeGroup(group: any[], direction: 'vertical' | 'horizontal'): boo
   }
 
   return true;
-}
-
-function hasDataShapeCluster(node: any): ShapeClusterResult {
-  const none: ShapeClusterResult = { detected: false, highConfidence: false };
-
-  const rootBB = node.absoluteBoundingBox;
-  const rootSize = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
-  const rootW = rootBB?.width ?? 0;
-  const rootH = rootBB?.height ?? 0;
-
-  // Single-pass collection of ALL visual nodes — property-based, not type-based
-  const visualNodes = collectVisualNodes(node);
-
-  // Spatial spread check: chart data shapes must span a meaningful area of the
-  // container. Icon illustrations cluster in a small region.
-  // Only measure pure visual shapes (no text descendants) — UI containers
-  // with borders/fills span the full width but aren't chart data.
-  const pureShapes = visualNodes.filter((vn) => !vn.hasTextDescendant);
-  if (pureShapes.length > 0 && rootW > 0 && rootH > 0) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const vn of pureShapes) {
-      if (vn.bbox.x < minX) minX = vn.bbox.x;
-      if (vn.bbox.y < minY) minY = vn.bbox.y;
-      if (vn.bbox.x + vn.bbox.w > maxX) maxX = vn.bbox.x + vn.bbox.w;
-      if (vn.bbox.y + vn.bbox.h > maxY) maxY = vn.bbox.y + vn.bbox.h;
-    }
-    const shapeSpreadW = maxX - minX;
-    const shapeSpreadH = maxY - minY;
-    const spreadArea = shapeSpreadW * shapeSpreadH;
-    const rootArea = rootW * rootH;
-    if (rootArea > 0 && spreadArea / rootArea < 0.25) {
-      return none; // shapes cluster in a small area — icons, not chart data
-    }
-  }
-
-  // ── Pie / Donut: overlapping CIRCULAR shapes ────────────────────────────
-  // Must be circular (aspect ratio ~1:1). arcData alone is not enough —
-  // Figma attaches arcData to ALL ellipses including non-circular bar caps
-  // (29×16 ovals on top of 3D bars). Only circular shapes can be pie slices.
-  const pieShapes = visualNodes.filter((vn) => {
-    const diameter = Math.max(vn.bbox.w, vn.bbox.h);
-    if (diameter < MIN_PIE_ELLIPSE_DIAMETER) return false;
-    // Must be circular: aspect ratio close to 1:1
-    const isCircular = vn.bbox.w > 0 && vn.bbox.h > 0
-      && Math.max(vn.bbox.w, vn.bbox.h) / Math.min(vn.bbox.w, vn.bbox.h) <= 1.3;
-    return isCircular;
-  });
-  const pieNodes = pieShapes.map((vn) => vn.node);
-  const ellipseGroups = groupByCenter(pieNodes, POS_TOLERANCE, SIZE_TOLERANCE);
-  for (const group of ellipseGroups) {
-    if (group.length >= MIN_PIE_ELLIPSES) {
-      const chromaticCount = group.filter((e: any) =>
-        (e.fills ?? []).some((f: any) => {
-          if (f.type === 'SOLID' && f.color) return isChromatic(f.color);
-          if (f.type === 'GRADIENT_LINEAR' || f.type === 'GRADIENT_RADIAL') return true;
-          return false;
-        }),
-      ).length;
-      if (chromaticCount >= MIN_PIE_ELLIPSES) {
-        return { detected: true, highConfidence: group.length >= 3 };
-      }
-    }
-  }
-
-  // ── Concentric ring charts (radial) ──────────────────────────────────────
-  const concentricGroups = groupByCenterOnly(pieNodes, POS_TOLERANCE);
-  for (const group of concentricGroups) {
-    if (group.length >= 4) {
-      const sizes = group.map((e: any) => Math.round(e.absoluteBoundingBox?.width ?? 0));
-      const uniqueSizes = new Set(sizes);
-      const hasPartialArcs = group.some((e: any) => {
-        if (!e.arcData) return false;
-        const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
-        return sweep > 0.01 && Math.abs(sweep - 2 * Math.PI) > 0.01;
-      });
-      if (uniqueSizes.size >= 2 && hasPartialArcs) {
-        return { detected: true, highConfidence: group.length >= 6 };
-      }
-    }
-  }
-
-  // ── Concentric shapes (radar/spider grid) ────────────────────────────────
-  // Any visual nodes arranged concentrically with different sizes = radar grid.
-  // Works for REGULAR_POLYGON, STAR, VECTOR paths, or any shape type.
-  // Also checks for radially arranged text labels (axis names around center).
-  const concentricCandidates = visualNodes.filter((vn) =>
-    !vn.hasTextDescendant && vn.bbox.w >= 20 && vn.bbox.h >= 20,
-  );
-  if (concentricCandidates.length >= 3) {
-    const ccNodes = concentricCandidates.map((vn) => vn.node);
-    const ccGroups = groupByCenterOnly(ccNodes, POS_TOLERANCE * 3); // wider tolerance for VECTOR paths
-    for (const group of ccGroups) {
-      if (group.length >= 3) {
-        const sizes = group.map((e: any) => {
-          const bb = e.absoluteBoundingBox;
-          return bb ? Math.round(Math.max(bb.width, bb.height)) : 0;
-        });
-        const uniqueSizes = new Set(sizes);
-        if (uniqueSizes.size >= 3) {
-          // Check for radially arranged text (axis labels around center)
-          const groupBB = getGroupBoundingBox(group);
-          const cx = groupBB.x + groupBB.width / 2;
-          const cy = groupBB.y + groupBB.height / 2;
-          const radius = Math.max(groupBB.width, groupBB.height) / 2;
-          const textNodes = findAllNodes(node, (n: any) => n.type === 'TEXT');
-          const nearbyTexts = textNodes.filter((t: any) => {
-            const tbb = t.absoluteBoundingBox;
-            if (!tbb) return false;
-            const tx = tbb.x + tbb.width / 2;
-            const ty = tbb.y + tbb.height / 2;
-            const dist = Math.sqrt((tx - cx) ** 2 + (ty - cy) ** 2);
-            return dist >= radius * 0.4 && dist <= radius * 2;
-          });
-          // Concentric shapes + radial text = radar
-          if (nearbyTexts.length >= 3) {
-            return { detected: true, highConfidence: true, count: group.length };
-          }
-          // Concentric shapes alone (no text) = still possible radar
-          if (group.length >= 4) {
-            return { detected: true, highConfidence: group.length >= 5, count: group.length };
-          }
-        }
-      }
-    }
-  }
-
-  // ── Bar shapes: ANY filled visual node, validated structurally ────────────
-  // No type restriction — bars can be RECTANGLE, BOOLEAN_OPERATION, FRAME,
-  // VECTOR, INSTANCE, COMPONENT, or any future type. The isBarLikeGroup
-  // validation (consistent width, varying height) filters out non-bar shapes.
-  const barCandidates = visualNodes.filter((vn) =>
-    vn.fills.length > 0 && vn.bbox.w >= 3 && vn.bbox.h >= 3 && !vn.hasTextDescendant,
-  );
-  const barNodes = barCandidates.map((vn) => vn.node);
-  if (barNodes.length >= MIN_BAR_RECTS) {
-    // UI container filter: shapes with text descendants are likely cards/buttons
-    const isUIContainerGroup = (group: any[]): boolean => {
-      const vnMap = new Map(visualNodes.map((vn) => [vn.node, vn]));
-      const withText = group.filter((r: any) => vnMap.get(r)?.hasTextDescendant).length;
-      return withText >= group.length * 0.5;
-    };
-
-    // Group by shared bottom-edge y (vertical bars)
-    const bottomGroups = groupByProperty(barNodes, (r: any) => {
-      const bb = r.absoluteBoundingBox;
-      return bb ? bb.y + bb.height : 0;
-    }, POS_TOLERANCE);
-    for (const group of bottomGroups) {
-      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'vertical') && !isUIContainerGroup(group)) {
-        return { detected: true, highConfidence: group.length >= 5, count: group.length };
-      }
-    }
-    // Group by shared left-edge x (horizontal bars)
-    const leftGroups = groupByProperty(barNodes, (r: any) => {
-      return r.absoluteBoundingBox?.x ?? 0;
-    }, POS_TOLERANCE);
-    for (const group of leftGroups) {
-      if (group.length >= MIN_BAR_RECTS && isBarLikeGroup(group, 'horizontal') && !isUIContainerGroup(group)) {
-        return { detected: true, highConfidence: group.length >= 5, count: group.length };
-      }
-    }
-  }
-
-  // Strategy 2: Structural bar detection (empty FRAMEs without fills)
-  const structuralBars = findStructuralBarGroups(node);
-  if (structuralBars.detected) {
-    return structuralBars;
-  }
-
-  // ── Series paths (line / area charts) ─────────────────────────────────────
-  // Stroked visual node with landscape aspect and meaningful height.
-  // Excludes nodes with text descendants (input fields, buttons, cards with borders)
-  // — these are UI elements, not chart data series.
-  const seriesPaths = visualNodes.filter((vn) => {
-    if (vn.strokes.length === 0) return false;
-    if (vn.hasTextDescendant) return false; // input fields, buttons, cards
-    if (vn.bbox.w <= vn.bbox.h * 2) return false;
-    if (vn.bbox.h < MIN_SERIES_VECTOR_HEIGHT) return false;
-    if (rootSize > 0 && vn.bbox.w < rootSize * 0.15) return false;
-    return true;
-  });
-  // Require at least 2 series paths for confident detection.
-  // A single stroked landscape shape is too common in UI (input fields, card
-  // borders, dividers). For a single series path, require supporting evidence:
-  // small dot-like shapes nearby (data point markers on the line).
-  if (seriesPaths.length >= 2) {
-    return { detected: true, highConfidence: true };
-  }
-  if (seriesPaths.length === 1) {
-    // Look for data point markers: small shapes (≤ 12px) near the series path
-    const seriesPath = seriesPaths[0];
-    const dataPoints = visualNodes.filter((vn) => {
-      if (vn === seriesPath) return false;
-      if (vn.hasTextDescendant) return false;
-      // Small dot-like shape
-      if (vn.bbox.w > 12 || vn.bbox.h > 12) return false;
-      // Near the series path vertically (within the path's y range)
-      const pathTop = seriesPath.bbox.y;
-      const pathBottom = seriesPath.bbox.y + seriesPath.bbox.h;
-      const dotCY = vn.bbox.y + vn.bbox.h / 2;
-      return dotCY >= pathTop - 5 && dotCY <= pathBottom + 5;
-    });
-    if (dataPoints.length >= 2) {
-      return { detected: true, highConfidence: false };
-    }
-  }
-
-  // ── Filled overlay shapes (radar data polygons, area fills) ───────────────
-  // Only triggers if a concentric GROUP was actually found above (not just
-  // individual candidates). Without a verified concentric grid, filled shapes
-  // are likely icons, cards, or UI elements — not radar data overlays.
-
-  return none;
 }
 
 // ── Signal B: Axis-like text arrangement ────────────────────────────────────
@@ -1144,7 +603,7 @@ function hasParallelGridLines(node: any): boolean {
  * This prevents tiny data-point ellipses from overriding strong
  * line/area/bar signals.
  */
-export function detectChartType(node: any): ChartType {
+function detectChartType(node: any): ChartType {
   const rootBB = node.absoluteBoundingBox;
   const rootSize = rootBB ? Math.max(rootBB.width, rootBB.height) : 0;
 
@@ -1417,8 +876,8 @@ export async function extractChartMetadata(
   const { xAxisFrame, yAxisFrame } = findAxisFramesStructurally(node);
   const chartAreaFrame = findChartAreaFrame(node, legendsFrame, switcherFrame);
 
-  // Background color
-  let backgroundColor = '#ffffff';
+  // Background color — only set when Figma provides it
+  let backgroundColor: string | undefined;
   const topFills = node.fills ?? [];
   const topSolid = topFills.find((f: any) => f.type === 'SOLID' && f.color);
   if (topSolid) {
@@ -1440,34 +899,39 @@ export async function extractChartMetadata(
   // Arc data is the source of truth for slice count and proportions.
   if (chartType === 'pie' || chartType === 'donut') {
     const TWO_PI = 2 * Math.PI;
-    const visibleEllipses = findVisibleNodes(node, (n: any) =>
-      (n.type === 'ELLIPSE' || n.type === 'ARC') && (n.absoluteBoundingBox?.width ?? 0) >= 50,
+    // Collect ALL ellipses then explicitly filter out hidden ones (visible === false)
+    const allEllipses = findAllNodes(node, (n: any) =>
+      (n.type === 'ELLIPSE' || n.type === 'ARC') &&
+      n.visible !== false &&
+      (n.absoluteBoundingBox?.width ?? 0) >= 50,
     );
+
     // Filter to partial arcs only (skip full-circle backgrounds)
-    const sliceEllipses = visibleEllipses.filter((e: any) => {
+    const sliceEllipses = allEllipses.filter((e: any) => {
       if (!e.arcData) return false;
       const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
       return Math.abs(sweep - TWO_PI) > 0.05; // not a full circle
     });
-    const isGenericFallback = series.length === 1 && series[0].name === 'Chart';
-    // Use arc data when: more slices than legend items, or no real legends found
-    if (sliceEllipses.length > series.length || series.length === 0 || isGenericFallback) {
+    // Always prefer arc data for pie/donut — arcs represent the actual visible slices.
+    // Legends may have more or fewer items than visible arcs (hidden legend items,
+    // sub-categories, etc.). Use legend names only for labeling via color matching.
+    if (sliceEllipses.length > 0) {
       if (sliceEllipses.length > 0) {
         // Sort by startingAngle for consistent order
         sliceEllipses.sort((a: any, b: any) =>
           (a.arcData?.startingAngle ?? 0) - (b.arcData?.startingAngle ?? 0),
         );
-        // Try to match legend names by color for labelling
+        // Try to match legend names by color for labelling (fuzzy match)
         const legendByColor = new Map<string, string>();
         for (const s of series) {
           if (s.color) legendByColor.set(s.color.toLowerCase(), s.name);
         }
         series = sliceEllipses.map((e: any, i: number) => {
           const solidFill = (e.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
-          const color = solidFill ? figmaColorToHex(solidFill.color) : '#9747ff';
+          const color = solidFill ? figmaColorToHex(solidFill.color) : '#000000';
           const sweep = Math.abs(e.arcData.endingAngle - e.arcData.startingAngle);
           const value = Math.round((sweep / TWO_PI) * 100);
-          const legendName = legendByColor.get(color.toLowerCase());
+          const legendName = fuzzyColorMapGet(legendByColor, color);
           const ellipseName = e.name && e.name !== 'Ellipse' ? e.name : '';
           const name = legendName ?? (ellipseName || `Series ${i + 1}`);
           return { name, color, legendColor: color, value };
@@ -1537,8 +1001,8 @@ export async function extractChartMetadata(
     }
   }
 
-  // Axis label color
-  let axisLabelColor = '#A1A1A1';
+  // Axis label color — only set when Figma provides it
+  let axisLabelColor: string | undefined;
   const anyAxisFrame = yAxisFrame ?? xAxisFrame;
   if (anyAxisFrame) {
     const textNode = findNodeByType(anyAxisFrame, 'TEXT');
@@ -1662,14 +1126,12 @@ export async function extractChartMetadata(
   // ── Grid line styling ──
   const { gridLineColor, gridStrokeDasharray } = extractGridStyle(node);
 
-  // ── Container styling ──
-  const containerBorderRadius = node.cornerRadius ?? 0;
-  const containerPadding = {
-    top: node.paddingTop ?? 0,
-    right: node.paddingRight ?? 0,
-    bottom: node.paddingBottom ?? 0,
-    left: node.paddingLeft ?? 0,
-  };
+  // ── Container styling — only set when Figma provides it ──
+  const containerBorderRadius = node.cornerRadius ?? undefined;
+  const hasPadding = node.paddingTop != null || node.paddingRight != null || node.paddingBottom != null || node.paddingLeft != null;
+  const containerPadding = hasPadding
+    ? { top: node.paddingTop ?? 0, right: node.paddingRight ?? 0, bottom: node.paddingBottom ?? 0, left: node.paddingLeft ?? 0 }
+    : undefined;
 
   // ── Chart area height ──
   // If no structural landmarks found (no legend, switcher, axes), use full node height
@@ -1688,21 +1150,17 @@ export async function extractChartMetadata(
         break;
       }
     }
-    // If no visible ellipse has innerRadius, use default donut ratio
-    if (innerRadiusRatio === 0) {
-      innerRadiusRatio = 0.6;
-    }
   }
 
   // ── Center text (TEXT node in the center of the pie/donut/radial ellipses) ──
   let donutCenterText = '';
-  let donutCenterFontSize = 24;
-  let donutCenterFontWeight = 600;
-  let donutCenterColor = '#101828';
+  let donutCenterFontSize: number | undefined;
+  let donutCenterFontWeight: number | undefined;
+  let donutCenterColor: string | undefined;
   let centerSubtext = '';
-  let centerSubtextFontSize = 14;
-  let centerSubtextFontWeight = 400;
-  let centerSubtextColor = '#667085';
+  let centerSubtextFontSize: number | undefined;
+  let centerSubtextFontWeight: number | undefined;
+  let centerSubtextColor: string | undefined;
   if (chartType === 'donut' || chartType === 'pie' || chartType === 'radial') {
     const visibleEllipses = findAllNodes(node, (n: any) =>
       n.type === 'ELLIPSE' && n.visible !== false && (n.absoluteBoundingBox?.width ?? 0) >= 50,
@@ -1712,7 +1170,6 @@ export async function extractChartMetadata(
       const cx = ref.x + ref.width / 2;
       const cy = ref.y + ref.height / 2;
       const radius = Math.max(ref.width, ref.height) / 2;
-      // Find TEXT nodes near the center of the ellipse cluster
       const centerTexts = findAllNodes(node, (n: any) => {
         if (n.type !== 'TEXT' || n.visible === false) return false;
         const bb = n.absoluteBoundingBox;
@@ -1722,21 +1179,19 @@ export async function extractChartMetadata(
         return Math.abs(tcx - cx) < radius * 0.4 && Math.abs(tcy - cy) < radius * 0.4;
       });
       if (centerTexts.length > 0) {
-        // Sort by font-size descending — largest is main label, second is subtitle
         centerTexts.sort((a: any, b: any) => (b.style?.fontSize ?? 0) - (a.style?.fontSize ?? 0));
         const ct = centerTexts[0];
         donutCenterText = (ct.characters ?? ct.content ?? '').trim();
-        donutCenterFontSize = ct.style?.fontSize ?? 24;
-        donutCenterFontWeight = ct.style?.fontWeight ?? 600;
+        donutCenterFontSize = ct.style?.fontSize;
+        donutCenterFontWeight = ct.style?.fontWeight;
         const textFill = (ct.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
         if (textFill) donutCenterColor = figmaColorToCss(textFill.color, textFill.opacity);
 
-        // Secondary center text (subtitle)
         if (centerTexts.length > 1) {
           const st = centerTexts[1];
           centerSubtext = (st.characters ?? st.content ?? '').trim();
-          centerSubtextFontSize = st.style?.fontSize ?? 14;
-          centerSubtextFontWeight = st.style?.fontWeight ?? 400;
+          centerSubtextFontSize = st.style?.fontSize;
+          centerSubtextFontWeight = st.style?.fontWeight;
           const stFill = (st.fills ?? []).find((f: any) => f.type === 'SOLID' && f.color);
           if (stFill) centerSubtextColor = figmaColorToCss(stFill.color, stFill.opacity);
         }
@@ -1765,9 +1220,9 @@ export async function extractChartMetadata(
       })
       .sort((a, b) => a.start - b.start);
 
-    // Strategy 1: match by color (legend dot color === slice fill color)
+    // Strategy 1: match by color (legend dot color ≈ slice fill color, fuzzy)
     for (const s of series) {
-      const match = slices.find((sl) => sl.color === s.legendColor);
+      const match = slices.find((sl) => colorsMatch(sl.color, s.legendColor));
       if (match) {
         s.value = match.value;
         s.color = match.color; // use the actual slice color from Figma
@@ -1776,8 +1231,8 @@ export async function extractChartMetadata(
 
     // Strategy 2: for unmatched series, assign slices by order
     const unmatchedSeries = series.filter((s) => s.value === undefined);
-    const usedColors = new Set(series.filter((s) => s.value !== undefined).map((s) => s.color));
-    const unmatchedSlices = slices.filter((sl) => !usedColors.has(sl.color));
+    const matchedColors = series.filter((s) => s.value !== undefined).map((s) => s.color);
+    const unmatchedSlices = slices.filter((sl) => !matchedColors.some((mc) => colorsMatch(mc, sl.color)));
 
     for (let i = 0; i < unmatchedSeries.length && i < unmatchedSlices.length; i++) {
       unmatchedSeries[i].value = unmatchedSlices[i].value;
@@ -1805,28 +1260,22 @@ export async function extractChartMetadata(
   }
 
   // ── Axis font size ──
-  let axisFontSize = 10;
-  if (anyAxisFrame) {
-    const axisText = findNodeByType(anyAxisFrame, 'TEXT');
-    if (axisText?.style?.fontSize) {
-      axisFontSize = axisText.style.fontSize;
-    }
-  }
+  const axisFontSize = anyAxisFrame
+    ? findNodeByType(anyAxisFrame, 'TEXT')?.style?.fontSize
+    : undefined;
 
   // ── Y-axis width ──
-  let yAxisWidth = 28;
-  if (yAxisFrame?.absoluteBoundingBox?.width) {
-    yAxisWidth = Math.round(yAxisFrame.absoluteBoundingBox.width);
-  }
+  const yAxisWidth = yAxisFrame?.absoluteBoundingBox?.width
+    ? Math.round(yAxisFrame.absoluteBoundingBox.width)
+    : undefined;
 
   // ── Series stroke width ──
-  let seriesStrokeWidth = 2;
   const strokedDataVectors = findAllNodes(node, (n: any) =>
     n.type === 'VECTOR' && (n.strokes ?? []).length > 0 && n.strokeWeight,
   );
-  if (strokedDataVectors.length > 0) {
-    seriesStrokeWidth = strokedDataVectors[0].strokeWeight;
-  }
+  const seriesStrokeWidth = strokedDataVectors.length > 0
+    ? strokedDataVectors[0].strokeWeight
+    : undefined;
 
   // ── Dot styling ──
   const { dotRadius, dotStrokeColor, dotStrokeWidth } = extractDotStyle(node);
@@ -1835,7 +1284,7 @@ export async function extractChartMetadata(
   const gradientStartOpacity = extractGradientOpacity(node);
 
   // ── Bar corner radius ──
-  const barRadius = extractBarRadius(node) as [number, number, number, number];
+  const barRadius = extractBarRadius(node);
 
   // ── Chart margin ──
   const chartMargin = extractChartMargin(chartAreaFrame);
@@ -2237,35 +1686,35 @@ function findChartAreaFrame(
 
 // ── Text content extraction ─────────────────────────────────────────────────
 
-/** Return type for extractChartTextContent — text content + styling. */
+/** Return type for extractChartTextContent — text content + styling. All styling fields optional. */
 interface ChartTextContentResult {
   chartTitle: string;
   chartSubtitle: string;
   summaryAmount: string;
   summaryText: string;
   summaryCtaText: string;
-  titleFontSize: number;
-  titleFontWeight: number;
-  titleColor: string;
-  subtitleFontSize: number;
-  subtitleColor: string;
-  summaryBg: string;
-  summaryBorderRadius: number;
-  summaryBorderColor: string;
-  summaryBorderWidth: number;
-  summaryPadding: string;
-  amountFontSize: number;
-  amountFontWeight: number;
-  amountColor: string;
-  summaryTextFontSize: number;
-  summaryTextColor: string;
-  ctaFontSize: number;
-  ctaFontWeight: number;
-  ctaColor: string;
-  ctaBg: string;
-  ctaBorderColor: string;
-  ctaBorderRadius: number;
-  ctaPadding: string;
+  titleFontSize?: number;
+  titleFontWeight?: number;
+  titleColor?: string;
+  subtitleFontSize?: number;
+  subtitleColor?: string;
+  summaryBg?: string;
+  summaryBorderRadius?: number;
+  summaryBorderColor?: string;
+  summaryBorderWidth?: number;
+  summaryPadding?: string;
+  amountFontSize?: number;
+  amountFontWeight?: number;
+  amountColor?: string;
+  summaryTextFontSize?: number;
+  summaryTextColor?: string;
+  ctaFontSize?: number;
+  ctaFontWeight?: number;
+  ctaColor?: string;
+  ctaBg?: string;
+  ctaBorderColor?: string;
+  ctaBorderRadius?: number;
+  ctaPadding?: string;
 }
 
 /**
@@ -2282,14 +1731,6 @@ function extractChartTextContent(
 ): ChartTextContentResult {
   const result: ChartTextContentResult = {
     chartTitle: '', chartSubtitle: '', summaryAmount: '', summaryText: '', summaryCtaText: '',
-    titleFontSize: 18, titleFontWeight: 700, titleColor: '#262626',
-    subtitleFontSize: 14, subtitleColor: '#737373',
-    summaryBg: '#ffffff', summaryBorderRadius: 12, summaryBorderColor: '#e5e7eb',
-    summaryBorderWidth: 1, summaryPadding: '16px',
-    amountFontSize: 28, amountFontWeight: 700, amountColor: '#7C3AED',
-    summaryTextFontSize: 14, summaryTextColor: '#737373',
-    ctaFontSize: 14, ctaFontWeight: 500, ctaColor: '#262626',
-    ctaBg: '#ffffff', ctaBorderColor: '#e5e7eb', ctaBorderRadius: 100, ctaPadding: '12px',
   };
 
   // Build exclusion set: chart data area, axes, legend, switcher
@@ -2489,7 +1930,8 @@ function extractChartTextContent(
       const stroke = (summaryContainer.strokes ?? [])[0];
       if (stroke?.color) result.summaryBorderColor = figmaColorToHex(stroke.color);
       if (summaryContainer.strokeWeight !== undefined) result.summaryBorderWidth = summaryContainer.strokeWeight;
-      result.summaryPadding = formatPadding(summaryContainer, result.summaryPadding);
+      const sp = formatPadding(summaryContainer);
+      if (sp) result.summaryPadding = sp;
     }
   }
 
@@ -2502,7 +1944,8 @@ function extractChartTextContent(
       const stroke = (ctaContainer.strokes ?? [])[0];
       if (stroke?.color) result.ctaBorderColor = figmaColorToHex(stroke.color);
       if (ctaContainer.cornerRadius !== undefined) result.ctaBorderRadius = ctaContainer.cornerRadius;
-      result.ctaPadding = formatPadding(ctaContainer, result.ctaPadding);
+      const cp = formatPadding(ctaContainer);
+      if (cp) result.ctaPadding = cp;
     }
   }
 
@@ -2599,7 +2042,7 @@ function extractSeriesFromLegends(
           const bb = c.absoluteBoundingBox;
           return bb && bb.width <= 16 && bb.height <= 16;
         });
-        let legendColor = '#9747ff';
+        let legendColor = '#000000';
         if (dotNode) {
           const fill = findFirstChromaticFill(dotNode);
           if (fill) legendColor = figmaColorToCss(fill.color, fill.opacity);
@@ -2632,7 +2075,7 @@ function extractSeriesFromLegends(
           findNodeByType(legendItem, 'LINE') ??
           findNodeByType(legendItem, 'VECTOR') ??
           findNodeByType(legendItem, 'INSTANCE');
-        let legendColor = '#9747ff';
+        let legendColor = '#000000';
         if (dotNode) {
           const fill = findFirstChromaticFill(dotNode);
           if (fill) legendColor = figmaColorToCss(fill.color, fill.opacity);
@@ -2713,53 +2156,6 @@ function extractSeriesFromLegends(
 }
 
 /**
- * Extract data element colors by walking into the chart area frame.
- * Uses structural type checks, not name matching.
- */
-function extractDataElementColors(rootNode: any, chartAreaFrame: any | null): string[] {
-  const dataArea = chartAreaFrame ?? rootNode;
-
-  // Collect all container nodes with children
-  const dataContainers = findAllNodes(dataArea, (n: any) => {
-    const type = n.type ?? '';
-    return ['BOOLEAN_OPERATION', 'GROUP', 'FRAME'].includes(type) &&
-      (n.children ?? []).length > 0;
-  });
-
-  const colors: string[] = [];
-  const seenColors = new Set<string>();
-
-  for (const container of dataContainers) {
-    const innerColor = findInnermostFill(container);
-    if (innerColor && !seenColors.has(innerColor)) {
-      seenColors.add(innerColor);
-      colors.push(innerColor);
-    }
-  }
-
-  // Also check direct shapes if no containers found
-  if (colors.length === 0) {
-    const directNodes = findAllNodes(dataArea, (n: any) => {
-      const type = n.type ?? '';
-      return ['RECTANGLE', 'VECTOR', 'ELLIPSE'].includes(type);
-    });
-    for (const dn of directNodes) {
-      for (const f of dn.fills ?? []) {
-        if (f.type === 'SOLID' && f.color && isChromatic(f.color)) {
-          const hex = figmaColorToHex(f.color);
-          if (!seenColors.has(hex)) {
-            seenColors.add(hex);
-            colors.push(hex);
-          }
-        }
-      }
-    }
-  }
-
-  return colors;
-}
-
-/**
  * Walk deepest into a node tree to find the innermost chromatic fill.
  * Prioritizes RECTANGLE type children (structural type, not name).
  */
@@ -2829,7 +2225,7 @@ function extractSingleSeriesColor(rootNode: any): string {
     }
   }
 
-  return '#9747ff'; // fallback
+  return '#000000'; // only if zero chromatic fills found anywhere in the tree
 }
 
 // ── Styling extraction helpers ───────────────────────────────────────────────
@@ -2838,9 +2234,9 @@ function extractSingleSeriesColor(rootNode: any): string {
  * Extract grid line color and dash pattern structurally.
  * Finds LINE/VECTOR nodes arranged as parallel grid lines (similar length, no chromatic fills).
  */
-function extractGridStyle(node: any): { gridLineColor: string; gridStrokeDasharray: string } {
-  let gridLineColor = '#E5E7EB';
-  let gridStrokeDasharray = '3 3';
+function extractGridStyle(node: any): { gridLineColor?: string; gridStrokeDasharray?: string } {
+  let gridLineColor: string | undefined;
+  let gridStrokeDasharray: string | undefined;
 
   // Find horizontal or vertical LINE/VECTOR nodes with strokes but no chromatic fills
   const lineNodes = findAllNodes(node, (n: any) => {
@@ -3106,36 +2502,32 @@ function extractChartAreaHeight(
   return Math.round(fallbackHeight * 0.7);
 }
 
-/** Extract dot styling from small ELLIPSE nodes. */
+/** Extract dot styling from small ELLIPSE nodes. Only returns values found in Figma. */
 function extractDotStyle(node: any): {
-  dotRadius: number;
-  dotStrokeColor: string;
-  dotStrokeWidth: number;
+  dotRadius?: number;
+  dotStrokeColor?: string;
+  dotStrokeWidth?: number;
 } {
-  let dotRadius = 3;
-  let dotStrokeColor = '#ffffff';
-  let dotStrokeWidth = 2;
-
   const ellipses = findAllNodes(node, (n: any) => {
     if (n.type !== 'ELLIPSE') return false;
     const size = n.absoluteBoundingBox?.width ?? n.size?.x ?? 0;
     return size > 0 && size <= 20;
   });
 
-  if (ellipses.length > 0) {
-    const dot = ellipses[0];
-    const size = dot.absoluteBoundingBox?.width ?? dot.size?.x ?? 6;
-    dotRadius = Math.round(size / 2);
-    if (dot.strokeWeight) dotStrokeWidth = dot.strokeWeight;
-    const stroke = (dot.strokes ?? [])[0];
-    if (stroke?.color) dotStrokeColor = figmaColorToHex(stroke.color);
-  }
+  if (ellipses.length === 0) return {};
+
+  const dot = ellipses[0];
+  const size = dot.absoluteBoundingBox?.width ?? dot.size?.x;
+  const dotRadius = size ? Math.round(size / 2) : undefined;
+  const dotStrokeWidth = dot.strokeWeight ?? undefined;
+  const stroke = (dot.strokes ?? [])[0];
+  const dotStrokeColor = stroke?.color ? figmaColorToHex(stroke.color) : undefined;
 
   return { dotRadius, dotStrokeColor, dotStrokeWidth };
 }
 
-/** Extract gradient start opacity from GRADIENT_LINEAR fills. */
-function extractGradientOpacity(node: any): number {
+/** Extract gradient start opacity from GRADIENT_LINEAR fills. Returns undefined if not found. */
+function extractGradientOpacity(node: any): number | undefined {
   const gradientNodes = findAllNodes(node, (n: any) =>
     (n.fills ?? []).some((f: any) => f.type === 'GRADIENT_LINEAR'),
   );
@@ -3149,11 +2541,11 @@ function extractGradientOpacity(node: any): number {
       }
     }
   }
-  return 0.75;
+  return undefined;
 }
 
-/** Extract bar corner radius from RECTANGLE nodes with chromatic fills. */
-function extractBarRadius(node: any): [number, number, number, number] {
+/** Extract bar corner radius from RECTANGLE nodes with chromatic fills. Returns undefined if not found. */
+function extractBarRadius(node: any): [number, number, number, number] | undefined {
   const rects = findAllNodes(node, (n: any) => {
     if (n.type !== 'RECTANGLE') return false;
     const fills = (n.fills ?? []).filter((f: any) => f.type === 'SOLID' && f.color);
@@ -3165,10 +2557,12 @@ function extractBarRadius(node: any): [number, number, number, number] {
     if (rect.rectangleCornerRadii) {
       return rect.rectangleCornerRadii as [number, number, number, number];
     }
-    const r = rect.cornerRadius ?? 0;
-    return [r, r, 0, 0];
+    if (rect.cornerRadius != null) {
+      const r = rect.cornerRadius;
+      return [r, r, 0, 0];
+    }
   }
-  return [4, 4, 0, 0];
+  return undefined;
 }
 
 /**
@@ -3318,55 +2712,40 @@ function extractBarChartData(
   return result.length > 0 ? result : null;
 }
 
-/** Extract chart margin from the chart area frame's auto-layout padding. */
-function extractChartMargin(chartAreaFrame: any | null): {
-  top: number; right: number; bottom: number; left: number;
-} {
-  if (chartAreaFrame) {
-    return {
-      top: chartAreaFrame.paddingTop ?? 8,
-      right: chartAreaFrame.paddingRight ?? 0,
-      bottom: chartAreaFrame.paddingBottom ?? 0,
-      left: chartAreaFrame.paddingLeft ?? 0,
-    };
-  }
-  return { top: 8, right: 0, bottom: 0, left: 0 };
+/** Extract chart margin from the chart area frame's auto-layout padding. Returns undefined if no padding found. */
+function extractChartMargin(chartAreaFrame: any | null): { top: number; right: number; bottom: number; left: number } | undefined {
+  if (!chartAreaFrame) return undefined;
+  const top = chartAreaFrame.paddingTop;
+  const right = chartAreaFrame.paddingRight;
+  const bottom = chartAreaFrame.paddingBottom;
+  const left = chartAreaFrame.paddingLeft;
+  if (top == null && right == null && bottom == null && left == null) return undefined;
+  return { top: top ?? 0, right: right ?? 0, bottom: bottom ?? 0, left: left ?? 0 };
 }
 
-/** Extract legend styling from the structurally-found legends frame. */
+/** Extract legend styling from the structurally-found legends frame. Only returns Figma-extracted values. */
 function extractLegendStyle(legendsFrame: any, rootNode: any): {
-  legendGap: number;
-  legendItemGap: number;
-  legendDotSize: number;
-  legendDotBorderRadius: string;
-  legendDotOpacity: number;
-  legendLabelFontSize: number;
-  legendLabelColor: string;
-  legendMarginBottom: number;
+  legendGap?: number;
+  legendItemGap?: number;
+  legendDotSize?: number;
+  legendDotBorderRadius?: string;
+  legendDotOpacity?: number;
+  legendLabelFontSize?: number;
+  legendLabelColor?: string;
+  legendMarginBottom?: number;
 } {
-  const defaults = {
-    legendGap: 8,
-    legendItemGap: 6,
-    legendDotSize: 10,
-    legendDotBorderRadius: '50%',
-    legendDotOpacity: 0.75,
-    legendLabelFontSize: 12,
-    legendLabelColor: '#262626',
-    legendMarginBottom: 12,
-  };
+  if (!legendsFrame) return {};
 
-  if (!legendsFrame) return defaults;
-
-  const legendGap = legendsFrame.itemSpacing ?? defaults.legendGap;
+  const legendGap = legendsFrame.itemSpacing ?? undefined;
 
   const legendItem = (legendsFrame.children ?? []).find(
     (c: any) => c.type === 'FRAME' || c.type === 'GROUP' || c.type === 'INSTANCE',
   );
-  const legendItemGap = legendItem?.itemSpacing ?? defaults.legendItemGap;
+  const legendItemGap = legendItem?.itemSpacing ?? undefined;
 
-  let legendDotSize = defaults.legendDotSize;
-  let legendDotBorderRadius = defaults.legendDotBorderRadius;
-  let legendDotOpacity = defaults.legendDotOpacity;
+  let legendDotSize: number | undefined;
+  let legendDotBorderRadius: string | undefined;
+  let legendDotOpacity: number | undefined;
 
   if (legendItem) {
     // Use findSmallShapeNode FIRST — it has a ≤16×16 size constraint that prevents
@@ -3387,15 +2766,12 @@ function extractLegendStyle(legendsFrame: any, rootNode: any): {
       }
     }
     if (dotNode) {
-      legendDotSize = Math.round(
-        dotNode.absoluteBoundingBox?.width ?? dotNode.size?.x ?? defaults.legendDotSize,
-      );
-      // ELLIPSE or VECTOR/INSTANCE circles → round; RECTANGLE → use cornerRadius
+      const dotW = dotNode.absoluteBoundingBox?.width ?? dotNode.size?.x;
+      if (dotW) legendDotSize = Math.round(dotW);
       legendDotBorderRadius =
         dotNode.type === 'ELLIPSE' || dotNode.type === 'VECTOR' || dotNode.type === 'INSTANCE'
           ? '50%'
-          : `${dotNode.cornerRadius ?? 0}px`;
-      // Extract fill opacity from the dot (use recursive search for nested fills)
+          : dotNode.cornerRadius != null ? `${dotNode.cornerRadius}px` : undefined;
       const chromaticFill = findFirstChromaticFill(dotNode);
       if (chromaticFill?.opacity !== undefined) {
         legendDotOpacity = Math.round(chromaticFill.opacity * 100) / 100;
@@ -3405,8 +2781,8 @@ function extractLegendStyle(legendsFrame: any, rootNode: any): {
     }
   }
 
-  let legendLabelFontSize = defaults.legendLabelFontSize;
-  let legendLabelColor = defaults.legendLabelColor;
+  let legendLabelFontSize: number | undefined;
+  let legendLabelColor: string | undefined;
 
   const legendText = findNodeByType(legendsFrame, 'TEXT');
   if (legendText) {
@@ -3415,10 +2791,7 @@ function extractLegendStyle(legendsFrame: any, rootNode: any): {
     if (fill?.color) legendLabelColor = figmaColorToHex(fill.color);
   }
 
-  let legendMarginBottom = defaults.legendMarginBottom;
-  if (rootNode.itemSpacing !== undefined) {
-    legendMarginBottom = rootNode.itemSpacing;
-  }
+  const legendMarginBottom = rootNode.itemSpacing ?? undefined;
 
   return {
     legendGap,
@@ -3432,48 +2805,29 @@ function extractLegendStyle(legendsFrame: any, rootNode: any): {
   };
 }
 
-/** Extract switcher/tab styling from the structurally-found switcher frame. */
+/** Extract switcher/tab styling from the structurally-found switcher frame. Only returns Figma-extracted values. */
 function extractSwitcherStyle(switcherFrame: any): {
-  switcherBg: string;
-  switcherBorderRadius: number;
-  switcherPadding: string;
-  switcherMarginTop: number;
-  switcherButtonPadding: string;
-  switcherButtonFontSize: number;
-  switcherButtonColor: string;
-  switcherButtonBorderRadius: number;
-  switcherActiveBg: string;
-  switcherActiveColor: string;
-  switcherActiveFontWeight: number;
-  switcherActiveBoxShadow: string;
+  switcherBg?: string;
+  switcherBorderRadius?: number;
+  switcherPadding?: string;
+  switcherMarginTop?: number;
+  switcherButtonPadding?: string;
+  switcherButtonFontSize?: number;
+  switcherButtonColor?: string;
+  switcherButtonBorderRadius?: number;
+  switcherActiveBg?: string;
+  switcherActiveColor?: string;
+  switcherActiveFontWeight?: number;
+  switcherActiveBoxShadow?: string;
 } {
-  const defaults = {
-    switcherBg: '#F5F5F5',
-    switcherBorderRadius: 6,
-    switcherPadding: '3px',
-    switcherMarginTop: 12,
-    switcherButtonPadding: '6px 12px',
-    switcherButtonFontSize: 14,
-    switcherButtonColor: '#737373',
-    switcherButtonBorderRadius: 4,
-    switcherActiveBg: '#ffffff',
-    switcherActiveColor: '#262626',
-    switcherActiveFontWeight: 500,
-    switcherActiveBoxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
-  };
-
-  if (!switcherFrame) return defaults;
+  if (!switcherFrame) return {};
 
   const containerFill = (switcherFrame.fills ?? []).find(
     (f: any) => f.type === 'SOLID' && f.color,
   );
-  const switcherBg = containerFill
-    ? figmaColorToHex(containerFill.color)
-    : defaults.switcherBg;
-  const switcherBorderRadius =
-    switcherFrame.cornerRadius ?? defaults.switcherBorderRadius;
-  const switcherPadding = formatPadding(switcherFrame, defaults.switcherPadding);
-  const switcherMarginTop = defaults.switcherMarginTop;
+  const switcherBg = containerFill ? figmaColorToHex(containerFill.color) : undefined;
+  const switcherBorderRadius = switcherFrame.cornerRadius ?? undefined;
+  const switcherPadding = formatPadding(switcherFrame);
 
   const children = (switcherFrame.children ?? []).filter(
     (c: any) => c.type === 'FRAME' || c.type === 'INSTANCE' || c.type === 'GROUP',
@@ -3497,24 +2851,19 @@ function extractSwitcherStyle(switcherFrame: any): {
   if (!inactiveChild && children.length > 1) inactiveChild = children[1];
 
   const buttonChild = activeChild ?? inactiveChild;
-  const switcherButtonPadding = buttonChild
-    ? formatPadding(buttonChild, defaults.switcherButtonPadding)
-    : defaults.switcherButtonPadding;
+  const switcherButtonPadding = buttonChild ? formatPadding(buttonChild) : undefined;
+  const switcherButtonBorderRadius = buttonChild?.cornerRadius ?? undefined;
 
-  const switcherButtonBorderRadius =
-    buttonChild?.cornerRadius ?? defaults.switcherButtonBorderRadius;
-
-  let switcherButtonFontSize = defaults.switcherButtonFontSize;
-  let switcherButtonColor = defaults.switcherButtonColor;
-  let switcherActiveBg = defaults.switcherActiveBg;
-  let switcherActiveColor = defaults.switcherActiveColor;
-  let switcherActiveFontWeight = defaults.switcherActiveFontWeight;
+  let switcherButtonFontSize: number | undefined;
+  let switcherButtonColor: string | undefined;
+  let switcherActiveBg: string | undefined;
+  let switcherActiveColor: string | undefined;
+  let switcherActiveFontWeight: number | undefined;
 
   if (inactiveChild) {
     const inactiveText = findNodeByType(inactiveChild, 'TEXT');
     if (inactiveText) {
-      if (inactiveText.style?.fontSize)
-        switcherButtonFontSize = inactiveText.style.fontSize;
+      switcherButtonFontSize = inactiveText.style?.fontSize;
       const fill = (inactiveText.fills ?? [])[0];
       if (fill?.color) switcherButtonColor = figmaColorToHex(fill.color);
     }
@@ -3529,23 +2878,20 @@ function extractSwitcherStyle(switcherFrame: any): {
     const activeText = findNodeByType(activeChild, 'TEXT');
     if (activeText) {
       if (!inactiveChild) {
-        if (activeText.style?.fontSize)
-          switcherButtonFontSize = activeText.style.fontSize;
+        switcherButtonFontSize = activeText.style?.fontSize;
       }
       const fill = (activeText.fills ?? [])[0];
       if (fill?.color) switcherActiveColor = figmaColorToHex(fill.color);
-      if (activeText.style?.fontWeight)
-        switcherActiveFontWeight = activeText.style.fontWeight;
+      switcherActiveFontWeight = activeText.style?.fontWeight;
     }
   }
 
-  const switcherActiveBoxShadow = extractBoxShadow(activeChild) ?? defaults.switcherActiveBoxShadow;
+  const switcherActiveBoxShadow = extractBoxShadow(activeChild) ?? undefined;
 
   return {
     switcherBg,
     switcherBorderRadius,
     switcherPadding,
-    switcherMarginTop,
     switcherButtonPadding,
     switcherButtonFontSize,
     switcherButtonColor,
@@ -3557,15 +2903,15 @@ function extractSwitcherStyle(switcherFrame: any): {
   };
 }
 
-/** Format padding from Figma auto-layout properties into CSS string. */
-function formatPadding(node: any, fallback: string): string {
+/** Format padding from Figma auto-layout properties into CSS string. Returns undefined if no padding found. */
+function formatPadding(node: any): string | undefined {
   const top = node.paddingTop;
   const right = node.paddingRight;
   const bottom = node.paddingBottom;
   const left = node.paddingLeft;
 
   if (top === undefined && right === undefined && bottom === undefined && left === undefined) {
-    return fallback;
+    return undefined;
   }
 
   const t = top ?? 0;
@@ -4168,16 +3514,50 @@ function figmaColorToCss(c: any, paintOpacity?: number): string {
 
 function figmaColorToHex(c: any): string {
   if (!c) return '#000000';
-  const r = Math.round((c.r ?? 0) * 255)
+  const toHex = (v: number) => Math.min(255, Math.max(0, Math.round((v ?? 0) * 255)))
     .toString(16)
     .padStart(2, '0');
-  const g = Math.round((c.g ?? 0) * 255)
-    .toString(16)
-    .padStart(2, '0');
-  const b = Math.round((c.b ?? 0) * 255)
-    .toString(16)
-    .padStart(2, '0');
-  return `#${r}${g}${b}`;
+  return `#${toHex(c.r)}${toHex(c.g)}${toHex(c.b)}`;
+}
+
+/**
+ * Parse a hex color string to RGB components (0–255).
+ */
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return null;
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+
+/**
+ * Fuzzy color match: returns true if two hex colors are perceptually similar.
+ * Uses Euclidean distance in RGB space. The threshold is 10% of the max possible
+ * distance (√(255²×3) ≈ 441), so ~44 units — enough to match #ddbdfe vs #d8b4fe
+ * (distance ≈ 12) while rejecting truly different colors.
+ */
+function colorsMatch(hex1: string, hex2: string): boolean {
+  if (hex1.toLowerCase() === hex2.toLowerCase()) return true;
+  const a = hexToRgb(hex1);
+  const b = hexToRgb(hex2);
+  if (!a || !b) return false;
+  const dist = Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+  // 10% of max RGB distance (√(255²×3) ≈ 441)
+  return dist < 441 * 0.10;
+}
+
+/**
+ * Find the closest matching color from a map using fuzzy comparison.
+ * Returns the map value for the closest matching key, or undefined if none match.
+ */
+function fuzzyColorMapGet(map: Map<string, string>, targetColor: string): string | undefined {
+  // Try exact match first
+  const exact = map.get(targetColor.toLowerCase());
+  if (exact) return exact;
+  // Fuzzy search
+  for (const [mapColor, mapValue] of map) {
+    if (colorsMatch(mapColor, targetColor)) return mapValue;
+  }
+  return undefined;
 }
 
 function toPascalCase(str: string): string {

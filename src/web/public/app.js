@@ -248,6 +248,9 @@ var veAiDeleteBtn = document.getElementById('ve-ai-delete');
 // Resize
 const resizeHandle = document.getElementById('resize-handle');
 const panelLeft = document.getElementById('panel-left');
+const chatPanelCollapseBtn = document.getElementById('chat-panel-collapse');
+const chatPanelExpandBtn = document.getElementById('chat-panel-expand');
+const CHAT_PANEL_COLLAPSED_KEY = 'figma2code-chat-panel-collapsed';
 
 // Preview (WebContainer)
 const previewHeader = document.getElementById('preview-header');
@@ -689,6 +692,7 @@ function restoreProject(projectId) {
     // Restore split view and progress panel
     mainHero.classList.add('hidden');
     mainSplit.classList.add('visible');
+    applyChatPanelCollapseFromStorage();
     mainHero.closest('.main')?.classList.add('split-visible');
     figmaUrlInput.value = project.figmaUrl || '';
 
@@ -742,6 +746,7 @@ function restoreProject(projectId) {
   // Switch to split view
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
+  applyChatPanelCollapseFromStorage();
   mainHero.closest('.main')?.classList.add('split-visible');
 
   // Auto-collapse sidebar on selection (non-mobile)
@@ -754,9 +759,9 @@ function restoreProject(projectId) {
   // Set URL input
   figmaUrlInput.value = project.figmaUrl || '';
 
-  // Sync framework checkboxes
+  // Sync framework checkboxes (hero only; panel URL bar has no duplicate chips)
   const frameworks = project.frameworks || [];
-  mainSplit.querySelectorAll('input[name="framework"]').forEach(cb => {
+  mainHero.querySelectorAll('input[name="framework"]').forEach(cb => {
     cb.checked = frameworks.includes(cb.value);
   });
 
@@ -862,6 +867,7 @@ function restoreProject(projectId) {
   // Switch to chat input mode
   if (urlInputGroup) urlInputGroup.style.display = 'none';
   if (chatInputGroup) chatInputGroup.style.display = 'block';
+  requestAnimationFrame(() => resizeChatInput());
 
   setStatus('done', 'Conversion complete');
   renderProjectList();
@@ -1637,8 +1643,7 @@ function getActiveUrlInput() {
 }
 
 function getSelectedFrameworks() {
-  const scope = mainHero.classList.contains('hidden') ? mainSplit : mainHero;
-  const checkboxes = scope.querySelectorAll('input[name="framework"]:checked');
+  const checkboxes = mainHero.querySelectorAll('input[name="framework"]:checked');
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 
@@ -1749,15 +1754,12 @@ async function startConversion(skipDuplicateCheck) {
   // Switch from hero to split view (animated)
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
+  applyChatPanelCollapseFromStorage();
   mainHero.closest('.main')?.classList.add('split-visible');
   syncSidebarPrimaryNavToShellView();
 
-  // Sync URL and framework selection to panel for "convert another"
+  // Sync URL to panel for "convert another" (frameworks stay on hero inputs)
   figmaUrlInput.value = figmaUrl;
-  mainHero.querySelectorAll('input[name="framework"]').forEach((cb) => {
-    const panelCb = mainSplit.querySelector(`input[name="framework"][value="${cb.value}"]`);
-    if (panelCb) panelCb.checked = cb.checked;
-  });
   if (frameworks.length === 0) {
     showError('Please select at least one framework.');
     return;
@@ -2966,7 +2968,18 @@ const chatInput = document.getElementById('chat-input');
 const chatSendBtn = document.getElementById('chat-send-btn');
 const chatSpinner = document.getElementById('chat-spinner');
 const chatSendIcon = document.getElementById('chat-send-icon');
+const chatMicBtn = document.getElementById('chat-mic-btn');
 let chatRefining = false;
+
+const CHAT_TEXTAREA_MAX_PX = 220;
+/** Matches `placeholder` on #chat-input */
+const CHAT_INPUT_PLACEHOLDER = 'Ask Nester…';
+
+function resizeChatInput() {
+  if (!chatInput) return;
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, CHAT_TEXTAREA_MAX_PX) + 'px';
+}
 
 function initChat() {
   if (!currentSessionId) return;
@@ -2975,6 +2988,7 @@ function initChat() {
   if (chatInputGroup) chatInputGroup.style.display = 'block';
   // Show chat messages container
   if (chatMessages) chatMessages.classList.add('visible');
+  requestAnimationFrame(() => resizeChatInput());
 }
 
 function addChatMessage(role, content, skipPersist) {
@@ -3371,8 +3385,10 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
 
   // User sees a short summary; API still receives the full engineered prompt when provided
   addChatMessage('user', displayText);
-  chatInput.value = '';
-  chatInput.style.height = 'auto';
+  if (chatInput) {
+    chatInput.value = '';
+    resizeChatInput();
+  }
 
   // Show loading indicator
   setChatLoading(true);
@@ -3660,10 +3676,63 @@ if (chatInput) {
       sendChatMessage();
     }
   });
-  // Auto-resize textarea
-  chatInput.addEventListener('input', () => {
-    chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+  chatInput.addEventListener('input', () => resizeChatInput());
+  resizeChatInput();
+}
+
+if (chatMicBtn && chatInput) {
+  chatMicBtn.addEventListener('click', () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      window.alert('Speech recognition is not supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+    if (chatMicBtn.classList.contains('recording')) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = navigator.language || 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    const cleanup = () => {
+      chatMicBtn.classList.remove('recording');
+      chatMicBtn.setAttribute('aria-label', 'Voice input');
+      chatInput.placeholder = CHAT_INPUT_PLACEHOLDER;
+    };
+
+    recognition.onstart = () => {
+      chatMicBtn.classList.add('recording');
+      chatMicBtn.setAttribute('aria-label', 'Listening…');
+      chatInput.placeholder = 'Listening… speak now';
+    };
+
+    recognition.onresult = (event) => {
+      let piece = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        piece += event.results[i][0].transcript;
+      }
+      piece = piece.trim();
+      if (!piece) return;
+      const cur = chatInput.value.trim();
+      chatInput.value = cur ? `${cur} ${piece}` : piece;
+      resizeChatInput();
+    };
+
+    recognition.onerror = () => {
+      cleanup();
+      chatInput.focus();
+    };
+
+    recognition.onend = () => {
+      cleanup();
+      chatInput.focus();
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      cleanup();
+    }
   });
 }
 
@@ -4689,6 +4758,7 @@ function setLoading(loading) {
 let isResizing = false;
 
 resizeHandle.addEventListener('mousedown', (e) => {
+  if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
   isResizing = true;
   resizeHandle.classList.add('active');
   document.body.style.cursor = 'col-resize';
@@ -4696,15 +4766,50 @@ resizeHandle.addEventListener('mousedown', (e) => {
   e.preventDefault();
 });
 
+function applyChatPanelCollapsed(collapsed, persist) {
+  if (!mainSplit) return;
+  mainSplit.classList.toggle('main-split--chat-collapsed', collapsed);
+  if (chatPanelCollapseBtn) {
+    chatPanelCollapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  if (chatPanelExpandBtn) {
+    chatPanelExpandBtn.style.display = collapsed ? 'inline-flex' : 'none';
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(CHAT_PANEL_COLLAPSED_KEY, collapsed ? '1' : '0');
+    } catch (e) { /* ignore quota */ }
+  }
+}
+
+function applyChatPanelCollapseFromStorage() {
+  if (!mainSplit || !mainSplit.classList.contains('visible')) return;
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(CHAT_PANEL_COLLAPSED_KEY) === '1';
+  } catch (e) { /* ignore */ }
+  applyChatPanelCollapsed(collapsed, false);
+}
+
+if (chatPanelCollapseBtn) {
+  chatPanelCollapseBtn.addEventListener('click', () => applyChatPanelCollapsed(true, true));
+}
+if (chatPanelExpandBtn) {
+  chatPanelExpandBtn.addEventListener('click', () => applyChatPanelCollapsed(false, true));
+}
+
+const PANEL_LEFT_MIN_PX = 280;
+const PANEL_LEFT_MAX_PX = 360;
+
 document.addEventListener('mousemove', (e) => {
   if (!isResizing) return;
+  if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
   const mainEl = document.querySelector('.main');
   const mainRect = mainEl.getBoundingClientRect();
-  const newWidth = e.clientX - mainRect.left;
-  const percent = (newWidth / mainRect.width) * 100;
-  if (percent > 20 && percent < 65) {
-    panelLeft.style.width = percent + '%';
-  }
+  const rawPx = e.clientX - mainRect.left;
+  const clampedPx = Math.max(PANEL_LEFT_MIN_PX, Math.min(rawPx, PANEL_LEFT_MAX_PX));
+  const percent = (clampedPx / mainRect.width) * 100;
+  panelLeft.style.width = percent + '%';
 });
 
 document.addEventListener('mouseup', () => {
@@ -5560,6 +5665,9 @@ function toggleVisualEditMode(active) {
   window.isVisualEditMode = active;
   console.log('window.isVisualEditMode is now:', window.isVisualEditMode);
   if (active) {
+    if (mainSplit && mainSplit.classList.contains('main-split--chat-collapsed')) {
+      applyChatPanelCollapsed(false, true);
+    }
     if (emptyState) emptyState.style.display = 'none';
     if (chatMessages) chatMessages.style.display = 'none';
     if (progressCollapsible) progressCollapsible.style.display = 'none';
@@ -5591,6 +5699,9 @@ function toggleVisualEditMode(active) {
       console.log('Sending setVisualEditActive:false to iframe');
       previewFrame.contentWindow.postMessage({ type: 'setVisualEditActive', active: false }, '*');
     }
+  }
+  if (chatPanelCollapseBtn) {
+    chatPanelCollapseBtn.hidden = active;
   }
 }
 
@@ -5951,6 +6062,7 @@ if (floatingInput) {
       const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
       toggleVisualEditMode(false);
       if (chatInput) chatInput.value = '';
+      resizeChatInput();
       sendChatMessage({ displayText: displayLine, prompt: promptText }, savedSelection);
       floatingInput.value = '';
     }
@@ -5966,6 +6078,7 @@ if (floatingSendBtn) {
     const displayLine = buildFloatingRefineSummary(promptText, selectedElementInfo);
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = '';
+    resizeChatInput();
     sendChatMessage({ displayText: displayLine, prompt: promptText }, savedSelection);
     floatingInput.value = '';
   });
@@ -6092,6 +6205,7 @@ if (veUnsavedSave) {
 
     toggleVisualEditMode(false);
     if (chatInput) chatInput.value = '';
+    resizeChatInput();
     sendChatMessage({ displayText: displayLine, prompt: { _visualEdits: editsPayload } });
   });
 }

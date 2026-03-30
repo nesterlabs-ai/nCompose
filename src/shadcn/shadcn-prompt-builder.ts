@@ -505,11 +505,11 @@ Your task: Given a Figma node tree and a shadcn component library, compose the l
 6. **Icons**: Reference SVG asset files using \`<img src="./assets/filename.svg">\` paths. Match each icon to its Figma item. If inline SVG content is provided, use it directly with camelCase attributes.
 
 7. **Consumer component**: The .jsx file MUST:
-   - Import sub-components from \`@/components/ui/{type}\`
+   - Import ALL needed sub-components from \`@/components/ui/{type}\` (e.g. for table: \`import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table"\`)
    - Import React from "react" — and NOTHING ELSE
    - Use default export
    - Compose the full layout using the library's sub-components
-   - NOT use raw \`<div>\` elements for things that have a matching sub-component
+   - NEVER use raw HTML elements (\`<table>\`, \`<tr>\`, \`<td>\`, \`<th>\`, \`<thead>\`, \`<tbody>\`, \`<div>\`, \`<nav>\`, \`<aside>\`) when a matching shadcn sub-component exists. Use \`<Table>\`, \`<TableRow>\`, \`<TableCell>\`, \`<TableHead>\`, \`<TableHeader>\`, \`<TableBody>\` etc. instead
 
 8. **Do NOT restructure the library**: Block 1 should be the library source mostly unchanged. Your job is to USE the library in Block 2, not to rewrite it.
 
@@ -617,6 +617,7 @@ export function buildShadcnStructuralUserPrompt(ctx: {
   parts.push('- Map EVERY Figma item to a sub-component — do NOT skip items or use raw <div>s');
   parts.push('- Use exact text labels, icon filenames, and colors from the Figma data');
   parts.push('- Mark active/selected items using the library\'s built-in mechanism');
+  parts.push('- **SELF-CONTAINED DATA**: If you use .map() to render repeated items (table rows, list items, etc.), you MUST declare the data array INSIDE the component function body. NEVER reference undeclared variables. Example: `const items = [{name: "Policy A"}, ...]; return <>{items.map(i => ...)}</>`');
   if (ctx.leafComponents && ctx.leafComponents.length > 0) {
     parts.push('- Use the leaf components (Checkbox, Switch, Badge, etc.) for interactive elements — do NOT build them manually');
   }

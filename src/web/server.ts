@@ -267,6 +267,75 @@ function requireSessionOwner(req: any, res: any, next: any): void {
   res.status(403).json({ error: 'You do not have access to this session' });
 }
 
+// ── Step message sanitizer ────────────────────────────────────────────────
+// Strips internal tool names (LLM providers, Mitosis, shadcn, paths) from
+// progress messages before sending to the web client. Raw messages are
+// preserved in server logs and CLI output.
+
+const LLM_NAME_RE = /\bvia\s+(Claude|DeepSeek|GPT-4o|OpenAI)\b/gi;
+const SHADCN_PREFIX_RE = /^\[shadcn(?:-(?:structural|composite))?\]\s*/;
+const PATH_LABEL_RE = /^\[PATH\s+\d+\]\s*/;
+const MITOSIS_RE = /\bMitosis\b/g;
+const OUTPUT_PATH_RE = /\s*(to\s+)?\.?\/[\w./-]+/;
+
+/** Map of raw messages to user-friendly replacements (prefix match). */
+const STEP_REWRITES: [RegExp, string][] = [
+  [/^Assembling prompts\.\.\./, 'Preparing code generation...'],
+  [/^Injecting (?:variant |page )?CSS\.\.\./, 'Applying styles...'],
+  [/^Parsing stitched page component\.\.\./, 'Finalizing page layout...'],
+  [/^Building variant CSS from design tokens\.\.\./, 'Building styles from design...'],
+  [/^Building variant prompt data\.\.\./, 'Preparing variant data...'],
+  [/^Generating React \+ Tailwind component\b.*/, 'Generating component...'],
+  [/^Output saved to\b.*/, 'Output saved'],
+  [/^Template wir(?:ed|ing)\b.*/, 'Template ready'],
+  [/Failed:.*falling back to standard codegen/, 'Retrying with fallback approach...'],
+  [/Failed:.*falling back to composite discovery/, 'Retrying with fallback approach...'],
+  [/Failed:.*falling back to React/, 'Retrying with fallback approach...'],
+  [/Failed:.*falling back to raw HTML/, 'Retrying with fallback approach...'],
+];
+
+function sanitizeStepMessage(raw: string): string {
+  // Apply full rewrites first
+  for (const [pattern, replacement] of STEP_REWRITES) {
+    if (pattern.test(raw)) return replacement;
+  }
+
+  let msg = raw;
+
+  // Strip [shadcn*] and [PATH N] prefixes
+  msg = msg.replace(SHADCN_PREFIX_RE, '');
+  msg = msg.replace(PATH_LABEL_RE, '');
+
+  // Strip LLM provider names: "via DeepSeek" → "via NesterAI"
+  msg = msg.replace(LLM_NAME_RE, 'via NesterAI');
+
+  // Replace "Mitosis" with "component"
+  msg = msg.replace(MITOSIS_RE, 'component');
+
+  // Strip internal tool/library names
+  msg = msg.replace(/\bshadcn\b\s*/gi, '');
+  msg = msg.replace(/\bRecharts\b\s*/gi, '');
+  msg = msg.replace(/\bcodegen\s*(?:path)?\b/gi, '');
+  msg = msg.replace(/\bBEM\b/g, 'CSS');
+
+  // Strip internal detail like "(class-based)"
+  msg = msg.replace(/\s*\(class-based\)/g, '');
+
+  // Strip file paths from messages
+  msg = msg.replace(/Output saved to\s+\S+/, 'Output saved');
+
+  // Clean up artifacts: "→ using  path..." → "→ processing..."
+  msg = msg.replace(/→\s*using\s+(?:path|)\s*\.{3}/, '→ processing...');
+  // "Detected "button" → processing..."
+  msg = msg.replace(/Detected\s+"([^"]+)"\s*→\s*processing\.\.\./, 'Processing "$1" component...');
+
+  // Clean up redundant words and double spaces
+  msg = msg.replace(/\bcomponent component\b/g, 'component');
+  msg = msg.replace(/\s{2,}/g, ' ').trim();
+
+  return msg;
+}
+
 // Periodic cleanup of expired sessions and tokens (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -434,7 +503,7 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
     },
     {
       onStep: (step) => {
-        sendEvent('step', { message: step });
+        sendEvent('step', { message: sanitizeStepMessage(step) });
       },
       onAttempt: (attempt, maxRetries, error) => {
         sendEvent('attempt', { attempt, maxRetries, error: error || null });
@@ -497,10 +566,10 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
             shadcnSubComponents: result.shadcnSubComponents,
             elementMap: result.elementMap,
           });
-          sendEvent('step', { message: `Output saved to ${componentOutputDir}` });
+          sendEvent('step', { message: 'Output saved' });
         } catch (writeErr) {
           const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
-          sendEvent('step', { message: `Warning: Could not save output to disk: ${msg}` });
+          sendEvent('step', { message: 'Warning: Could not save output' });
         }
 
         // Wire into starter template when requested (same behavior as CLI --template)
@@ -526,11 +595,10 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
               });
               templateWired = true;
               sendEvent('step', {
-                message: `Template wired: runnable app in app/ (see Wired app in code view)`,
+                message: 'Template ready — see Wired app in code view',
               });
             } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              sendEvent('step', { message: `Template wiring failed: ${msg}` });
+              sendEvent('step', { message: 'Template setup failed' });
             }
           }
         }
@@ -927,7 +995,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
     componentName: session.result.componentName,
     selectedElement: resolvedSelectedElement,
     elementMap: session.result.elementMap,
-    onStep: (step) => sendEvent('step', { message: step }),
+    onStep: (step) => sendEvent('step', { message: sanitizeStepMessage(step) }),
   })
     .then((refined) => {
       clearInterval(heartbeat);

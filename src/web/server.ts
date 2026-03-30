@@ -12,6 +12,7 @@ import { writeOutputFiles } from '../output.js';
 import { generateSessionId } from '../utils/session-id.js';
 import { generatePreviewHTML } from './preview.js';
 import { refineComponent } from './refine.js';
+import { classifyMessageIntent } from './chat-intent.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
 import type { Framework, ConversionResult } from '../types/index.js';
 import type { LLMMessage } from '../llm/provider.js';
@@ -983,6 +984,43 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   } else {
     // Regular chat — raw user request
     effectivePrompt = userRequest.trim();
+  }
+
+  // ── Conversational fast-path ──────────────────────────────────────────
+  // For plain chat messages (not visual edits or element-targeted prompts),
+  // classify intent and skip the full refinement pipeline for conversational
+  // messages like greetings, affirmations, or meta-questions.
+  if (!visualEdits && !dataVeId && userRequest && classifyMessageIntent(userRequest.trim()) === 'conversational') {
+    const chatMessages: LLMMessage[] = [
+      {
+        role: 'system',
+        content: 'You are a helpful assistant for a Figma-to-code conversion tool. You help users convert Figma designs into React, Vue, Svelte, Angular, and Solid components. Respond briefly and helpfully. Do not generate any code.',
+      },
+      ...session.conversation,
+      { role: 'user', content: userRequest.trim() },
+    ];
+
+    llmProvider.generateMultiTurn(chatMessages)
+      .then((reply) => {
+        clearInterval(heartbeat);
+        // Append to conversation history (no code context prefix)
+        session!.conversation.push(
+          { role: 'user', content: userRequest.trim() },
+          { role: 'assistant', content: reply },
+        );
+        if (session!.conversation.length > 40) {
+          session!.conversation = session!.conversation.slice(-40);
+        }
+        sendEvent('chat_response', { message: reply });
+        res.end();
+      })
+      .catch((err) => {
+        clearInterval(heartbeat);
+        const msg = err instanceof Error ? err.message : String(err);
+        sendEvent('error', { message: `Chat error: ${msg}` });
+        res.end();
+      });
+    return;
   }
 
   refineComponent({

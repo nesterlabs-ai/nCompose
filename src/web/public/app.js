@@ -3486,6 +3486,11 @@ function parseRefineSSEEvent(eventStr, loadingMsg) {
         loadingMsg.innerHTML = `<div class="chat-loading-indicator"><div class="chat-loading-dots"><span></span><span></span><span></span></div></div>`;
       }
       break;
+    case 'chat_response':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      addChatMessage('assistant', data.message);
+      break;
     case 'complete':
       setChatLoading(false);
       removeChatMessage(loadingMsg);

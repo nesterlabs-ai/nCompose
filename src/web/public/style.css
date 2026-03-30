@@ -3468,7 +3468,7 @@ body {
 
 /* Chat composer — Lovable-style (aligned with hero prompt card) */
 .chat-input-group {
-  padding: 8px 12px 12px;
+  /* padding: 8px 12px 12px; */
 }
 
 .chat-input-group .input-row {

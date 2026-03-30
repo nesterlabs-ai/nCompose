@@ -1,6 +1,6 @@
-# Figma to Code — Web App Starter
+# NesterCompose — Web App Starter
 
-A **GitHub template repository** for building Figma-to-code web apps with Vite, React, TypeScript, shadcn/ui, Tailwind CSS, and Supabase.
+A starter template for building web apps with Vite, React, TypeScript, shadcn/ui, and Tailwind CSS.
 
 ## Stack
 
@@ -8,77 +8,50 @@ A **GitHub template repository** for building Figma-to-code web apps with Vite, 
 - **React 19** + **TypeScript**
 - **shadcn/ui** — Components (New York style, neutral theme)
 - **Tailwind CSS v4** — Styling with dark mode (class-based)
-- **Supabase** — Auth, database, storage
 - **React Router DOM** — Client-side routing
 - **next-themes** — Dark mode support
-- **Bun** — Package manager
 
-## Use this template
+## Getting Started
 
-1. Click **Use this template** on GitHub (or clone the repo).
-2. Clone your new repo and open it locally.
-3. Copy env vars and install (requires [Bun](https://bun.sh); this will create `bun.lockb`):
+1. Install dependencies:
 
    ```bash
-   cp .env.example .env
-   # Edit .env and set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
-   bun install
+   npm install
    ```
 
-4. Run the app:
+2. Run the app:
 
    ```bash
-   bun run dev
+   npm run dev
    ```
 
-5. Open [http://localhost:5173](http://localhost:5173).
+3. Open [http://localhost:5173](http://localhost:5173).
 
 ## Scripts
 
 | Command        | Description              |
 |----------------|--------------------------|
-| `bun run dev`  | Start dev server         |
-| `bun run build`| Type-check and build     |
-| `bun run preview` | Preview production build |
-| `bun run lint` | Run ESLint               |
+| `npm run dev`  | Start dev server         |
+| `npm run build`| Type-check and build     |
+| `npm run preview` | Preview production build |
+| `npm run lint` | Run ESLint               |
 
 ## Project structure
 
 ```
 src/
   components/   # React components (ui/ for shadcn)
-  pages/       # Route-level pages (landing, dashboard)
-  hooks/       # Custom React hooks
-  lib/         # Utils, Supabase client
-  types/       # TypeScript types (e.g. database)
-  assets/      # Static assets
-supabase/
-  migrations/  # SQL migrations
-public/        # Public static files
+  pages/        # Route-level pages
+  hooks/        # Custom React hooks
+  lib/          # Utilities
+  assets/       # Static assets
+public/         # Public static files
 ```
-
-## Environment variables
-
-See `.env.example`. Required for Supabase:
-
-- `VITE_SUPABASE_URL` — Project URL from Supabase Dashboard → Settings → API
-- `VITE_SUPABASE_ANON_KEY` — Anon (public) key from the same page
-
-## Mark as a GitHub template
-
-To let others create new repos from this one:
-
-1. Open your repo on GitHub.
-2. **Settings** → **General**.
-3. Under **Template repository**, check **Template repository**.
-
-After that, users will see a **Use this template** button on your repo.
 
 ## Customization
 
-- Search for `// TODO:` in the codebase for placeholders (env, theme, Supabase types, copy, routes).
-- Add shadcn components: `bunx shadcn@latest add <component>`.
-- Backend setup: see [BACKEND.md](./BACKEND.md).
+- Search for `// TODO:` in the codebase for placeholders.
+- Add shadcn components: `npx shadcn@latest add <component>`.
 
 ## License
 

@@ -191,12 +191,12 @@ When `COGNITO_USER_POOL_ID` is empty, all auth middleware passes through (no aut
 | `FIDELITY_FORBID_INLINE_SIZING` | `true` | Block inline `css={{width/height}}` |
 | `FIDELITY_REQUIRE_REPORT_PASS` | `false` | Fail conversion on fidelity issues |
 
-### Supabase (client-side, optional)
+### GitHub OAuth (optional — enables Push to GitHub)
 
 | Variable | Description |
 |----------|-------------|
-| `VITE_SUPABASE_URL` | Supabase project URL |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase public key |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 
 ---
 
@@ -373,7 +373,7 @@ environment:
   - SERVER_OUTPUT_DIR=/app/web_output
 ```
 
-Everything else (FIGMA_TOKEN, LLM keys, AWS credentials, DynamoDB, Cognito, Supabase, fidelity) comes from `.env` automatically.
+Everything else (FIGMA_TOKEN, LLM keys, AWS credentials, DynamoDB, Cognito, GitHub OAuth, fidelity) comes from `.env` automatically.
 
 ---
 

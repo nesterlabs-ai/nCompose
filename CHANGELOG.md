@@ -80,7 +80,7 @@ Updated `CLAUDE.md` — reflects three-path architecture (PATH A/B/C + chart cod
 
 ### GitHub Push
 
-- **GitHub integration** — Push generated code or wired app to GitHub via Supabase OAuth. Supports both generated files and wired app mode.
+- **GitHub integration** — Push generated code or wired app to GitHub via OAuth (server-side Express routes). Supports both generated files and wired app mode.
 
 ### Template Wiring
 

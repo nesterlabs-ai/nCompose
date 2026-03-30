@@ -3468,7 +3468,16 @@ body {
 
 /* Chat composer — Lovable-style (aligned with hero prompt card) */
 .chat-input-group {
-  padding: 0;
+  padding: 8px 12px 12px;
+}
+
+.chat-input-group .input-row {
+  align-items: flex-end;
+}
+
+.chat-input-group .send-btn {
+  width: 36px;
+  height: 36px;
 }
 
 .chat-composer {

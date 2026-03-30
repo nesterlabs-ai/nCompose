@@ -194,6 +194,15 @@ export default function ${componentName}() {
 `;
 }
 
+// ── Shared helper: build tick prop from optional Figma values ────────────────
+
+function buildTickProp(meta: ChartMetadata): string {
+  const parts: string[] = [];
+  if (meta.axisLabelColor) parts.push(`fill: '${meta.axisLabelColor}'`);
+  if (meta.axisFontSize != null) parts.push(`fontSize: ${meta.axisFontSize}`);
+  return parts.length > 0 ? ` tick={{ ${parts.join(', ')} }}` : '';
+}
+
 // ── Dynamic import resolution ──────────────────────────────────────────────
 
 function resolveImports(def: RechartsComponentDef): string[] {
@@ -460,7 +469,8 @@ function buildChartContainerProps(meta: ChartMetadata, _def: RechartsComponentDe
     return ''; // Treemap is both container and data element
   }
 
-  // Cartesian charts
+  // Cartesian charts — only emit margin if Figma provided padding data
+  if (!chartMargin) return '';
   const { top, right, bottom, left } = chartMargin;
   return ` margin={{ top: ${top}, right: ${right}, left: ${left}, bottom: ${bottom} }}`;
 }
@@ -469,7 +479,7 @@ function buildChartContainerProps(meta: ChartMetadata, _def: RechartsComponentDe
 
 function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): string {
   const { chartType, series } = meta;
-  const primaryColor = series[0]?.color ?? '#9747ff';
+  const primaryColor = series[0]?.color ?? '#000000';
   const isMultiSeries = series.length > 1;
   const el = def.dataElement; // 'Pie', 'Bar', 'Line', 'Area', 'RadialBar'
 
@@ -480,10 +490,16 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
       ? Math.round(outerRadius * (meta.innerRadiusRatio > 0 ? meta.innerRadiusRatio : 0.6))
       : 0;
 
-    // Center label for donut (e.g. "9.2K")
-    const centerLabel = chartType === 'donut' && meta.donutCenterText
-      ? `\n            <Label position="center" value="${meta.donutCenterText}" style={{ fontSize: '${meta.donutCenterFontSize}px', fontWeight: ${meta.donutCenterFontWeight}, fill: '${meta.donutCenterColor}' }} />`
-      : '';
+    // Center label for donut (e.g. "9.2K") — only emit style props that Figma provided
+    let centerLabel = '';
+    if (chartType === 'donut' && meta.donutCenterText) {
+      const styleParts: string[] = [];
+      if (meta.donutCenterFontSize != null) styleParts.push(`fontSize: '${meta.donutCenterFontSize}px'`);
+      if (meta.donutCenterFontWeight != null) styleParts.push(`fontWeight: ${meta.donutCenterFontWeight}`);
+      if (meta.donutCenterColor) styleParts.push(`fill: '${meta.donutCenterColor}'`);
+      const styleAttr = styleParts.length > 0 ? ` style={{ ${styleParts.join(', ')} }}` : '';
+      centerLabel = `\n            <Label position="center" value="${meta.donutCenterText}"${styleAttr} />`;
+    }
 
     return (
       `          <${el}\n` +
@@ -509,14 +525,24 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
     const trackColor = meta.rings[0]?.trackColor ?? '#f0f0f0';
     const cornerRadius = Math.round(meta.chartAreaHeight * 0.05);
 
-    // Center label for radial charts (e.g. "1,000" + "Active users")
+    // Center label for radial charts — only emit style props that Figma provided
     let centerLabel = '';
     if (meta.donutCenterText) {
       const hasSubtext = meta.centerSubtext;
       const mainY = hasSubtext ? '46%' : '50%';
-      centerLabel = `\n          <text x="50%" y="${mainY}" textAnchor="middle" dominantBaseline="central" style={{ fontSize: '${meta.donutCenterFontSize}px', fontWeight: ${meta.donutCenterFontWeight}, fill: '${meta.donutCenterColor}' }}>${meta.donutCenterText}</text>`;
+      const mainStyle: string[] = [];
+      if (meta.donutCenterFontSize != null) mainStyle.push(`fontSize: '${meta.donutCenterFontSize}px'`);
+      if (meta.donutCenterFontWeight != null) mainStyle.push(`fontWeight: ${meta.donutCenterFontWeight}`);
+      if (meta.donutCenterColor) mainStyle.push(`fill: '${meta.donutCenterColor}'`);
+      const mainStyleAttr = mainStyle.length > 0 ? ` style={{ ${mainStyle.join(', ')} }}` : '';
+      centerLabel = `\n          <text x="50%" y="${mainY}" textAnchor="middle" dominantBaseline="central"${mainStyleAttr}>${meta.donutCenterText}</text>`;
       if (hasSubtext) {
-        centerLabel += `\n          <text x="50%" y="56%" textAnchor="middle" dominantBaseline="central" style={{ fontSize: '${meta.centerSubtextFontSize}px', fontWeight: ${meta.centerSubtextFontWeight}, fill: '${meta.centerSubtextColor}' }}>${meta.centerSubtext}</text>`;
+        const subStyle: string[] = [];
+        if (meta.centerSubtextFontSize != null) subStyle.push(`fontSize: '${meta.centerSubtextFontSize}px'`);
+        if (meta.centerSubtextFontWeight != null) subStyle.push(`fontWeight: ${meta.centerSubtextFontWeight}`);
+        if (meta.centerSubtextColor) subStyle.push(`fill: '${meta.centerSubtextColor}'`);
+        const subStyleAttr = subStyle.length > 0 ? ` style={{ ${subStyle.join(', ')} }}` : '';
+        centerLabel += `\n          <text x="50%" y="56%" textAnchor="middle" dominantBaseline="central"${subStyleAttr}>${meta.centerSubtext}</text>`;
       }
     }
 
@@ -549,7 +575,7 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
 
     return (
       `          <PolarGrid />\n` +
-      `          <PolarAngleAxis dataKey="${angleAxisDataKey}" tick={{ fill: '${meta.axisLabelColor}', fontSize: ${meta.axisFontSize} }} />\n` +
+      `          <PolarAngleAxis dataKey="${angleAxisDataKey}"${buildTickProp(meta)} />\n` +
       `          <PolarRadiusAxis angle={90} domain={[0, 100]} tick={false} axisLine={false} />\n` +
       radarElements +
       `          <Tooltip content={<${tooltipName(meta)} />} />\n`
@@ -588,22 +614,28 @@ function buildDataElementProps(meta: ChartMetadata, def: RechartsComponentDef): 
     return `          <${el} name="Data" data={data} fill="${primaryColor}" />\n`;
   }
 
-  // ── Cartesian elements (Bar, Line, Area) ──
-  if (!isMultiSeries) {
-    const color = primaryColor;
-    const dataKey = 'value';
-    // Bar chart with per-bar colors (each bar has a different fill from Figma)
-    const hasPerBarColors = el === 'Bar' && meta.barData?.some((d) => d.color);
+  // ── Bar with Figma-extracted barData (per-bar colors + values) ──
+  // When barData exists, data uses { name, value, color } — single dataKey "value".
+  // This MUST be checked before multi-series branch, because series.length may be > 1
+  // (from legend extraction) but the data is NOT multi-series — it's one value per bar.
+  if (el === 'Bar' && meta.barData && meta.barData.length > 0) {
+    const hasPerBarColors = meta.barData.some((d) => d.color);
+    const radiusProp = meta.barRadius ? ` radius={[${meta.barRadius.join(', ')}]}` : '';
     if (hasPerBarColors) {
       return (
-        `          <${el} dataKey="${dataKey}" radius={[${meta.barRadius.join(', ')}]}>\n` +
+        `          <${el} dataKey="value"${radiusProp}>\n` +
         `            {data.map((entry, index) => (\n` +
         `              <Cell key={index} fill={entry.color} />\n` +
         `            ))}\n` +
         `          </${el}>\n`
       );
     }
-    return `          <${el} ${buildElementProps(el, dataKey, color, meta, 0)} />\n`;
+    return `          <${el} dataKey="value" fill="${primaryColor}"${radiusProp} />\n`;
+  }
+
+  // ── Cartesian elements (Bar without barData, Line, Area) — single series ──
+  if (!isMultiSeries) {
+    return `          <${el} ${buildElementProps(el, 'value', primaryColor, meta, 0)} />\n`;
   }
 
   // Multi-series: one element per series
@@ -623,22 +655,30 @@ function buildElementProps(
   index: number,
 ): string {
   const { seriesStrokeWidth, dotRadius, dotStrokeColor, dotStrokeWidth, barRadius, bemBase } = meta;
-  const activeDotRadius = dotRadius + 2;
 
-  const dotProps =
-    `dot={{ fill: '${color}', stroke: '${dotStrokeColor}', strokeWidth: ${dotStrokeWidth}, r: ${dotRadius} }} ` +
-    `activeDot={{ fill: '${color}', stroke: '${dotStrokeColor}', strokeWidth: ${dotStrokeWidth}, r: ${activeDotRadius} }}`;
+  // Dot props — only emit what Figma provided
+  const dotParts: string[] = [`fill: '${color}'`];
+  if (dotStrokeColor) dotParts.push(`stroke: '${dotStrokeColor}'`);
+  if (dotStrokeWidth != null) dotParts.push(`strokeWidth: ${dotStrokeWidth}`);
+  if (dotRadius != null) dotParts.push(`r: ${dotRadius}`);
+  const activeParts = [...dotParts.filter(p => !p.startsWith('r:'))];
+  if (dotRadius != null) activeParts.push(`r: ${dotRadius + 2}`);
+  const dotProps = `dot={{ ${dotParts.join(', ')} }} activeDot={{ ${activeParts.join(', ')} }}`;
+
+  const strokeW = seriesStrokeWidth != null ? ` strokeWidth={${seriesStrokeWidth}}` : '';
 
   switch (el) {
-    case 'Bar':
-      return `dataKey="${dataKey}" fill="${color}" radius={[${barRadius.join(', ')}]}`;
+    case 'Bar': {
+      const radiusProp = barRadius ? ` radius={[${barRadius.join(', ')}]}` : '';
+      return `dataKey="${dataKey}" fill="${color}"${radiusProp}`;
+    }
     case 'Area': {
       const gradientId = meta.series.length > 1 ? `${bemBase}-gradient-${index}` : `${bemBase}-gradient`;
-      return `type="monotone" dataKey="${dataKey}" stroke="${color}" strokeWidth={${seriesStrokeWidth}} fill="url(#${gradientId})" ${dotProps}`;
+      return `type="monotone" dataKey="${dataKey}" stroke="${color}"${strokeW} fill="url(#${gradientId})" ${dotProps}`;
     }
     case 'Line':
     default:
-      return `type="monotone" dataKey="${dataKey}" stroke="${color}" strokeWidth={${seriesStrokeWidth}} ${dotProps}`;
+      return `type="monotone" dataKey="${dataKey}" stroke="${color}"${strokeW} ${dotProps}`;
   }
 }
 
@@ -647,13 +687,21 @@ function buildElementProps(
 function buildCartesianProps(meta: ChartMetadata): string {
   const { axisLabelColor, axisFontSize, gridLineColor, gridStrokeDasharray, yAxisMin, yAxisMax, yAxisWidth } = meta;
 
-  const gridProps = gridStrokeDasharray
-    ? `strokeDasharray="${gridStrokeDasharray}" stroke="${gridLineColor}"`
-    : `stroke="${gridLineColor}"`;
+  // Grid — only emit stroke props if Figma provided them
+  const gridParts: string[] = [];
+  if (gridStrokeDasharray) gridParts.push(`strokeDasharray="${gridStrokeDasharray}"`);
+  if (gridLineColor) gridParts.push(`stroke="${gridLineColor}"`);
+  const gridProps = gridParts.length > 0 ? gridParts.join(' ') : '';
 
-  const xAxisProps = `dataKey="name" tick={{ fill: '${axisLabelColor}', fontSize: ${axisFontSize} }} axisLine={false} tickLine={false}`;
+  // Axis tick styling — only emit what Figma provided
+  const tickParts: string[] = [];
+  if (axisLabelColor) tickParts.push(`fill: '${axisLabelColor}'`);
+  if (axisFontSize != null) tickParts.push(`fontSize: ${axisFontSize}`);
+  const tickProp = tickParts.length > 0 ? ` tick={{ ${tickParts.join(', ')} }}` : '';
 
-  // Use actual ticks from Figma if available, otherwise generate evenly spaced ticks
+  const xAxisProps = `dataKey="name"${tickProp} axisLine={false} tickLine={false}`;
+
+  // Y-axis ticks
   const yTicks = meta.yAxisTicks?.length >= 2
     ? meta.yAxisTicks
     : (() => {
@@ -661,14 +709,19 @@ function buildCartesianProps(meta: ChartMetadata): string {
         const yStep = yRange > 0 ? Math.round(yRange / 4) : 10;
         return [yAxisMin, yAxisMin + yStep, yAxisMin + yStep * 2, yAxisMin + yStep * 3, yAxisMax];
       })();
-  const yAxisProps =
-    `domain={[${yAxisMin}, ${yAxisMax}]} ticks={[${yTicks.join(', ')}]} ` +
-    `tick={{ fill: '${axisLabelColor}', fontSize: ${axisFontSize} }} axisLine={false} tickLine={false} width={${yAxisWidth}}`;
+
+  const yAxisParts = [
+    `domain={[${yAxisMin}, ${yAxisMax}]}`,
+    `ticks={[${yTicks.join(', ')}]}`,
+  ];
+  if (tickParts.length > 0) yAxisParts.push(`tick={{ ${tickParts.join(', ')} }}`);
+  yAxisParts.push('axisLine={false}', 'tickLine={false}');
+  if (yAxisWidth != null) yAxisParts.push(`width={${yAxisWidth}}`);
 
   return (
     `          <CartesianGrid ${gridProps} />\n` +
     `          <XAxis ${xAxisProps} />\n` +
-    `          <YAxis ${yAxisProps} />\n`
+    `          <YAxis ${yAxisParts.join(' ')} />\n`
   );
 }
 
@@ -677,17 +730,19 @@ function buildCartesianProps(meta: ChartMetadata): string {
 function buildGradientDefs(meta: ChartMetadata): string {
   const { series, bemBase, gradientStartOpacity } = meta;
   const isMultiSeries = series.length > 1;
+  // Only emit stopOpacity if Figma provided a gradient opacity value
+  const opacityProp = gradientStartOpacity != null ? ` stopOpacity={${gradientStartOpacity}}` : '';
 
   const gradients = isMultiSeries
     ? series.map((s, i) =>
         `            <linearGradient id="${bemBase}-gradient-${i}" x1="0" y1="0" x2="0" y2="1">\n` +
-        `              <stop offset="0%" stopColor="${s.color}" stopOpacity={${gradientStartOpacity}} />\n` +
-        `              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n` +
+        `              <stop offset="0%" stopColor="${s.color}"${opacityProp} />\n` +
+        `              <stop offset="100%" stopColor="${s.color}" stopOpacity={0} />\n` +
         `            </linearGradient>`,
       ).join('\n')
     : `            <linearGradient id="${bemBase}-gradient" x1="0" y1="0" x2="0" y2="1">\n` +
-      `              <stop offset="0%" stopColor="${series[0]?.color ?? '#9747ff'}" stopOpacity={${gradientStartOpacity}} />\n` +
-      `              <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />\n` +
+      `              <stop offset="0%" stopColor="${series[0]?.color ?? '#000'}"${opacityProp} />\n` +
+      `              <stop offset="100%" stopColor="${series[0]?.color ?? '#000'}" stopOpacity={0} />\n` +
       `            </linearGradient>`;
 
   return (
@@ -699,155 +754,165 @@ function buildGradientDefs(meta: ChartMetadata): string {
 
 // ── CSS generation ─────────────────────────────────────────────────────────
 
+/**
+ * Helper: builds a CSS rule block, only including properties that have defined values.
+ * Omits the entire block if no properties have values.
+ */
+function cssBlock(selector: string, props: Array<[string, string | number | undefined]>): string {
+  const lines = props
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `  ${k}: ${v};`);
+  if (lines.length === 0) return '';
+  return `${selector} {\n${lines.join('\n')}\n}\n`;
+}
+
 function buildCSS(meta: ChartMetadata): string {
-  const {
-    bemBase, backgroundColor,
-    containerBorderRadius, containerPadding,
-    legendGap, legendItemGap, legendDotSize, legendDotBorderRadius,
-    legendDotOpacity, legendLabelFontSize, legendLabelColor, legendMarginBottom,
-    switcherBg, switcherBorderRadius, switcherPadding, switcherMarginTop,
-    switcherButtonPadding, switcherButtonFontSize, switcherButtonColor,
-    switcherButtonBorderRadius, switcherActiveBg, switcherActiveColor,
-    switcherActiveFontWeight, switcherActiveBoxShadow,
-  } = meta;
+  const { bemBase } = meta;
+  const p = meta.containerPadding;
+  const padStr = p ? `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px` : undefined;
 
-  const padStr = `${containerPadding.top}px ${containerPadding.right}px ${containerPadding.bottom}px ${containerPadding.left}px`;
+  let css = '';
 
-  return `.${bemBase} {
-  background: ${backgroundColor};
-  border-radius: ${containerBorderRadius}px;
-  padding: ${padStr};
-  width: 100%;
-  box-sizing: border-box;
-  overflow: hidden;
-  position: relative;
-}
+  // Container
+  css += cssBlock(`.${bemBase}`, [
+    ['background', meta.backgroundColor],
+    ['border-radius', meta.containerBorderRadius != null ? `${meta.containerBorderRadius}px` : undefined],
+    ['padding', padStr],
+    ['width', '100%'],
+    ['box-sizing', 'border-box'],
+    ['overflow', 'hidden'],
+    ['position', 'relative'],
+  ]);
 
-.${bemBase}__legends {
-  display: flex;
-  align-items: center;
-  gap: ${legendGap}px;
-  margin-bottom: ${legendMarginBottom}px;
-  flex-wrap: wrap;
-}
+  // Legends
+  css += cssBlock(`.${bemBase}__legends`, [
+    ['display', 'flex'],
+    ['align-items', 'center'],
+    ['gap', meta.legendGap != null ? `${meta.legendGap}px` : undefined],
+    ['margin-bottom', meta.legendMarginBottom != null ? `${meta.legendMarginBottom}px` : undefined],
+    ['flex-wrap', 'wrap'],
+  ]);
 
-.${bemBase}__legend {
-  display: flex;
-  align-items: center;
-  gap: ${legendItemGap}px;
-}
+  css += cssBlock(`.${bemBase}__legend`, [
+    ['display', 'flex'],
+    ['align-items', 'center'],
+    ['gap', meta.legendItemGap != null ? `${meta.legendItemGap}px` : undefined],
+  ]);
 
-.${bemBase}__legend-dot {
-  width: ${legendDotSize}px;
-  height: ${legendDotSize}px;
-  border-radius: ${legendDotBorderRadius};
-  display: inline-block;
-  opacity: ${legendDotOpacity};
-}
+  css += cssBlock(`.${bemBase}__legend-dot`, [
+    ['width', meta.legendDotSize != null ? `${meta.legendDotSize}px` : undefined],
+    ['height', meta.legendDotSize != null ? `${meta.legendDotSize}px` : undefined],
+    ['border-radius', meta.legendDotBorderRadius],
+    ['display', 'inline-block'],
+    ['opacity', meta.legendDotOpacity != null ? `${meta.legendDotOpacity}` : undefined],
+  ]);
 
-.${bemBase}__legend-label {
-  font-size: ${legendLabelFontSize}px;
-  color: ${legendLabelColor};
-}
+  css += cssBlock(`.${bemBase}__legend-label`, [
+    ['font-size', meta.legendLabelFontSize != null ? `${meta.legendLabelFontSize}px` : undefined],
+    ['color', meta.legendLabelColor],
+  ]);
 
-.${bemBase}__tooltip {
-  background: ${backgroundColor};
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 8px 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
+  // Tooltip — minimal structural CSS only, no hardcoded colors
+  css += cssBlock(`.${bemBase}__tooltip`, [
+    ['background', meta.backgroundColor],
+    ['border-radius', '8px'],
+    ['padding', '8px 12px'],
+  ]);
 
-.${bemBase}__tooltip-label {
-  font-size: 12px;
-  color: #737373;
-  margin: 0 0 4px 0;
-}
+  css += cssBlock(`.${bemBase}__tooltip-label`, [
+    ['margin', '0 0 4px 0'],
+  ]);
 
-.${bemBase}__tooltip-item {
-  font-size: 13px;
-  font-weight: 500;
-  margin: 2px 0;
-}
+  css += cssBlock(`.${bemBase}__tooltip-item`, [
+    ['margin', '2px 0'],
+  ]);
 
-.${bemBase}__switchers {
-  display: flex;
-  background: ${switcherBg};
-  border-radius: ${switcherBorderRadius}px;
-  padding: ${switcherPadding};
-  margin-top: ${switcherMarginTop}px;
-}
+  // Switchers
+  css += cssBlock(`.${bemBase}__switchers`, [
+    ['display', 'flex'],
+    ['background', meta.switcherBg],
+    ['border-radius', meta.switcherBorderRadius != null ? `${meta.switcherBorderRadius}px` : undefined],
+    ['padding', meta.switcherPadding],
+    ['margin-top', meta.switcherMarginTop != null ? `${meta.switcherMarginTop}px` : undefined],
+  ]);
 
-.${bemBase}__switcher {
-  flex: 1;
-  padding: ${switcherButtonPadding};
-  font-size: ${switcherButtonFontSize}px;
-  color: ${switcherButtonColor};
-  background: transparent;
-  border: none;
-  border-radius: ${switcherButtonBorderRadius}px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
+  css += cssBlock(`.${bemBase}__switcher`, [
+    ['flex', '1'],
+    ['padding', meta.switcherButtonPadding],
+    ['font-size', meta.switcherButtonFontSize != null ? `${meta.switcherButtonFontSize}px` : undefined],
+    ['color', meta.switcherButtonColor],
+    ['background', 'transparent'],
+    ['border', 'none'],
+    ['border-radius', meta.switcherButtonBorderRadius != null ? `${meta.switcherButtonBorderRadius}px` : undefined],
+    ['cursor', 'pointer'],
+  ]);
 
-.${bemBase}__switcher--active {
-  background: ${switcherActiveBg};
-  color: ${switcherActiveColor};
-  font-weight: ${switcherActiveFontWeight};
-  box-shadow: ${switcherActiveBoxShadow};
-}
+  css += cssBlock(`.${bemBase}__switcher--active`, [
+    ['background', meta.switcherActiveBg],
+    ['color', meta.switcherActiveColor],
+    ['font-weight', meta.switcherActiveFontWeight != null ? `${meta.switcherActiveFontWeight}` : undefined],
+    ['box-shadow', meta.switcherActiveBoxShadow],
+  ]);
 
-.${bemBase}__header {
-  margin-bottom: 8px;
-}
+  // Header / title / subtitle — only if title exists
+  if (meta.chartTitle) {
+    css += cssBlock(`.${bemBase}__title`, [
+      ['font-size', meta.titleFontSize != null ? `${meta.titleFontSize}px` : undefined],
+      ['font-weight', meta.titleFontWeight != null ? `${meta.titleFontWeight}` : undefined],
+      ['margin', '0 0 4px 0'],
+      ['color', meta.titleColor],
+    ]);
 
-.${bemBase}__title {
-  font-size: ${meta.titleFontSize}px;
-  font-weight: ${meta.titleFontWeight};
-  margin: 0 0 4px 0;
-  color: ${meta.titleColor};
-}
+    if (meta.chartSubtitle) {
+      css += cssBlock(`.${bemBase}__subtitle`, [
+        ['font-size', meta.subtitleFontSize != null ? `${meta.subtitleFontSize}px` : undefined],
+        ['color', meta.subtitleColor],
+        ['margin', '0'],
+      ]);
+    }
+  }
 
-.${bemBase}__subtitle {
-  font-size: ${meta.subtitleFontSize}px;
-  color: ${meta.subtitleColor};
-  margin: 0;
-}
+  // Summary — only if summary amount exists
+  if (meta.summaryAmount) {
+    css += cssBlock(`.${bemBase}__summary`, [
+      ['margin-top', '16px'],
+      ['padding', meta.summaryPadding],
+      ['border-radius', meta.summaryBorderRadius != null ? `${meta.summaryBorderRadius}px` : undefined],
+      ['border', meta.summaryBorderWidth != null && meta.summaryBorderColor ? `${meta.summaryBorderWidth}px solid ${meta.summaryBorderColor}` : undefined],
+      ['background', meta.summaryBg],
+    ]);
 
-.${bemBase}__summary {
-  margin-top: 16px;
-  padding: ${meta.summaryPadding};
-  border-radius: ${meta.summaryBorderRadius}px;
-  border: ${meta.summaryBorderWidth}px solid ${meta.summaryBorderColor};
-  background: ${meta.summaryBg};
-}
+    css += cssBlock(`.${bemBase}__amount`, [
+      ['display', 'block'],
+      ['font-size', meta.amountFontSize != null ? `${meta.amountFontSize}px` : undefined],
+      ['font-weight', meta.amountFontWeight != null ? `${meta.amountFontWeight}` : undefined],
+      ['color', meta.amountColor],
+    ]);
 
-.${bemBase}__amount {
-  display: block;
-  font-size: ${meta.amountFontSize}px;
-  font-weight: ${meta.amountFontWeight};
-  color: ${meta.amountColor};
-  margin-bottom: 4px;
-}
+    if (meta.summaryText) {
+      css += cssBlock(`.${bemBase}__summary-text`, [
+        ['font-size', meta.summaryTextFontSize != null ? `${meta.summaryTextFontSize}px` : undefined],
+        ['color', meta.summaryTextColor],
+        ['margin', '0 0 12px 0'],
+      ]);
+    }
 
-.${bemBase}__summary-text {
-  font-size: ${meta.summaryTextFontSize}px;
-  color: ${meta.summaryTextColor};
-  margin: 0 0 12px 0;
-}
+    if (meta.summaryCtaText) {
+      css += cssBlock(`.${bemBase}__summary-cta`, [
+        ['display', 'block'],
+        ['width', '100%'],
+        ['padding', meta.ctaPadding],
+        ['font-size', meta.ctaFontSize != null ? `${meta.ctaFontSize}px` : undefined],
+        ['font-weight', meta.ctaFontWeight != null ? `${meta.ctaFontWeight}` : undefined],
+        ['color', meta.ctaColor],
+        ['background', meta.ctaBg],
+        ['border', meta.ctaBorderColor ? `1px solid ${meta.ctaBorderColor}` : undefined],
+        ['border-radius', meta.ctaBorderRadius != null ? `${meta.ctaBorderRadius}px` : undefined],
+        ['cursor', 'pointer'],
+        ['text-align', 'center'],
+      ]);
+    }
+  }
 
-.${bemBase}__summary-cta {
-  display: block;
-  width: 100%;
-  padding: ${meta.ctaPadding};
-  font-size: ${meta.ctaFontSize}px;
-  font-weight: ${meta.ctaFontWeight};
-  color: ${meta.ctaColor};
-  background: ${meta.ctaBg};
-  border: 1px solid ${meta.ctaBorderColor};
-  border-radius: ${meta.ctaBorderRadius}px;
-  cursor: pointer;
-  text-align: center;
-}
-`;
+  return css;
 }

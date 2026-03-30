@@ -4755,16 +4755,62 @@ function setLoading(loading) {
 }
 
 // ── Resize Handle ──
+// Pointer capture routes pointermove/pointerup to the handle even when the cursor is not
+// over the 6px grip (normal) or when it is over the preview iframe — document mouseup
+// misses releases on iframes and left isResizing stuck, so the divider kept tracking mouse.
+const PANEL_LEFT_MIN_PX = 280;
+const PANEL_LEFT_MAX_PX = 360;
 let isResizing = false;
+let panelResizePointerId = null;
 
-resizeHandle.addEventListener('mousedown', (e) => {
+function stopPanelResize() {
+  if (!isResizing) return;
+  isResizing = false;
+  const pid = panelResizePointerId;
+  panelResizePointerId = null;
+  resizeHandle.classList.remove('active');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+  if (pid != null) {
+    try {
+      resizeHandle.releasePointerCapture(pid);
+    } catch (_err) {
+      /* already released or not capturing */
+    }
+  }
+}
+
+resizeHandle.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
   if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
   isResizing = true;
+  panelResizePointerId = e.pointerId;
   resizeHandle.classList.add('active');
   document.body.style.cursor = 'col-resize';
   document.body.style.userSelect = 'none';
   e.preventDefault();
+  try {
+    resizeHandle.setPointerCapture(e.pointerId);
+  } catch (_err) {
+    /* ignore */
+  }
 });
+
+resizeHandle.addEventListener('pointermove', (e) => {
+  if (!isResizing) return;
+  if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
+  const mainEl = document.querySelector('.main');
+  if (!mainEl) return;
+  const mainRect = mainEl.getBoundingClientRect();
+  const rawPx = e.clientX - mainRect.left;
+  const clampedPx = Math.max(PANEL_LEFT_MIN_PX, Math.min(rawPx, PANEL_LEFT_MAX_PX));
+  const percent = (clampedPx / mainRect.width) * 100;
+  panelLeft.style.width = percent + '%';
+});
+
+resizeHandle.addEventListener('pointerup', stopPanelResize);
+resizeHandle.addEventListener('pointercancel', stopPanelResize);
+window.addEventListener('blur', stopPanelResize);
 
 function applyChatPanelCollapsed(collapsed, persist) {
   if (!mainSplit) return;
@@ -4797,29 +4843,6 @@ if (chatPanelCollapseBtn) {
 if (chatPanelExpandBtn) {
   chatPanelExpandBtn.addEventListener('click', () => applyChatPanelCollapsed(false, true));
 }
-
-const PANEL_LEFT_MIN_PX = 280;
-const PANEL_LEFT_MAX_PX = 360;
-
-document.addEventListener('mousemove', (e) => {
-  if (!isResizing) return;
-  if (mainSplit.classList.contains('main-split--chat-collapsed')) return;
-  const mainEl = document.querySelector('.main');
-  const mainRect = mainEl.getBoundingClientRect();
-  const rawPx = e.clientX - mainRect.left;
-  const clampedPx = Math.max(PANEL_LEFT_MIN_PX, Math.min(rawPx, PANEL_LEFT_MAX_PX));
-  const percent = (clampedPx / mainRect.width) * 100;
-  panelLeft.style.width = percent + '%';
-});
-
-document.addEventListener('mouseup', () => {
-  if (isResizing) {
-    isResizing = false;
-    resizeHandle.classList.remove('active');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-  }
-});
 
 // ── Utilities ──
 function escapeHtml(str) {

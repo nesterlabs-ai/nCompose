@@ -1145,72 +1145,79 @@ body {
   padding-top: 4px;
 }
 
-/* Hero chat response bubble */
+/* Hero chat response container */
 .hero__chat-response {
   width: 100%;
   max-width: 680px;
-  padding: 16px 20px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 4px 0;
+}
+
+.hero__chat-response::-webkit-scrollbar {
+  display: none;
+}
+
+/* Chat bubbles */
+.hero-chat-bubble {
+  padding: 10px 16px;
   border-radius: 16px;
   font-size: 14px;
   line-height: 1.6;
-  color: var(--text);
-  animation: hero-chat-slide-in 0.35s ease-out;
+  max-width: 80%;
+  width: fit-content;
+  word-wrap: break-word;
+  animation: hero-chat-slide-in 0.25s ease-out;
 }
 
-.hero__chat-response p {
-  margin: 0 0 10px;
-}
-
-.hero__chat-response p:last-child {
-  margin-bottom: 0;
-}
-
-.hero__chat-response .hero-chat-greeting {
-  font-weight: 600;
-  font-size: 15px;
-  margin-bottom: 12px;
-}
-
-.hero__chat-response .hero-chat-steps {
-  list-style: none;
-  padding: 0;
-  margin: 8px 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.hero__chat-response .hero-chat-steps li {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.hero__chat-response .hero-chat-step-num {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
+.hero-chat-bubble--user {
+  margin-left: auto;
   background: var(--accent);
   color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  border-radius: 50%;
+  border-bottom-right-radius: 4px;
 }
 
-.hero__chat-response .hero-chat-step-text {
-  padding-top: 1px;
-}
-
-.hero__chat-response .hero-chat-step-text strong {
+.hero-chat-bubble--assistant {
+  margin-right: auto;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
   color: var(--text);
-  font-weight: 600;
+  border-bottom-left-radius: 4px;
+}
+
+/* Typing indicator */
+.hero-chat-typing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 18px;
+}
+
+.hero-chat-typing span {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: hero-chat-dot 1.2s ease-in-out infinite;
+}
+
+.hero-chat-typing span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.hero-chat-typing span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes hero-chat-dot {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1); }
 }
 
 @keyframes hero-chat-slide-in {
@@ -1370,6 +1377,16 @@ body {
   overflow: hidden;
 }
 
+.panel--left *,
+.panel--left {
+  scrollbar-width: none;
+}
+
+.panel--left *::-webkit-scrollbar,
+.panel--left::-webkit-scrollbar {
+  display: none;
+}
+
 .panel--left {
   flex: 0 0 auto;
   width: 35%;
@@ -1437,9 +1454,14 @@ body {
 .panel__body {
   flex: 1;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 20px;
   display: flex;
   flex-direction: column;
+}
+
+.panel__body::-webkit-scrollbar {
+  display: none;
 }
 
 /* ── Empty State ── */
@@ -1949,6 +1971,15 @@ body {
 
 .progress-collapsible.visible {
   display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.progress-collapsible.visible.collapsed {
+  flex: 0 0 auto !important;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .progress-collapsible__header {
@@ -2020,14 +2051,15 @@ body {
 }
 
 .progress-collapsible__body {
-  max-height: 600px;
+  flex: 1;
   overflow-y: auto;
-  transition: max-height 0.3s ease, opacity 0.2s ease, padding 0.3s ease;
+  transition: opacity 0.2s ease, padding 0.3s ease;
   opacity: 1;
   padding-top: 6px;
 }
 
 .progress-collapsible.collapsed .progress-collapsible__body {
+  flex: 0;
   max-height: 0;
   opacity: 0;
   padding-top: 0;
@@ -3301,8 +3333,19 @@ body {
   gap: 8px;
   padding: 12px 16px;
   overflow-y: auto;
-  flex: 1;
+  scrollbar-width: none;
+  flex: 1 1 0;
   min-height: 0;
+}
+
+/* When progress is expanded, it takes priority — chat shrinks */
+.progress-collapsible.visible:not(.collapsed) ~ .chat-messages {
+  flex: 0 0 auto;
+  max-height: 30%;
+}
+
+.chat-messages::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-messages.visible {

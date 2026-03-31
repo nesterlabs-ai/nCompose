@@ -14,7 +14,7 @@ import { generatePreviewHTML } from './preview.js';
 import { refineComponent } from './refine.js';
 import { classifyMessageIntent } from './chat-intent.js';
 import { SUPPORTED_FRAMEWORKS, FRAMEWORK_EXTENSIONS } from '../types/index.js';
-import type { Framework, ConversionResult } from '../types/index.js';
+import type { Framework, ConversionResult, LLMProviderName } from '../types/index.js';
 import type { LLMMessage } from '../llm/provider.js';
 import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
@@ -857,6 +857,77 @@ function buildVisualEditSavePrompt(
   lines.push('Return the fully rewritten component code containing these exact modifications.');
   return lines.join('\n');
 }
+
+// ── Hero Chat (LLM-powered landing page assistant) ────────────────────────
+
+const HERO_CHAT_SYSTEM_PROMPT = `You are the assistant for Nester Compose — a service that converts Figma designs into production-ready code for React, Vue, Svelte, Angular, and Solid.
+
+What you know:
+- Users paste a Figma design URL and select target frameworks
+- A Figma Personal Access Token is required (free from figma.com → Settings → Account → Personal access tokens)
+- The token must be pasted into the "Figma Access Token" field in the LEFT SIDEBAR of this page
+- Once the token is saved in the sidebar, users paste a Figma design URL in the main input and hit send
+- The tool extracts design data (layout, colors, typography, icons, variants) from Figma's API
+- It generates framework code using Mitosis as an intermediate representation
+- Supported frameworks: React, Vue, Svelte, Angular, Solid
+- Output includes component code, scoped CSS, and exported SVG assets
+- After conversion, users can iteratively refine the code via chat
+- Users can preview the component live, download as ZIP, or push to GitHub
+- The "Start with template" option wires the component into a starter app with Tailwind
+
+How to get a Figma design link (tell users these steps when asked):
+1. Open your Figma file (web or desktop both work)
+2. Click on the specific frame, screen, or component you want to convert (not the whole file — what you select is what gets converted)
+3. Right-click the frame, then choose Copy/Paste as → Copy link. Or just copy the URL from your browser address bar.
+4. The link looks like: figma.com/design/Kx3mNpQr8abcXYZ/My-Design?node-id=12-340
+5. The node-id part only appears when a frame is selected. If it is missing, go back and click a specific frame first.
+6. Recommended: Use Figma Dev Mode (Shift+D) for a cleaner link — click the frame and copy the URL, it will already have the correct node-id.
+
+How to respond:
+- MAXIMUM 2 sentences per reply. Be concise. No rambling.
+- Exception: when explaining how to get a Figma link, you may use up to 4-5 short sentences to cover the steps clearly.
+- For greetings, reply in 1 sentence only.
+- Use plain text only — NO markdown formatting (no asterisks, no hash headings, no backticks, no bullet syntax)
+- When users ask about the Figma token or where to paste it, ALWAYS mention the left sidebar specifically
+- If the user asks something unrelated to Figma-to-code conversion, web development, or design-to-code workflows, politely say you can only help with this service
+- If the user pastes a non-Figma URL or seems confused about what to paste, tell them this tool only works with Figma design URLs (starting with figma.com/design/...) and offer to explain how to get one
+- If the user seems ready to convert, encourage them to paste their Figma URL in the main input above
+- Never generate code in this context
+- Do not repeat information the user already knows`;
+
+app.post('/api/hero-chat', requireAuthOrFree as any, async (req: any, res: any) => {
+  try {
+    const { message, history } = req.body;
+    if (!message || typeof message !== 'string') {
+      res.status(400).json({ error: 'message is required' });
+      return;
+    }
+
+    const provider = createLLMProvider(config.server.defaultLLM as LLMProviderName);
+
+    // Build messages array: system + last 10 history entries + current message
+    const messages: LLMMessage[] = [
+      { role: 'system', content: HERO_CHAT_SYSTEM_PROMPT },
+    ];
+
+    if (Array.isArray(history)) {
+      const recentHistory = history.slice(-10);
+      for (const msg of recentHistory) {
+        if (msg && (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string') {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      }
+    }
+
+    messages.push({ role: 'user', content: message });
+
+    const reply = await provider.generateMultiTurn(messages);
+    res.json({ reply });
+  } catch (err: any) {
+    console.error('[hero-chat] LLM error:', err?.message || err);
+    res.json({ reply: "Sorry, I wasn't able to process that right now. Try pasting a Figma design URL to get started!" });
+  }
+});
 
 /**
  * POST /api/refine — SSE endpoint for iterative refinement

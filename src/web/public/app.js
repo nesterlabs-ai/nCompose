@@ -37,7 +37,7 @@ function apiFetch(url, options = {}) {
 const THEME_KEY = 'figma-to-code-theme';
 
 function getTheme() {
-  return localStorage.getItem(THEME_KEY) || 'dark';
+  return localStorage.getItem(THEME_KEY) || 'light';
 }
 
 function setTheme(theme) {

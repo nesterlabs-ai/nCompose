@@ -2918,6 +2918,47 @@ body {
   text-decoration: underline;
 }
 
+.github-token-hint code {
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.github-pat-divider {
+  display: flex;
+  align-items: center;
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.github-pat-divider::before,
+.github-pat-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.github-pat-divider span {
+  padding: 0 10px;
+}
+
+.github-pat-row {
+  display: flex;
+  gap: 8px;
+}
+
+.github-pat-row .form-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.github-pat-row .btn {
+  white-space: nowrap;
+}
+
 .btn--block {
   width: 100%;
   display: inline-flex;

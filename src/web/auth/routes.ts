@@ -3,7 +3,7 @@
  */
 import { Router } from 'express';
 import { isAuthEnabled } from './cognito.js';
-import { getFreeTierInfo, getAuthUsageInfo, requireAuth } from './middleware.js';
+import { getFreeTierInfo, getAuthUsageInfo, requireAuth, getFingerprint } from './middleware.js';
 import { config } from '../../config.js';
 import {
   isDynamoEnabled,
@@ -51,13 +51,8 @@ router.get('/free-tier', async (req: any, res: any) => {
     return;
   }
 
-  // Anonymous users: return free tier usage
-  const cookies = req.cookies || {};
-  const fp = cookies['ftfp'];
-  if (!fp) {
-    res.json({ used: 0, limit: config.freeTier.maxFreeConversions, remaining: config.freeTier.maxFreeConversions, tier: 'free' });
-    return;
-  }
+  // Anonymous users: return free tier usage using the same fingerprint resolution as requireAuthOrFree
+  const fp = getFingerprint(req, res);
   const info = await getFreeTierInfo(fp);
   res.json({ ...info, tier: 'free' });
 });

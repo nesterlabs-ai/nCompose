@@ -676,6 +676,12 @@ function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
 
+  // Close profile view if open
+  const profileView = document.getElementById('profile-view');
+  if (profileView && profileView.style.display !== 'none') {
+    profileView.style.display = 'none';
+  }
+
   // Abort in-flight refine stream (interactive, tied to current view).
   // Conversion stream is NOT aborted — it continues in background and
   // handleComplete() will save results to the project when done.
@@ -1367,6 +1373,10 @@ function resetToHero() {
   currentFrameworkOutputs = {};
   chatRefining = false;
 
+  // Always close profile view if open (no matter how resetToHero is called)
+  const profileView = document.getElementById('profile-view');
+  if (profileView) profileView.style.display = 'none';
+
   // Switch to hero view
   mainHero.classList.remove('hidden');
   mainSplit.classList.remove('visible');
@@ -1476,12 +1486,28 @@ document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
   el.addEventListener('click', (e) => {
     e.stopPropagation();
     if (el.id === 'sidebar-profile-btn') {
-      document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
+      clearAllSidebarActive();
       el.classList.add('active');
       showProfileModal();
+      // Auto-close sidebar on mobile
+      if (window.innerWidth <= 768) {
+        sidebar.classList.remove('open');
+        sidebarOverlay.classList.remove('visible');
+        updateMenuButtonVisibility();
+      }
       return;
     }
-    document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
+    // Close profile view if open
+    const profileView = document.getElementById('profile-view');
+    if (profileView && profileView.style.display !== 'none') {
+      profileView.style.display = 'none';
+    }
+    // Home button: always reset to hero (hides split view, clears project state)
+    if (el.title === 'Home') {
+      resetToHero();
+      return;
+    }
+    clearAllSidebarActive();
     el.classList.add('active');
   });
 });
@@ -5038,17 +5064,43 @@ function runCommandPaletteIndex(index) {
   }
 }
 
-/** Home / Search / Profile only — skips All projects. */
+/** Clears ALL sidebar active states (nav items + project items), then optionally activates one. */
 function setSidebarPrimaryNavActive(activeEl) {
+  // Clear primary nav items
   document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
     if (item.id === 'all-projects-btn') return;
     item.classList.toggle('active', activeEl != null && item === activeEl);
+  });
+  // Also clear project list items when a primary nav item is activated
+  if (activeEl != null) {
+    document.querySelectorAll('.sidebar__project-item').forEach((item) => {
+      item.classList.remove('active');
+    });
+  }
+}
+
+/** Clears ALL sidebar active states so a project item can be the sole active element. */
+function clearAllSidebarActive() {
+  document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
+    if (item.id === 'all-projects-btn') return;
+    item.classList.remove('active');
+  });
+  document.querySelectorAll('.sidebar__project-item').forEach((item) => {
+    item.classList.remove('active');
   });
 }
 
 /** Home highlighted only on landing; split/project view clears primary nav (project list shows selection). */
 function syncSidebarPrimaryNavToShellView() {
   if (!isCommandPaletteOpen()) {
+    // If profile view is open, keep Profile nav active regardless of hero state
+    const profileView = document.getElementById('profile-view');
+    if (profileView && profileView.style.display !== 'none') {
+      const profileNav = document.getElementById('sidebar-profile-btn');
+      if (profileNav) setSidebarPrimaryNavActive(profileNav);
+      updatePanelHeaderProject();
+      return;
+    }
     const onHero = mainHero && !mainHero.classList.contains('hidden');
     if (onHero) {
       const homeNav = document.querySelector('.sidebar__nav-item[title="Home"]');
@@ -5453,6 +5505,10 @@ function showProfileModal() {
   if (mainSplit) mainSplit.classList.remove('visible');
   mainHero?.closest('.main')?.classList.remove('split-visible');
   view.style.display = 'flex';
+
+  // Ensure Profile nav stays active (sync may fire after DOM changes)
+  const profileNav = document.getElementById('sidebar-profile-btn');
+  if (profileNav) setSidebarPrimaryNavActive(profileNav);
 }
 
 function closeProfileModal() {

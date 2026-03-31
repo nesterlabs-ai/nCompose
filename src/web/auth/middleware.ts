@@ -238,19 +238,13 @@ export async function requireAuthOrFree(req: any, res: any, next: any): Promise<
     return;
   }
 
-  // Anonymous users: check BOTH fingerprint AND IP (block if either exceeds limit)
+  // Anonymous users: check fingerprint quota (primary), IP as logging only
   const fp = getFingerprint(req, res);
-  const [fpInfo, ipInfo] = await Promise.all([
-    getFreeTierInfo(fp),
-    getIPUsageInfo(ip),
-  ]);
+  const fpInfo = await getFreeTierInfo(fp);
 
-  if (fpInfo.remaining <= 0 || ipInfo.remaining <= 0) {
-    if (fpInfo.remaining <= 0 && ipInfo.remaining <= 0) {
-      console.warn(`[abuse] Blocked: fp=${fp} fpUsed=${fpInfo.used} ip=${ip} ipUsed=${ipInfo.used}`);
-    } else if (ipInfo.remaining <= 0) {
-      console.warn(`[abuse] Blocked by IP: ip=${ip} ipUsed=${ipInfo.used} (fp=${fp} fpUsed=${fpInfo.used})`);
-    }
+  if (fpInfo.remaining <= 0) {
+    const ipInfo = await getIPUsageInfo(ip);
+    console.warn(`[free-tier] Blocked: fp=${fp} fpUsed=${fpInfo.used} ip=${ip} ipUsed=${ipInfo.used}`);
     res.status(401).json({ error: 'Free tier limit reached. Please sign in to continue.' });
     return;
   }

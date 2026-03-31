@@ -321,6 +321,13 @@
             <button type="button" class="profile-btn profile-btn--outline" id="profile-signout-btn" style="display:none;">Sign Out</button>
             <button type="button" class="profile-btn profile-btn--outline" id="profile-signin-btn" style="display:none;">Sign In</button>
           </div>
+          <button type="button" class="profile-tour-btn" id="profile-tour-btn">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 7v5M8 5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            Take the tour
+          </button>
         </div>
       </div>
       <!-- /profile-view -->
@@ -1153,6 +1160,48 @@
             </svg>
             LinkedIn
           </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Onboarding Tour Overlay -->
+  <div id="onboarding-overlay" class="onboarding-overlay" aria-hidden="true" style="display:none;">
+    <!-- 4-panel blur: each panel blurs its quadrant; the gap between them is the spotlight hole -->
+    <div id="onboarding-blur-layer" class="onboarding-blur-layer">
+      <div class="onboarding-blur-panel onboarding-blur-panel--top"></div>
+      <div class="onboarding-blur-panel onboarding-blur-panel--bottom"></div>
+      <div class="onboarding-blur-panel onboarding-blur-panel--left"></div>
+      <div class="onboarding-blur-panel onboarding-blur-panel--right"></div>
+    </div>
+    <div id="onboarding-spotlight" class="onboarding-spotlight"></div>
+    <div id="onboarding-tooltip" class="onboarding-tooltip" role="dialog" aria-labelledby="onboarding-title">
+      <!-- Close button — always top-right of card -->
+      <button type="button" class="onboarding-tooltip__close" id="onboarding-skip-x" aria-label="Close tour">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <!-- Icon (welcome / done steps only) -->
+      <div class="onboarding-tooltip__icon-wrap" id="onboarding-icon-wrap" style="display:none;">
+        <div class="onboarding-tooltip__icon" id="onboarding-icon"></div>
+      </div>
+      <!-- Step badge (regular steps only) -->
+      <div class="onboarding-tooltip__step-badge" id="onboarding-step-label" style="display:none;"></div>
+      <!-- Content -->
+      <h3 class="onboarding-tooltip__title" id="onboarding-title"></h3>
+      <p class="onboarding-tooltip__desc" id="onboarding-desc"></p>
+      <a class="onboarding-tooltip__link" id="onboarding-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;"></a>
+      <!-- Progress bar -->
+      <div class="onboarding-progress" id="onboarding-progress" style="display:none;">
+        <div class="onboarding-progress__bar" id="onboarding-progress-bar"></div>
+      </div>
+      <!-- Actions -->
+      <div class="onboarding-tooltip__actions">
+        <button type="button" class="onboarding-btn onboarding-btn--skip" id="onboarding-skip">Skip tour</button>
+        <div class="onboarding-tooltip__nav">
+          <button type="button" class="onboarding-btn onboarding-btn--prev" id="onboarding-prev">Back</button>
+          <button type="button" class="onboarding-btn onboarding-btn--next" id="onboarding-next">Next →</button>
         </div>
       </div>
     </div>

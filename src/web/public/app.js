@@ -5837,9 +5837,394 @@ setInterval(() => {
   });
 }, 50 * 60 * 1000);
 
+// ── Onboarding Tour ──────────────────────────────────────────────────
+
+const ONBOARDING_KEY = 'nester-onboarding-v1';
+
+const ONBOARDING_STEPS = [
+  {
+    target: null,
+    welcome: true,
+    icon: '🎨',
+    title: 'Welcome to Nester Compose',
+    desc: 'Convert any Figma design into production-ready React, Vue, Svelte, Angular, or Solid code — in seconds.',
+    nextLabel: 'Take the tour →',
+    skipLabel: 'Skip for now',
+  },
+  {
+    target: '.sidebar__section',
+    position: 'right',
+    icon: '🔑',
+    title: 'Connect Figma',
+    desc: 'Paste your Figma Personal Access Token here. Generate one from Figma → Settings → Account → Personal access tokens.',
+    link: { label: '↗  Open Figma settings', url: 'https://www.figma.com/settings' },
+  },
+  {
+    target: '#hero-figma-url',
+    position: 'bottom',
+    icon: '🔗',
+    title: 'Paste a Figma URL',
+    desc: 'Copy a link from any Figma file — a component, frame, or full page. It looks like figma.com/design/...',
+  },
+  {
+    target: '.hero__prompt-controls',
+    position: 'top',
+    icon: '⚡',
+    title: 'Pick your frameworks',
+    desc: 'Select one or more output targets. We generate all of them simultaneously — React, Vue, Svelte, Angular, or Solid.',
+  },
+  {
+    target: '#hero-convert-btn',
+    position: 'top',
+    icon: '🚀',
+    title: 'Hit Convert',
+    desc: 'We fetch design tokens, export icons, and generate clean component code. Usually takes 10–30 seconds.',
+  },
+  {
+    target: null,
+    done: true,
+    icon: '✅',
+    title: "You're all set!",
+    desc: 'After converting you get a live preview, editable code for each framework, and an AI chat to refine the output.',
+    nextLabel: 'Start converting',
+    skipLabel: null,
+  },
+];
+
+let onboardingStep = 0;
+
+function isOnboardingDone() {
+  return !!localStorage.getItem(ONBOARDING_KEY);
+}
+
+function markOnboardingDone() {
+  localStorage.setItem(ONBOARDING_KEY, '1');
+}
+
+function startOnboarding() {
+  onboardingStep = 0;
+  // Make sure we're on the hero view
+  const profileView = document.getElementById('profile-view');
+  if (profileView) profileView.style.display = 'none';
+  if (mainHero) mainHero.classList.remove('hidden');
+  if (mainSplit) mainSplit.classList.remove('visible');
+  mainHero?.closest('.main')?.classList.remove('split-visible');
+  syncSidebarPrimaryNavToShellView();
+
+  // Ensure sidebar is expanded for step 1
+  if (sidebar && sidebar.classList.contains('collapsed')) {
+    sidebar.classList.remove('collapsed');
+    updateSidebarToggleTitle?.();
+  }
+
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'block';
+  overlay.setAttribute('aria-hidden', 'false');
+  renderOnboardingStep(onboardingStep, true);
+}
+
+function stopOnboarding() {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'none';
+  overlay.setAttribute('aria-hidden', 'true');
+  markOnboardingDone();
+}
+
+function renderOnboardingStep(index, animate) {
+  const step = ONBOARDING_STEPS[index];
+  if (!step) return;
+
+  const isCentered = !!(step.welcome || step.done);
+  const totalSteps = ONBOARDING_STEPS.filter(s => !s.welcome && !s.done).length;
+  const spotlight = document.getElementById('onboarding-spotlight');
+  const tooltip = document.getElementById('onboarding-tooltip');
+  const titleEl = document.getElementById('onboarding-title');
+  const descEl = document.getElementById('onboarding-desc');
+  const stepBadge = document.getElementById('onboarding-step-label');
+  const linkEl = document.getElementById('onboarding-link');
+  const prevBtn = document.getElementById('onboarding-prev');
+  const nextBtn = document.getElementById('onboarding-next');
+  const skipBtn = document.getElementById('onboarding-skip');
+  const skipX = document.getElementById('onboarding-skip-x');
+  const iconWrap = document.getElementById('onboarding-icon-wrap');
+  const iconEl = document.getElementById('onboarding-icon');
+  const progressWrap = document.getElementById('onboarding-progress');
+  const progressBar = document.getElementById('onboarding-progress-bar');
+  if (!tooltip || !spotlight) return;
+
+  // Switch centered vs regular layout
+  tooltip.classList.toggle('onboarding-tooltip--centered', isCentered);
+
+  // Icon block — only for centered (welcome / done) steps
+  if (isCentered && step.icon) {
+    if (iconEl) iconEl.textContent = step.icon;
+    if (iconWrap) iconWrap.style.display = 'flex';
+  } else {
+    if (iconWrap) iconWrap.style.display = 'none';
+  }
+
+  // Step badge — only for regular steps
+  if (stepBadge) {
+    if (!isCentered) {
+      const stepNum = ONBOARDING_STEPS.slice(0, index + 1).filter(s => !s.welcome && !s.done).length;
+      stepBadge.textContent = `Step ${stepNum} of ${totalSteps}`;
+      stepBadge.style.display = 'inline-flex';
+    } else {
+      stepBadge.style.display = 'none';
+    }
+  }
+
+  // Content
+  titleEl.textContent = step.title;
+  descEl.textContent = step.desc;
+
+  if (step.link) {
+    linkEl.textContent = step.link.label;
+    linkEl.href = step.link.url;
+    linkEl.style.display = 'inline-flex';
+  } else {
+    linkEl.style.display = 'none';
+  }
+
+  // Progress bar — hidden on welcome, shown on all other steps
+  if (progressWrap && progressBar) {
+    if (step.welcome) {
+      progressWrap.style.display = 'none';
+    } else {
+      progressWrap.style.display = 'block';
+      const stepNum = step.done
+        ? totalSteps
+        : ONBOARDING_STEPS.slice(0, index + 1).filter(s => !s.welcome && !s.done).length;
+      progressBar.style.width = `${(stepNum / totalSteps) * 100}%`;
+    }
+  }
+
+  // Buttons
+  nextBtn.textContent = step.nextLabel || 'Next →';
+  prevBtn.style.display = (isCentered || index <= 1) ? 'none' : 'inline-flex';
+
+  if (skipBtn) {
+    if (step.skipLabel === null) {
+      skipBtn.style.display = 'none';
+    } else {
+      skipBtn.style.display = 'inline-flex';
+      skipBtn.textContent = step.skipLabel || 'Skip tour';
+    }
+  }
+  // Hide close X on the final done step (only the CTA button should dismiss)
+  if (skipX) skipX.style.display = step.done ? 'none' : 'flex';
+
+  // Position spotlight + tooltip
+  if (step.target) {
+    if (step.target.includes('sidebar') || step.target.includes('.sidebar__section')) {
+      if (sidebar && sidebar.classList.contains('collapsed')) {
+        sidebar.classList.remove('collapsed');
+        updateSidebarToggleTitle?.();
+      }
+    }
+
+    const targetEl = document.querySelector(step.target);
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      setTimeout(() => positionOnboardingSpotlight(targetEl, step, animate), 50);
+    } else {
+      positionOnboardingCentered(animate);
+    }
+  } else {
+    spotlight.classList.add('onboarding-spotlight--hidden');
+    positionOnboardingCentered(animate);
+  }
+
+  // Animate entrance — use the correct animation based on step type
+  if (animate) {
+    tooltip.classList.remove('onboarding-tooltip--animate');
+    tooltip.classList.remove('onboarding-tooltip--animate-centered');
+    void tooltip.offsetWidth;
+    tooltip.classList.add(isCentered ? 'onboarding-tooltip--animate-centered' : 'onboarding-tooltip--animate');
+  }
+}
+
+function positionOnboardingSpotlight(targetEl, step, animate) {
+  const spotlight = document.getElementById('onboarding-spotlight');
+  const tooltip = document.getElementById('onboarding-tooltip');
+  if (!spotlight || !tooltip) return;
+
+  const pad = 8;
+  const rect = targetEl.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  spotlight.classList.remove('onboarding-spotlight--hidden');
+  spotlight.style.top = (rect.top - pad) + 'px';
+  spotlight.style.left = (rect.left - pad) + 'px';
+  spotlight.style.width = (rect.width + pad * 2) + 'px';
+  spotlight.style.height = (rect.height + pad * 2) + 'px';
+  spotlight.style.borderRadius = '12px';
+
+  // Position the 4 blur panels around the spotlight hole (light theme only)
+  const blurLayer = document.getElementById('onboarding-blur-layer');
+  if (blurLayer) {
+    blurLayer.style.setProperty('--spotlight-x', (rect.left - pad) + 'px');
+    blurLayer.style.setProperty('--spotlight-y', (rect.top - pad) + 'px');
+    blurLayer.style.setProperty('--spotlight-w', (rect.width + pad * 2) + 'px');
+    blurLayer.style.setProperty('--spotlight-h', (rect.height + pad * 2) + 'px');
+  }
+
+  // Determine tooltip placement
+  const tWidth = 320;
+  const tHeight = 250;
+  let pos = step.position || 'right';
+
+  // Auto-flip if not enough space
+  if (pos === 'right' && rect.right + tWidth + 32 > vw) pos = 'left';
+  if (pos === 'left' && rect.left - tWidth - 32 < 0) pos = 'right';
+  if (pos === 'bottom' && rect.bottom + tHeight + 32 > vh) pos = 'top';
+  if (pos === 'top' && rect.top - tHeight - 32 < 0) pos = 'bottom';
+
+  // Arrow points BACK toward the target (opposite of where the tooltip sits)
+  const arrowDir = { right: 'left', left: 'right', top: 'bottom', bottom: 'top' };
+  tooltip.setAttribute('data-arrow', arrowDir[pos] || 'none');
+
+  // ARROW_TOP_OFFSET must match the CSS `top` value in [data-arrow="left/right"]::before (22px)
+  const ARROW_OFFSET = 22;
+  let tipTop, tipLeft;
+
+  if (pos === 'right') {
+    tipLeft = rect.right + pad + 16;
+    // Align arrow (at ARROW_OFFSET from tooltip top) with the vertical center of the target
+    tipTop = rect.top + (rect.height / 2) - ARROW_OFFSET;
+  } else if (pos === 'left') {
+    tipLeft = rect.left - pad - tWidth - 16;
+    tipTop = rect.top + (rect.height / 2) - ARROW_OFFSET;
+  } else if (pos === 'bottom') {
+    tipLeft = rect.left + (rect.width / 2) - tWidth / 2;
+    tipTop = rect.bottom + pad + 16;
+  } else { // top
+    tipLeft = rect.left + (rect.width / 2) - tWidth / 2;
+    tipTop = rect.top - pad - tHeight - 16;
+  }
+
+  // Clamp to viewport with some breathing room
+  tipLeft = Math.max(16, Math.min(vw - tWidth - 16, tipLeft));
+  tipTop = Math.max(16, Math.min(vh - tHeight - 16, tipTop));
+
+  tooltip.style.top = tipTop + 'px';
+  tooltip.style.left = tipLeft + 'px';
+  tooltip.style.transform = 'none';
+}
+
+function positionOnboardingCentered(animate) {
+  const spotlight = document.getElementById('onboarding-spotlight');
+  const tooltip = document.getElementById('onboarding-tooltip');
+  if (!spotlight || !tooltip) return;
+
+  spotlight.classList.add('onboarding-spotlight--hidden');
+  tooltip.setAttribute('data-arrow', 'none');
+  tooltip.style.top = '50%';
+  tooltip.style.left = '50%';
+  tooltip.style.transform = 'translate(-50%, -50%)';
+
+  // Centered steps: push spotlight vars off-screen so the top panel covers everything
+  const blurLayer = document.getElementById('onboarding-blur-layer');
+  if (blurLayer) {
+    blurLayer.style.setProperty('--spotlight-x', '200vw');
+    blurLayer.style.setProperty('--spotlight-y', '200vh');
+    blurLayer.style.setProperty('--spotlight-w', '0px');
+    blurLayer.style.setProperty('--spotlight-h', '0px');
+  }
+}
+
+function initOnboarding() {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay) return;
+
+  /**
+   * Smoothly cross-fades to a new step:
+   * 1. Fade tooltip out (140ms)
+   * 2. Snap content + position to new step (no CSS position transition)
+   * 3. Fade tooltip back in with bounce entrance
+   * This hides the transform/position jump between spotlight ↔ centered steps.
+   */
+  function smoothGoToStep(newIndex) {
+    const tooltip = document.getElementById('onboarding-tooltip');
+    if (!tooltip) {
+      onboardingStep = newIndex;
+      renderOnboardingStep(newIndex, true);
+      return;
+    }
+
+    // Phase 1: fade out
+    tooltip.classList.add('onboarding-tooltip--exit');
+
+    setTimeout(() => {
+      // Phase 2: snap — disable CSS position transitions so the move is instant
+      tooltip.style.transition = 'none';
+      onboardingStep = newIndex;
+      renderOnboardingStep(newIndex, false); // renders new content + repositions
+
+      // Phase 3: in next paint — restore transitions and play entrance animation
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          tooltip.style.transition = ''; // restore CSS-defined transitions
+          tooltip.classList.remove('onboarding-tooltip--exit');
+
+          // Pick the right animation: centered steps must include translate(-50%,-50%)
+          // in keyframes so the animation never fights the inline positioning style.
+          const isCentered = !!(ONBOARDING_STEPS[newIndex]?.welcome || ONBOARDING_STEPS[newIndex]?.done);
+          tooltip.classList.remove('onboarding-tooltip--animate');
+          tooltip.classList.remove('onboarding-tooltip--animate-centered');
+          void tooltip.offsetWidth; // force reflow so animation restarts cleanly
+          tooltip.classList.add(isCentered ? 'onboarding-tooltip--animate-centered' : 'onboarding-tooltip--animate');
+        });
+      });
+    }, 150);
+  }
+
+  document.getElementById('onboarding-next')?.addEventListener('click', () => {
+    const step = ONBOARDING_STEPS[onboardingStep];
+    if (step?.done) {
+      stopOnboarding();
+      return;
+    }
+    if (onboardingStep < ONBOARDING_STEPS.length - 1) {
+      smoothGoToStep(onboardingStep + 1);
+    }
+  });
+
+  document.getElementById('onboarding-prev')?.addEventListener('click', () => {
+    if (onboardingStep > 0) {
+      smoothGoToStep(onboardingStep - 1);
+    }
+  });
+
+  document.getElementById('onboarding-skip')?.addEventListener('click', stopOnboarding);
+  document.getElementById('onboarding-skip-x')?.addEventListener('click', stopOnboarding);
+
+  // Keyboard navigation
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') stopOnboarding();
+    if (e.key === 'ArrowRight' || e.key === 'Enter') document.getElementById('onboarding-next')?.click();
+    if (e.key === 'ArrowLeft') document.getElementById('onboarding-prev')?.click();
+  });
+
+  // Reposition on window resize
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (overlay.style.display !== 'none') {
+        renderOnboardingStep(onboardingStep, false);
+      }
+    }, 100);
+  });
+}
+
 initLoginModal();
 initContactModal();
 initProfileModal();
+initOnboarding();
 
 // ── Init ──
 loadSavedToken();
@@ -5854,6 +6239,17 @@ mainHero.classList.remove('hidden');
 mainSplit.classList.remove('visible');
 mainHero.closest('.main')?.classList.remove('split-visible');
 syncSidebarPrimaryNavToShellView();
+
+// Auto-start onboarding for first-time visitors
+if (!isOnboardingDone()) {
+  setTimeout(startOnboarding, 700);
+}
+
+// Profile page "Take the tour" button
+document.getElementById('profile-tour-btn')?.addEventListener('click', () => {
+  closeProfileModal();
+  setTimeout(startOnboarding, 300);
+});
 
 // ── Visual Edit ──
 

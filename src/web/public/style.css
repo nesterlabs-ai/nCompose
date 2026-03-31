@@ -62,6 +62,9 @@
   --font-mono: 'JetBrains Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
   --sidebar-width: 280px;
   --sidebar-collapsed-width: 64px;
+  --tooltip-bg: #1e1e20;
+  --tooltip-border: rgba(255, 255, 255, 0.1);
+  --tooltip-accent-tint: rgba(239, 49, 57, 0.14);
 }
 
 /* ── Light theme ── */
@@ -91,6 +94,9 @@
   --code-block-header-bg: #f4f4f5;
   --editor-tabs-bg: #f4f4f5;
   --editor-tab-active-bg: #ffffff;
+  --tooltip-bg: #ffffff;
+  --tooltip-border: rgba(0, 0, 0, 0.12);
+  --tooltip-accent-tint: rgba(239, 49, 57, 0.09);
 }
 
 [data-theme="light"] .sidebar {
@@ -4732,6 +4738,469 @@ body {
   color: var(--text-secondary);
   margin: 0;
   line-height: 1.5;
+}
+
+/* ── Profile Tour Button ───────────────────────────────────────────── */
+.profile-tour-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 8px 0 0;
+  margin: 0 auto;
+  transition: color 0.2s ease;
+}
+
+.profile-tour-btn:hover {
+  color: var(--text-secondary);
+}
+
+/* ── Onboarding Tour ───────────────────────────────────────────────── */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: all;
+  animation: onboarding-overlay-in 0.2s ease;
+}
+
+/* Spotlight: the outer box-shadow creates the full-screen dim; the inner ring
+   (second shadow value) highlights the target element with a subtle white glow.
+   For centered steps we collapse to 0×0 — the outer shadow still blankets the screen. */
+.onboarding-spotlight {
+  position: fixed;
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.55),
+    0 0 0 2px rgba(255, 255, 255, 0.35),
+    0 0 20px 4px rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 10001;
+  transition: top 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+              left 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+              width 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+              height 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+              border-radius 0.3s ease;
+}
+
+/* Hidden: size → 0 keeps the outer shadow covering full screen; ring shadows
+   have no surface to show on a 0×0 element so they vanish naturally. */
+.onboarding-spotlight--hidden {
+  width: 0 !important;
+  height: 0 !important;
+  border-radius: 50% !important;
+  top: 50% !important;
+  left: 50% !important;
+  /* suppress the white ring — only keep the dim */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Tooltip card ── */
+.onboarding-tooltip {
+  position: fixed;
+  width: 320px;
+  background: var(--tooltip-bg);
+  border: 1px solid var(--tooltip-border);
+  border-radius: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28), 0 4px 16px rgba(0, 0, 0, 0.14);
+  padding: 20px 20px 18px;
+  z-index: 10002;
+  pointer-events: all;
+  transition: top 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+              left 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Centered card (welcome / done steps) */
+.onboarding-tooltip--centered {
+  width: 360px;
+  padding: 28px 28px 22px;
+  text-align: center;
+}
+
+/* Arrow pointer — matches card bg */
+.onboarding-tooltip::before {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--tooltip-bg);
+  border: 1px solid var(--tooltip-border);
+  transform: rotate(45deg);
+  z-index: -1;
+}
+
+.onboarding-tooltip[data-arrow="left"]::before   { left: -7px; top: 22px; border-right: none; border-top: none; }
+.onboarding-tooltip[data-arrow="right"]::before  { right: -7px; top: 22px; border-left: none; border-bottom: none; }
+.onboarding-tooltip[data-arrow="top"]::before    { top: -7px; left: 28px; border-bottom: none; border-right: none; }
+.onboarding-tooltip[data-arrow="bottom"]::before { bottom: -7px; left: 28px; border-top: none; border-left: none; }
+.onboarding-tooltip[data-arrow="none"]::before   { display: none; }
+
+/* ── Close button — always top-right corner of the card ── */
+.onboarding-tooltip__close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tooltip-accent-tint);
+  border: none;
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  z-index: 1;
+}
+
+.onboarding-tooltip__close:hover {
+  background: var(--tooltip-border);
+  color: var(--text);
+}
+
+/* ── Icon (welcome / done steps) ── */
+.onboarding-tooltip__icon-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.onboarding-tooltip__icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  background: var(--tooltip-accent-tint);
+  border: 1px solid rgba(239, 49, 57, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  line-height: 1;
+}
+
+/* ── Step badge (regular steps) ── */
+.onboarding-tooltip__step-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--tooltip-accent-tint);
+  padding: 3px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+  margin-bottom: 10px;
+}
+
+/* ── Typography ── */
+.onboarding-tooltip__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 7px;
+  line-height: 1.35;
+}
+
+.onboarding-tooltip--centered .onboarding-tooltip__title {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+.onboarding-tooltip__desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.onboarding-tooltip--centered .onboarding-tooltip__desc {
+  font-size: 13.5px;
+}
+
+/* ── Link pill ── */
+.onboarding-tooltip__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  margin-top: 10px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  background: var(--tooltip-accent-tint);
+  transition: opacity 0.15s ease;
+}
+
+.onboarding-tooltip__link:hover { opacity: 0.8; }
+
+/* ── Progress bar ── */
+.onboarding-progress {
+  height: 3px;
+  background: var(--tooltip-border);
+  border-radius: 999px;
+  margin-top: 16px;
+  overflow: hidden;
+}
+
+.onboarding-progress__bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Action buttons ── */
+.onboarding-tooltip__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  gap: 8px;
+}
+
+.onboarding-tooltip--centered .onboarding-tooltip__actions {
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+
+.onboarding-tooltip__nav {
+  display: flex;
+  gap: 8px;
+}
+
+.onboarding-tooltip--centered .onboarding-tooltip__nav {
+  width: 100%;
+}
+
+.onboarding-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+}
+
+.onboarding-btn:active { transform: scale(0.97); }
+
+.onboarding-btn--skip {
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.onboarding-btn--skip:hover { color: var(--text-secondary); }
+
+.onboarding-btn--prev {
+  background: none;
+  border: 1px solid var(--tooltip-border);
+  color: var(--text-secondary);
+  padding: 8px 14px;
+}
+
+.onboarding-btn--prev:hover { border-color: var(--text-muted); color: var(--text); }
+.onboarding-btn--prev:disabled { opacity: 0.3; cursor: default; }
+
+.onboarding-btn--next {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(239, 49, 57, 0.35);
+}
+
+.onboarding-btn--next:hover { opacity: 0.88; }
+
+.onboarding-tooltip--centered .onboarding-btn--next {
+  width: 100%;
+  padding: 11px;
+  font-size: 14px;
+  border-radius: 12px;
+}
+
+.onboarding-tooltip--centered .onboarding-btn--skip {
+  font-size: 12.5px;
+}
+
+/* ── Entrance animations ── */
+@keyframes onboarding-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/*
+  Centered card animation keeps translate(-50%,-50%) in BOTH frames so it
+  never fights the inline positioning style — this is what fixes the glitch.
+*/
+@keyframes onboarding-in-centered {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
+  to   { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+@keyframes onboarding-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Spotlight steps */
+.onboarding-tooltip--animate {
+  animation: onboarding-in 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* Welcome / done centered cards */
+.onboarding-tooltip--animate-centered {
+  animation: onboarding-in-centered 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* Step cross-fade exit — tooltip fades out before position snaps */
+.onboarding-tooltip--exit {
+  opacity: 0 !important;
+  transform: scale(0.95) !important;
+  transition: opacity 0.14s ease, transform 0.14s ease !important;
+}
+
+/* For centered cards during exit, keep translate so scale is applied correctly */
+.onboarding-tooltip--centered.onboarding-tooltip--exit {
+  transform: translate(-50%, -50%) scale(0.95) !important;
+}
+
+/* ── Light theme overrides for onboarding ─────────────────────────── */
+
+/*
+  4-panel blur strategy (works in all browsers, no mask-composite needed):
+  - Four fixed panels surround the spotlight from all sides.
+  - Each panel has backdrop-filter blur — the GAP between them is the clear hole.
+  - CSS variables --spotlight-x/y/w/h drive the layout; updated via JS.
+  - For centered steps (no spotlight) the top panel covers the full viewport.
+  - Inactive in dark theme (display: none).
+*/
+.onboarding-blur-layer {
+  display: none;
+}
+
+[data-theme="light"] .onboarding-blur-layer {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  /* Defaults: spotlight off-screen → top panel covers full viewport */
+  --spotlight-x: 200vw;
+  --spotlight-y: 200vh;
+  --spotlight-w: 0px;
+  --spotlight-h: 0px;
+}
+
+[data-theme="light"] .onboarding-blur-panel {
+  position: fixed;
+  pointer-events: none;
+  backdrop-filter: blur(3px) brightness(0.86);
+  -webkit-backdrop-filter: blur(3px) brightness(0.86);
+  /* Smooth panel rearrangement when stepping between spotlight targets */
+  transition:
+    top    0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    left   0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    width  0.38s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Top: y=0 → spotlight top */
+[data-theme="light"] .onboarding-blur-panel--top {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--spotlight-y);
+}
+
+/* Bottom: spotlight bottom → viewport bottom */
+[data-theme="light"] .onboarding-blur-panel--bottom {
+  top: calc(var(--spotlight-y) + var(--spotlight-h));
+  left: 0;
+  width: 100%;
+  bottom: 0;
+}
+
+/* Left: spotlight row, from x=0 → spotlight left */
+[data-theme="light"] .onboarding-blur-panel--left {
+  top: var(--spotlight-y);
+  left: 0;
+  width: var(--spotlight-x);
+  height: var(--spotlight-h);
+}
+
+/* Right: spotlight row, from spotlight right → viewport right */
+[data-theme="light"] .onboarding-blur-panel--right {
+  top: var(--spotlight-y);
+  left: calc(var(--spotlight-x) + var(--spotlight-w));
+  right: 0;
+  height: var(--spotlight-h);
+}
+
+/* Light theme: lighter dim (blur does the heavy lifting) + sharp dark ring */
+[data-theme="light"] .onboarding-spotlight {
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.18),
+    0 0 0 2px rgba(0, 0, 0, 0.5),
+    0 0 0 5px rgba(0, 0, 0, 0.07);
+}
+
+[data-theme="light"] .onboarding-spotlight--hidden {
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.18);
+}
+
+/* Stronger card shadow so it lifts clearly off a white page */
+[data-theme="light"] .onboarding-tooltip {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.06),
+    0 12px 32px rgba(0, 0, 0, 0.12),
+    0 24px 64px rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Arrow notch border — needs to be more visible on white */
+[data-theme="light"] .onboarding-tooltip::before {
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Step badge — slightly darker tint for light bg */
+[data-theme="light"] .onboarding-tooltip__step-badge {
+  background: rgba(239, 49, 57, 0.09);
+}
+
+/* Close button — subtler on white surface */
+[data-theme="light"] .onboarding-tooltip__close {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .onboarding-tooltip__close:hover {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+/* Prev button border visible on white */
+[data-theme="light"] .onboarding-btn--prev {
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .onboarding-btn--prev:hover {
+  border-color: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Progress track — darker on white */
+[data-theme="light"] .onboarding-progress {
+  background: rgba(0, 0, 0, 0.1);
 }
 
 /* Smooth toggling for Sidebar views */

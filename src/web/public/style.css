@@ -1371,6 +1371,16 @@ body {
   overflow: hidden;
 }
 
+.panel--left *,
+.panel--left {
+  scrollbar-width: none;
+}
+
+.panel--left *::-webkit-scrollbar,
+.panel--left::-webkit-scrollbar {
+  display: none;
+}
+
 .panel--left {
   flex: 0 0 auto;
   width: 35%;
@@ -1438,9 +1448,14 @@ body {
 .panel__body {
   flex: 1;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 20px;
   display: flex;
   flex-direction: column;
+}
+
+.panel__body::-webkit-scrollbar {
+  display: none;
 }
 
 /* ── Empty State ── */
@@ -1950,6 +1965,15 @@ body {
 
 .progress-collapsible.visible {
   display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.progress-collapsible.visible.collapsed {
+  flex: 0 0 auto !important;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .progress-collapsible__header {
@@ -2021,14 +2045,15 @@ body {
 }
 
 .progress-collapsible__body {
-  max-height: 600px;
+  flex: 1;
   overflow-y: auto;
-  transition: max-height 0.3s ease, opacity 0.2s ease, padding 0.3s ease;
+  transition: opacity 0.2s ease, padding 0.3s ease;
   opacity: 1;
   padding-top: 6px;
 }
 
 .progress-collapsible.collapsed .progress-collapsible__body {
+  flex: 0;
   max-height: 0;
   opacity: 0;
   padding-top: 0;
@@ -3302,8 +3327,19 @@ body {
   gap: 8px;
   padding: 12px 16px;
   overflow-y: auto;
-  flex: 1;
+  scrollbar-width: none;
+  flex: 1 1 0;
   min-height: 0;
+}
+
+/* When progress is expanded, it takes priority — chat shrinks */
+.progress-collapsible.visible:not(.collapsed) ~ .chat-messages {
+  flex: 0 0 auto;
+  max-height: 30%;
+}
+
+.chat-messages::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-messages.visible {

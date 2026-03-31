@@ -37,7 +37,7 @@ function apiFetch(url, options = {}) {
 const THEME_KEY = 'figma-to-code-theme';
 
 function getTheme() {
-  return localStorage.getItem(THEME_KEY) || 'dark';
+  return localStorage.getItem(THEME_KEY) || 'light';
 }
 
 function setTheme(theme) {
@@ -5889,7 +5889,7 @@ const ONBOARDING_STEPS = [
   {
     target: null,
     welcome: true,
-    icon: '🎨',
+    icon: null, // illustration replaces the icon on the welcome step
     title: 'Welcome to Nester Compose',
     desc: 'Convert any Figma design into production-ready React, Vue, Svelte, Angular, or Solid code — in seconds.',
     nextLabel: 'Take the tour →',
@@ -5927,10 +5927,10 @@ const ONBOARDING_STEPS = [
   {
     target: null,
     done: true,
-    icon: '✅',
-    title: "You're all set!",
-    desc: 'After converting you get a live preview, editable code for each framework, and an AI chat to refine the output.',
-    nextLabel: 'Start converting',
+    icon: '🎉',
+    title: "You're ready to ship!",
+    desc: 'Convert any Figma design into production-ready components. Live preview, multi-framework code, and AI refinement — all in one place.',
+    nextLabel: 'Start converting →',
     skipLabel: null,
   },
 ];
@@ -5969,11 +5969,104 @@ function startOnboarding() {
 }
 
 function stopOnboarding() {
+  stopConfetti();
   const overlay = document.getElementById('onboarding-overlay');
   if (!overlay) return;
   overlay.style.display = 'none';
   overlay.setAttribute('aria-hidden', 'true');
   markOnboardingDone();
+}
+
+// ── Confetti celebration ─────────────────────────────────────────────────────
+const CONFETTI_COLORS = ['#e5484d','#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#c77dff','#ffa552','#ffffff'];
+let _confettiRaf = null;
+let _confettiCanvas = null;
+let _confettiCtx = null;
+let _confettiParticles = [];
+
+function launchConfetti() {
+  const canvas = document.getElementById('onboarding-confetti');
+  if (!canvas) return;
+  _confettiCanvas = canvas;
+  _confettiCtx = canvas.getContext('2d');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  canvas.style.display = 'block';
+
+  // Two side-cannons — fire upward & outward from the edges of the centered card
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight * 0.42;
+  _confettiParticles = [];
+
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < 70; i++) {
+      const spread = (Math.random() - 0.5) * 0.7;
+      const baseAngle = side < 0 ? -Math.PI * 0.65 : -Math.PI * 0.35; // up-outward
+      const angle = baseAngle + spread;
+      const speed = 6 + Math.random() * 9;
+      _confettiParticles.push({
+        x: cx + side * 170,
+        y: cy,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        rot: Math.random() * Math.PI * 2,
+        rotV: (Math.random() - 0.5) * 0.3,
+        color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+        shape: Math.random() < 0.5 ? 'rect' : 'circle',
+        w: 7 + Math.random() * 7,
+        h: 3 + Math.random() * 5,
+      });
+    }
+  }
+
+  const startTime = performance.now();
+  const duration = 4000;
+
+  function draw(now) {
+    if (!_confettiCtx || !_confettiCanvas) return;
+    const elapsed = now - startTime;
+    _confettiCtx.clearRect(0, 0, _confettiCanvas.width, _confettiCanvas.height);
+    let alive = 0;
+    for (const p of _confettiParticles) {
+      p.vy += 0.27;       // gravity
+      p.vx *= 0.993;      // horizontal drag
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.rotV;
+      const alpha = Math.max(0, 1 - Math.pow(elapsed / duration, 1.6));
+      if (p.y < _confettiCanvas.height + 40) alive++;
+      _confettiCtx.save();
+      _confettiCtx.globalAlpha = alpha;
+      _confettiCtx.translate(p.x, p.y);
+      _confettiCtx.rotate(p.rot);
+      _confettiCtx.fillStyle = p.color;
+      if (p.shape === 'rect') {
+        _confettiCtx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      } else {
+        _confettiCtx.beginPath();
+        _confettiCtx.arc(0, 0, p.w / 2, 0, Math.PI * 2);
+        _confettiCtx.fill();
+      }
+      _confettiCtx.restore();
+    }
+    if (elapsed < duration && alive > 0) {
+      _confettiRaf = requestAnimationFrame(draw);
+    } else {
+      stopConfetti();
+    }
+  }
+
+  if (_confettiRaf) cancelAnimationFrame(_confettiRaf);
+  _confettiRaf = requestAnimationFrame(draw);
+}
+
+function stopConfetti() {
+  if (_confettiRaf) { cancelAnimationFrame(_confettiRaf); _confettiRaf = null; }
+  if (_confettiCanvas) {
+    _confettiCanvas.style.display = 'none';
+    if (_confettiCtx) _confettiCtx.clearRect(0, 0, _confettiCanvas.width, _confettiCanvas.height);
+  }
+  _confettiParticles = [];
 }
 
 function renderOnboardingStep(index, animate) {
@@ -6000,13 +6093,35 @@ function renderOnboardingStep(index, animate) {
 
   // Switch centered vs regular layout
   tooltip.classList.toggle('onboarding-tooltip--centered', isCentered);
+  // Step-type classes drive targeted animations and styles
+  tooltip.classList.toggle('onboarding-tooltip--welcome', !!step.welcome);
+  tooltip.classList.toggle('onboarding-tooltip--done', !!step.done);
 
-  // Icon block — only for centered (welcome / done) steps
-  if (isCentered && step.icon) {
-    if (iconEl) iconEl.textContent = step.icon;
-    if (iconWrap) iconWrap.style.display = 'flex';
+  // Illustration — shown on the welcome step instead of the icon
+  const illustrationEl = document.getElementById('onboarding-illustration');
+  if (illustrationEl) {
+    illustrationEl.style.display = step.welcome ? 'block' : 'none';
+  }
+
+  // Icon block — shown only on the done step (🎉 bounce)
+  if (step.done && step.icon) {
+    if (iconEl) iconEl.innerHTML = step.icon;
+    if (iconWrap) {
+      iconWrap.style.display = 'flex';
+      // Reset the pop animation so it replays each time the done step is shown
+      iconWrap.style.animation = 'none';
+      void iconWrap.offsetWidth;
+      iconWrap.style.animation = '';
+    }
   } else {
     if (iconWrap) iconWrap.style.display = 'none';
+  }
+
+  // Launch confetti when the done step appears (after the card animation finishes)
+  if (step.done) {
+    setTimeout(launchConfetti, 420);
+  } else {
+    stopConfetti(); // clean up if user navigates back from done step
   }
 
   // Step badge — only for regular steps

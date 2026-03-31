@@ -246,7 +246,7 @@ describe('requireAuthOrFree — multi-signal', () => {
     expect(res._json.error).toContain('Free tier limit');
   });
 
-  it('blocks when IP quota exhausted (even with fresh fingerprint)', async () => {
+  it('allows when IP quota exhausted but fingerprint has remaining', async () => {
     const ip = `exhaust-ip-${Date.now()}`;
     // Exhaust IP quota (default 10)
     for (let i = 0; i < 10; i++) await incrementIPUsage(ip);
@@ -257,8 +257,8 @@ describe('requireAuthOrFree — multi-signal', () => {
 
     await requireAuthOrFree(req, res, () => { nextCalled = true; });
 
-    expect(nextCalled).toBe(false);
-    expect(res._status).toBe(401);
+    // IP alone no longer blocks — fingerprint is the primary check
+    expect(nextCalled).toBe(true);
   });
 
   it('stashes _clientIP on request for downstream increment', async () => {

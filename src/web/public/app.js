@@ -13,7 +13,7 @@ async function initFingerprint() {
     console.warn('[fingerprint] FingerprintJS failed, falling back to cookie:', e.message);
   }
 }
-initFingerprint();
+const _fingerprintReady = initFingerprint();
 
 /**
  * Wrapper around fetch() that injects X-Fingerprint and Authorization headers.
@@ -1754,6 +1754,9 @@ function hideHeroChatResponse() {
 }
 
 async function startConversion(skipDuplicateCheck) {
+  // Ensure fingerprint + auth state are initialized before any auth checks
+  await Promise.all([_fingerprintReady, _authReady]);
+
   const urlInput = getActiveUrlInput();
   const figmaUrl = urlInput.value.trim();
   const frameworks = getSelectedFrameworks();
@@ -5406,7 +5409,7 @@ async function initAuth() {
       }
     }
 
-    updateFreeTierDisplay();
+    await updateFreeTierDisplay();
   } catch (e) {
     console.warn('Auth init failed:', e);
   }
@@ -6391,7 +6394,7 @@ loadExplorerIconConfig();
 updateCodeActionsState();
 renderProjectList();
 initCommandPalette();
-initAuth();
+const _authReady = initAuth();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)
 mainHero.classList.remove('hidden');

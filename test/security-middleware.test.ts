@@ -206,7 +206,7 @@ describe('IP usage tracking', () => {
 
   it('limit matches config', async () => {
     const info = await getIPUsageInfo('fresh-ip');
-    expect(info.limit).toBe(5); // default maxFreeConversions
+    expect(info.limit).toBe(10); // default maxFreeConversions
   });
 });
 
@@ -229,8 +229,8 @@ describe('requireAuthOrFree — multi-signal', () => {
 
   it('blocks when fingerprint quota exhausted', async () => {
     const fp = `exhaust-fp-${Date.now()}`;
-    // Exhaust fingerprint quota (default 5)
-    for (let i = 0; i < 5; i++) await incrementFreeTierUsage(fp);
+    // Exhaust fingerprint quota (default 10)
+    for (let i = 0; i < 10; i++) await incrementFreeTierUsage(fp);
 
     const req = mockReq({
       ip: `fresh-ip-${Date.now()}`,
@@ -248,8 +248,8 @@ describe('requireAuthOrFree — multi-signal', () => {
 
   it('blocks when IP quota exhausted (even with fresh fingerprint)', async () => {
     const ip = `exhaust-ip-${Date.now()}`;
-    // Exhaust IP quota (default 5)
-    for (let i = 0; i < 5; i++) await incrementIPUsage(ip);
+    // Exhaust IP quota (default 10)
+    for (let i = 0; i < 10; i++) await incrementIPUsage(ip);
 
     const req = mockReq({ ip });
     const res = mockRes();

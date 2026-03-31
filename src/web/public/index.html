@@ -119,7 +119,7 @@
             </svg>
             <span>Search</span>
           </button>
-          <button type="button" class="sidebar__nav-item" title="Profile">
+          <button type="button" class="sidebar__nav-item" id="sidebar-profile-btn" title="Profile">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.5" />
               <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5" stroke="currentColor" stroke-width="1.5"
@@ -293,6 +293,37 @@
         </div>
       </div>
       <!-- /main-hero -->
+
+      <!-- PROFILE VIEW -->
+      <div class="profile-view" id="profile-view" style="display:none;">
+        <div class="profile-page-card">
+          <div class="profile-card">
+            <div class="profile-avatar" id="profile-avatar">?</div>
+            <div class="profile-name" id="profile-name">Guest</div>
+            <div class="profile-email" id="profile-email">Not signed in</div>
+          </div>
+          <div class="profile-stats">
+            <div class="profile-stat">
+              <span class="profile-stat__value" id="profile-stat-used">—</span>
+              <span class="profile-stat__label">Conversions Used</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat__value" id="profile-stat-remaining">—</span>
+              <span class="profile-stat__label">Remaining</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat__value" id="profile-stat-projects">0</span>
+              <span class="profile-stat__label">Projects</span>
+            </div>
+          </div>
+          <div class="profile-actions">
+            <button type="button" class="profile-btn profile-btn--primary" id="profile-back-home-btn">Back to Home</button>
+            <button type="button" class="profile-btn profile-btn--outline" id="profile-signout-btn" style="display:none;">Sign Out</button>
+            <button type="button" class="profile-btn profile-btn--outline" id="profile-signin-btn" style="display:none;">Sign In</button>
+          </div>
+        </div>
+      </div>
+      <!-- /profile-view -->
 
       <!-- SPLIT VIEW (after conversion) -->
       <div class="main-split" id="main-split">

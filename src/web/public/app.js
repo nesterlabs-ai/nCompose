@@ -491,10 +491,14 @@ function saveProject(project) {
 }
 
 function deleteProject(id) {
+  const wasActive = currentProjectId === id;
   const projects = loadProjects().filter(p => p.id !== id);
   saveProjects(projects);
-  if (currentProjectId === id) currentProjectId = null;
-  renderProjectList();
+  if (wasActive) {
+    resetToHero();
+  } else {
+    renderProjectList();
+  }
 }
 
 function getProject(id) {

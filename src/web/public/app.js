@@ -491,10 +491,14 @@ function saveProject(project) {
 }
 
 function deleteProject(id) {
+  const wasActive = currentProjectId === id;
   const projects = loadProjects().filter(p => p.id !== id);
   saveProjects(projects);
-  if (currentProjectId === id) currentProjectId = null;
-  renderProjectList();
+  if (wasActive) {
+    resetToHero();
+  } else {
+    renderProjectList();
+  }
 }
 
 function getProject(id) {
@@ -3518,6 +3522,11 @@ function parseRefineSSEEvent(eventStr, loadingMsg) {
         loadingMsg.innerHTML = `<div class="chat-loading-indicator"><div class="chat-loading-dots"><span></span><span></span><span></span></div></div>`;
       }
       break;
+    case 'chat_response':
+      setChatLoading(false);
+      removeChatMessage(loadingMsg);
+      addChatMessage('assistant', data.message);
+      break;
     case 'complete':
       setChatLoading(false);
       removeChatMessage(loadingMsg);
@@ -4399,9 +4408,12 @@ function initGitHubDialog() {
   const closeBtn = document.getElementById('github-dialog-close');
   const pushGithubBtn = document.getElementById('push-github-btn');
   const connectSection = document.getElementById('github-connect-section');
+  const oauthSection = document.getElementById('github-oauth-section');
   const connectBtn = document.getElementById('github-connect-btn');
   const connectSpinner = document.getElementById('github-connect-spinner');
   const connectIcon = document.getElementById('github-connect-icon');
+  const patInput = document.getElementById('github-pat-input');
+  const patBtn = document.getElementById('github-pat-btn');
   const errorEl = document.getElementById('github-error');
   const successEl = document.getElementById('github-success');
   const successLink = document.getElementById('github-success-link');
@@ -4423,8 +4435,6 @@ function initGitHubDialog() {
   const pushIcon = document.getElementById('github-push-icon');
   const pushBtnText = document.getElementById('github-push-btn-text');
 
-  let supabaseUrl = '';
-  let supabaseKey = '';
   let githubFiles = [];
   let repos = [];
   let selectedRepo = null;
@@ -4500,16 +4510,13 @@ function initGitHubDialog() {
     apiFetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
-        supabaseUrl = cfg.supabaseUrl || '';
-        supabaseKey = cfg.supabaseKey || '';
-        if (!cfg.githubPushConfigured) {
-          connectBtn.disabled = true;
-          showError('GitHub push is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to the server environment.');
-          connectSection.style.display = 'block';
-          formEl.style.display = 'none';
-          return;
+        if (cfg.githubPushConfigured) {
+          oauthSection.style.display = 'block';
+          connectBtn.disabled = false;
+        } else {
+          oauthSection.style.display = 'none';
         }
-        connectBtn.disabled = false;
+        patInput.value = '';
         const token = getGitHubToken();
         if (!token) {
           connectSection.style.display = 'block';
@@ -4522,7 +4529,7 @@ function initGitHubDialog() {
         fetchReposAndUser(token);
       })
       .catch(() => {
-        showError('Failed to load configuration.');
+        oauthSection.style.display = 'none';
         connectSection.style.display = 'block';
         formEl.style.display = 'none';
       });
@@ -4533,23 +4540,11 @@ function initGitHubDialog() {
     overlay.classList.remove('visible');
   }
 
-  async function invokeSupabase(action, options = {}) {
-    const params = new URLSearchParams({ action });
-    if (options.query) {
-      Object.entries(options.query).forEach(([k, v]) => params.set(k, v));
-    }
-    const url = `${supabaseUrl}/functions/v1/github-push?${params}`;
-    const headers = {
-      Authorization: `Bearer ${supabaseKey}`,
-      'Content-Type': 'application/json',
-      ...options.headers,
-    };
-    if (options.githubToken) headers['x-github-token'] = options.githubToken;
-    const res = await fetch(url, { ...options, headers });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data?.error || `Request failed: ${res.status}`);
-      err.context = res;
+  async function apiJson(response) {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const err = new Error(data?.error || `Request failed: ${response.status}`);
+      err.context = response;
       throw err;
     }
     return data;
@@ -4558,8 +4553,8 @@ function initGitHubDialog() {
   async function fetchReposAndUser(token) {
     try {
       const [reposData, userData] = await Promise.all([
-        invokeSupabase('repos', { method: 'GET', githubToken: token }),
-        invokeSupabase('user', { method: 'GET', githubToken: token }),
+        apiFetch('/api/github/repos', { headers: { 'x-github-token': token } }).then(apiJson),
+        apiFetch('/api/github/user', { headers: { 'x-github-token': token } }).then(apiJson),
       ]);
       repos = Array.isArray(reposData) ? reposData : [];
       usernameEl.textContent = userData?.login || 'Unknown';
@@ -4620,7 +4615,7 @@ function initGitHubDialog() {
     showError('');
     try {
       const redirectUri = `${window.location.origin}/auth/github/callback`;
-      const data = await invokeSupabase('oauth-url', { method: 'GET', query: { redirect_uri: redirectUri } });
+      const data = await apiFetch('/api/github/oauth-url?redirect_uri=' + encodeURIComponent(redirectUri)).then(apiJson);
       if (!data?.url || !data?.state) throw new Error('GitHub OAuth is not configured.');
       sessionStorage.setItem(GITHUB_OAUTH_STATE_KEY, data.state);
       const popup = window.open(data.url, 'github-oauth', 'width=620,height=720');
@@ -4631,6 +4626,34 @@ function initGitHubDialog() {
     } finally {
       setConnectLoading(false);
     }
+  });
+
+  patBtn.addEventListener('click', async () => {
+    const pat = patInput.value.trim();
+    if (!pat) {
+      showError('Please enter a Personal Access Token.');
+      return;
+    }
+    patBtn.disabled = true;
+    patBtn.textContent = 'Validating...';
+    showError('');
+    try {
+      await apiFetch('/api/github/user', { headers: { 'x-github-token': pat } }).then(apiJson);
+      setGitHubToken(pat);
+      connectSection.style.display = 'none';
+      formEl.style.display = 'block';
+      successEl.style.display = 'none';
+      await fetchReposAndUser(pat);
+    } catch (e) {
+      showError('Invalid token — ensure it has the repo scope.');
+    } finally {
+      patBtn.disabled = false;
+      patBtn.textContent = 'Connect';
+    }
+  });
+
+  patInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') patBtn.click();
   });
 
   window.addEventListener('message', async (e) => {
@@ -4654,10 +4677,11 @@ function initGitHubDialog() {
     setConnectLoading(true);
     showError('');
     try {
-      const data = await invokeSupabase('exchange-code', {
+      const data = await apiFetch('/api/github/exchange-code', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: p.code, redirectUri: `${window.location.origin}/auth/github/callback` }),
-      });
+      }).then(apiJson);
       const token = data?.accessToken;
       if (!token) throw new Error('No access token returned.');
       setGitHubToken(token);
@@ -4694,15 +4718,16 @@ function initGitHubDialog() {
       if (githubTab === 'new') {
         const name = newRepoInput.value.trim();
         if (!name) throw new Error('Repository name is required');
-        const createRes = await invokeSupabase('create-repo', {
+        const createRes = await apiFetch('/api/github/create-repo', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             githubToken: token,
             repo: name,
             repoDescription: `${currentComponentName} - Generated by Figma to Code`,
             isPrivate: privateCheckbox.checked,
           }),
-        });
+        }).then(apiJson);
         owner = createRes?.owner?.login || owner;
         repo = createRes?.name || name;
         branch = createRes?.default_branch || 'main';
@@ -4720,8 +4745,9 @@ function initGitHubDialog() {
         return { path, content: f.content };
       });
 
-      const result = await invokeSupabase('push', {
+      const result = await apiFetch('/api/github/push', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           githubToken: token,
           owner,
@@ -4730,7 +4756,7 @@ function initGitHubDialog() {
           commitMessage: commitMsgInput.value.trim() || `feat: add ${currentComponentName} component`,
           files: filesToPush,
         }),
-      });
+      }).then(apiJson);
 
       successEl.style.display = 'block';
       successLink.href = result?.commitUrl || `https://github.com/${owner}/${repo}`;

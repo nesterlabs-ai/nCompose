@@ -279,7 +279,7 @@ export const config = {
   } as FingerprintConfig,
 
   freeTier: {
-    maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 5),
+    maxFreeConversions: envInt('FREE_TIER_MAX_CONVERSIONS', 10),
     maxAuthConversions: envInt('AUTH_MAX_CONVERSIONS', 20),
     maxFreeRefinesPerSession: envInt('FREE_TIER_MAX_REFINES_PER_SESSION', 20),
     maxAuthRefinesPerSession: envInt('AUTH_MAX_REFINES_PER_SESSION', 50),

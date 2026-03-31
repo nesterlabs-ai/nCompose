@@ -317,7 +317,7 @@ let isAuthenticated = false;
 let currentUser = null;
 let authIdToken = null;
 let cognitoUserPool = null;
-let freeTierUsage = { used: 0, limit: 5, remaining: 5, tier: 'free' };
+let freeTierUsage = { used: 0, limit: 10, remaining: 10, tier: 'free' };
 let loginSuccessCallback = null;
 
 /** Explorer icon config: folder, chevron, fileIcons. Loaded from /explorer-icons.config.json; merged with these defaults. */
@@ -2924,6 +2924,12 @@ function handleComplete(data) {
   const frameworks = data.frameworks || [];
   const completedSessionId = data.sessionId;
   const userSwitchedAway = currentProjectId !== completedSessionId;
+
+  // Don't resurrect a project the user deleted while it was converting
+  if (!getProject(completedSessionId)) {
+    activeConversionSessionId = null;
+    return;
+  }
 
   // Always save completed project to localStorage (even if user switched away)
   saveProject({

@@ -4427,7 +4427,7 @@ body {
 }
 
 .sidebar.collapsed .sidebar__user-info {
-  display: none;
+  display: none !important; /* JS sets inline style="display:flex"; !important overrides it */
 }
 
 /* ── Free tier badge ───────────────────────────────────────────────── */
@@ -4450,7 +4450,7 @@ body {
 }
 
 .sidebar.collapsed .free-tier-badge {
-  display: none;
+  display: none !important; /* JS may set inline display; !important overrides it */
 }
 
 /* ── Visual Edit Draft / Unsaved Bar ── */

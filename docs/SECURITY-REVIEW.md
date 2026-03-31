@@ -12,7 +12,7 @@
 
 **Files:** `.credentials`, `.env`
 
-Both files contain **live production secrets** on disk — Figma PAT, Anthropic API key, DeepSeek key, AWS credentials, Supabase keys. Even though `.gitignore`'d, they exist in the working tree and could be accidentally committed.
+Both files contain **live production secrets** on disk — Figma PAT, Anthropic API key, DeepSeek key, AWS credentials. Even though `.gitignore`'d, they exist in the working tree and could be accidentally committed.
 
 **Action:** Rotate ALL exposed keys immediately. Use environment-based secret management (AWS Secrets Manager, GitHub Secrets) for production. Never store secrets in files on disk.
 

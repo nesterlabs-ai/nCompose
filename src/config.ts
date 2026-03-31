@@ -136,6 +136,13 @@ export interface CognitoConfig {
   region: string;
 }
 
+// ── GitHub OAuth ─────────────────────────────────────────────────────────
+
+export interface GitHubConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
 // ── Rate Limiting ─────────────────────────────────────────────────────────
 
 export interface RateLimitConfig {
@@ -233,7 +240,7 @@ export const config = {
     outputDir: envStr('SERVER_OUTPUT_DIR', './web_output'),
     defaultLLM: envStr('SERVER_DEFAULT_LLM', 'deepseek'),
     defaultDepth: envInt('SERVER_DEFAULT_DEPTH', 25),
-    trustProxy: envBool('TRUST_PROXY', true),
+    trustProxy: envBool('TRUST_PROXY', false),
   } as ServerConfig,
 
   cli: {
@@ -260,6 +267,11 @@ export const config = {
     clientId: envStr('COGNITO_CLIENT_ID', ''),
     region: envStr('COGNITO_REGION', 'us-west-2'),
   } as CognitoConfig,
+
+  github: {
+    clientId: envStr('GITHUB_CLIENT_ID', ''),
+    clientSecret: envStr('GITHUB_CLIENT_SECRET', ''),
+  } as GitHubConfig,
 
   fingerprint: {
     secret: envStr('FINGERPRINT_SECRET', ''),

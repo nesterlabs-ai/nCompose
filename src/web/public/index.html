@@ -1174,6 +1174,8 @@
       <div class="onboarding-blur-panel onboarding-blur-panel--left"></div>
       <div class="onboarding-blur-panel onboarding-blur-panel--right"></div>
     </div>
+    <!-- Confetti canvas — shown only on the done step -->
+    <canvas id="onboarding-confetti" style="display:none; position:fixed; inset:0; z-index:10003; pointer-events:none;"></canvas>
     <div id="onboarding-spotlight" class="onboarding-spotlight"></div>
     <div id="onboarding-tooltip" class="onboarding-tooltip" role="dialog" aria-labelledby="onboarding-title">
       <!-- Close button — always top-right of card -->
@@ -1182,7 +1184,77 @@
           <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
       </button>
-      <!-- Icon (welcome / done steps only) -->
+      <!-- Animated illustration — shown on the welcome step only -->
+      <div class="onboarding-illustration" id="onboarding-illustration" style="display:none;" aria-hidden="true">
+        <!-- Scene 1: Add Figma Token -->
+        <div class="ob-scene ob-s1">
+          <div class="ob-scene-top">
+            <span class="ob-badge">1</span>
+            <span class="ob-scene-ttl">Add your Figma Token</span>
+          </div>
+          <div class="ob-token-row">
+            <div class="ob-token-field">
+              <span class="ob-mono">figd_xxxxxxxxx…</span>
+              <span class="ob-cursor"></span>
+            </div>
+            <div class="ob-save-chip">Save Token</div>
+          </div>
+        </div>
+        <!-- Scene 2: Paste Figma URL -->
+        <div class="ob-scene ob-s2">
+          <div class="ob-scene-top">
+            <span class="ob-badge">2</span>
+            <span class="ob-scene-ttl">Paste a Figma URL</span>
+          </div>
+          <div class="ob-url-row">
+            <div class="ob-url-field">
+              <span class="ob-mono">figma.com/design/AbCd1234…</span>
+              <span class="ob-cursor"></span>
+            </div>
+            <div class="ob-go-btn">→</div>
+          </div>
+          <div class="ob-fw-chips">
+            <span class="ob-fw ob-fw--on">React</span>
+            <span class="ob-fw">Vue</span>
+            <span class="ob-fw">Svelte</span>
+            <span class="ob-fw">Angular</span>
+          </div>
+        </div>
+        <!-- Scene 3: Code + Preview output -->
+        <div class="ob-scene ob-s3">
+          <div class="ob-scene-top">
+            <span class="ob-badge ob-badge--green">✓</span>
+            <span class="ob-scene-ttl">Get production-ready code</span>
+          </div>
+          <div class="ob-result-row">
+            <div class="ob-code-card">
+              <div class="ob-code-bar">
+                <span class="ob-dot ob-r"></span><span class="ob-dot ob-y"></span><span class="ob-dot ob-g"></span>
+                <span class="ob-filename">Button.jsx</span>
+              </div>
+              <div class="ob-code-lines">
+                <div class="ob-cl" style="width:85%"></div>
+                <div class="ob-cl" style="width:62%"></div>
+                <div class="ob-cl ob-cl--accent" style="width:72%"></div>
+              </div>
+            </div>
+            <div class="ob-preview-card">
+              <div class="ob-preview-ttl">Preview</div>
+              <div class="ob-component-mock">
+                <div class="ob-component-btn">Button</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Synchronized progress dots -->
+        <div class="ob-progress-dots">
+          <span class="ob-pd ob-pd-1"></span>
+          <span class="ob-pd ob-pd-2"></span>
+          <span class="ob-pd ob-pd-3"></span>
+        </div>
+      </div>
+
+      <!-- Icon (done step only) -->
       <div class="onboarding-tooltip__icon-wrap" id="onboarding-icon-wrap" style="display:none;">
         <div class="onboarding-tooltip__icon" id="onboarding-icon"></div>
       </div>

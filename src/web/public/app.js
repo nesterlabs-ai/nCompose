@@ -4372,9 +4372,12 @@ function initGitHubDialog() {
   const closeBtn = document.getElementById('github-dialog-close');
   const pushGithubBtn = document.getElementById('push-github-btn');
   const connectSection = document.getElementById('github-connect-section');
+  const oauthSection = document.getElementById('github-oauth-section');
   const connectBtn = document.getElementById('github-connect-btn');
   const connectSpinner = document.getElementById('github-connect-spinner');
   const connectIcon = document.getElementById('github-connect-icon');
+  const patInput = document.getElementById('github-pat-input');
+  const patBtn = document.getElementById('github-pat-btn');
   const errorEl = document.getElementById('github-error');
   const successEl = document.getElementById('github-success');
   const successLink = document.getElementById('github-success-link');
@@ -4471,14 +4474,13 @@ function initGitHubDialog() {
     apiFetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
-        if (!cfg.githubPushConfigured) {
-          connectBtn.disabled = true;
-          showError('GitHub push is not configured. Add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to the server environment.');
-          connectSection.style.display = 'block';
-          formEl.style.display = 'none';
-          return;
+        if (cfg.githubPushConfigured) {
+          oauthSection.style.display = 'block';
+          connectBtn.disabled = false;
+        } else {
+          oauthSection.style.display = 'none';
         }
-        connectBtn.disabled = false;
+        patInput.value = '';
         const token = getGitHubToken();
         if (!token) {
           connectSection.style.display = 'block';
@@ -4491,7 +4493,7 @@ function initGitHubDialog() {
         fetchReposAndUser(token);
       })
       .catch(() => {
-        showError('Failed to load configuration.');
+        oauthSection.style.display = 'none';
         connectSection.style.display = 'block';
         formEl.style.display = 'none';
       });
@@ -4588,6 +4590,34 @@ function initGitHubDialog() {
     } finally {
       setConnectLoading(false);
     }
+  });
+
+  patBtn.addEventListener('click', async () => {
+    const pat = patInput.value.trim();
+    if (!pat) {
+      showError('Please enter a Personal Access Token.');
+      return;
+    }
+    patBtn.disabled = true;
+    patBtn.textContent = 'Validating...';
+    showError('');
+    try {
+      await apiFetch('/api/github/user', { headers: { 'x-github-token': pat } }).then(apiJson);
+      setGitHubToken(pat);
+      connectSection.style.display = 'none';
+      formEl.style.display = 'block';
+      successEl.style.display = 'none';
+      await fetchReposAndUser(pat);
+    } catch (e) {
+      showError('Invalid token — ensure it has the repo scope.');
+    } finally {
+      patBtn.disabled = false;
+      patBtn.textContent = 'Connect';
+    }
+  });
+
+  patInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') patBtn.click();
   });
 
   window.addEventListener('message', async (e) => {

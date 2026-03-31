@@ -1655,30 +1655,68 @@ function isFigmaUrl(text) {
   return /figma\.com\/(design|file|proto)\//i.test(text);
 }
 
-function showHeroChatResponse() {
+// ── Hero Chat (LLM-powered assistant) ─────────────────────────────────────
+
+const heroConversation = [];
+
+function appendHeroBubble(role, text) {
   const responseEl = document.getElementById('hero-chat-response');
-  if (!responseEl) return;
-
-  const hasToken = !!sessionStorage.getItem(TOKEN_ID_KEY);
-
-  let html = '<p class="hero-chat-greeting">Hey! I\'m Nester Compose</p>';
-  html += '<p>I convert Figma designs into import-ready code for React, Vue, Svelte, Angular, and Solid.</p>';
-  html += '<ol class="hero-chat-steps">';
-  if (!hasToken) {
-    html += '<li><span class="hero-chat-step-num">1</span><span class="hero-chat-step-text"><strong>Add your Figma access token</strong> in the sidebar</span></li>';
-    html += '<li><span class="hero-chat-step-num">2</span><span class="hero-chat-step-text"><strong>Paste a Figma design URL</strong> in the input above</span></li>';
-    html += '<li><span class="hero-chat-step-num">3</span><span class="hero-chat-step-text"><strong>Pick your frameworks</strong> and hit send</span></li>';
-  } else {
-    html += '<li><span class="hero-chat-step-num">1</span><span class="hero-chat-step-text"><strong>Paste a Figma design URL</strong> in the input above</span></li>';
-    html += '<li><span class="hero-chat-step-num">2</span><span class="hero-chat-step-text"><strong>Pick your frameworks</strong> and hit send</span></li>';
-  }
-  html += '</ol>';
-
-  responseEl.innerHTML = html;
+  if (!responseEl) return null;
   responseEl.style.display = 'block';
+
+  const bubble = document.createElement('div');
+  bubble.className = `hero-chat-bubble hero-chat-bubble--${role}`;
+  bubble.textContent = text;
+  responseEl.appendChild(bubble);
+  bubble.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return bubble;
+}
+
+function showHeroTypingIndicator() {
+  const responseEl = document.getElementById('hero-chat-response');
+  if (!responseEl) return null;
+
+  const typing = document.createElement('div');
+  typing.className = 'hero-chat-bubble hero-chat-bubble--assistant hero-chat-typing';
+  typing.innerHTML = '<span></span><span></span><span></span>';
+  responseEl.appendChild(typing);
+  typing.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return typing;
+}
+
+async function sendHeroChatMessage(text) {
+  appendHeroBubble('user', text);
+  heroFigmaUrlInput.value = '';
+  autoResizeTextarea(heroFigmaUrlInput);
+  updateTypewriterVisibility();
+
+  const typingEl = showHeroTypingIndicator();
+
+  try {
+    const res = await fetch('/api/hero-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        history: heroConversation.slice(-10),
+      }),
+    });
+    const data = await res.json();
+    const reply = data.reply || "Sorry, I couldn't process that. Try pasting a Figma URL!";
+
+    heroConversation.push({ role: 'user', content: text });
+    heroConversation.push({ role: 'assistant', content: reply });
+
+    if (typingEl) typingEl.remove();
+    appendHeroBubble('assistant', reply);
+  } catch {
+    if (typingEl) typingEl.remove();
+    appendHeroBubble('assistant', "Sorry, something went wrong. Try pasting a Figma design URL to get started!");
+  }
 }
 
 function hideHeroChatResponse() {
+  if (heroConversation.length > 0) return; // preserve ongoing chat
   const responseEl = document.getElementById('hero-chat-response');
   if (responseEl) responseEl.style.display = 'none';
 }
@@ -1693,9 +1731,9 @@ async function startConversion(skipDuplicateCheck) {
     return;
   }
 
-  // If input is not a Figma URL, show conversational response
+  // If input is not a Figma URL, send to LLM chat assistant
   if (!isFigmaUrl(figmaUrl)) {
-    showHeroChatResponse();
+    sendHeroChatMessage(figmaUrl);
     return;
   }
 

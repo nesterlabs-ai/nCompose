@@ -1475,6 +1475,12 @@ document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
   if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (el.id === 'sidebar-profile-btn') {
+      document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
+      el.classList.add('active');
+      showProfileModal();
+      return;
+    }
     document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
     el.classList.add('active');
   });
@@ -5349,7 +5355,12 @@ function updateAuthUI() {
 
   if (isAuthenticated && currentUser) {
     if (userInfo) userInfo.style.display = 'flex';
-    if (userEmail) userEmail.textContent = currentUser.email || currentUser.name || 'User';
+    if (userEmail) {
+      userEmail.textContent = currentUser.email || currentUser.name || 'User';
+      userEmail.style.cursor = 'pointer';
+      userEmail.title = 'View profile';
+      userEmail.onclick = () => showProfileModal();
+    }
     if (logoutBtn) {
       logoutBtn.onclick = () => cognitoSignOut();
     }
@@ -5388,6 +5399,86 @@ function closeLoginModal() {
   overlay.setAttribute('aria-hidden', 'true');
   loginSuccessCallback = null;
 }
+
+function showProfileModal() {
+  const view = document.getElementById('profile-view');
+  if (!view) return;
+
+  const avatarEl = document.getElementById('profile-avatar');
+  const nameEl = document.getElementById('profile-name');
+  const emailEl = document.getElementById('profile-email');
+  const usedEl = document.getElementById('profile-stat-used');
+  const remainingEl = document.getElementById('profile-stat-remaining');
+  const projectsEl = document.getElementById('profile-stat-projects');
+  const signoutBtn = document.getElementById('profile-signout-btn');
+  const signinBtn = document.getElementById('profile-signin-btn');
+
+  const allProjects = loadProjects();
+  const projectCount = allProjects.length;
+
+  if (isAuthenticated && currentUser) {
+    const email = currentUser.email || '';
+    const displayName = currentUser.name || email.split('@')[0] || 'User';
+    const initial = displayName.charAt(0).toUpperCase();
+
+    if (avatarEl) avatarEl.textContent = initial;
+    if (nameEl) nameEl.textContent = displayName;
+    if (emailEl) emailEl.textContent = email;
+    // Use real API data if available, fall back to project count
+    const usedVal = (freeTierUsage.used != null && freeTierUsage.used > 0)
+      ? freeTierUsage.used
+      : projectCount;
+    const remainingVal = freeTierUsage.remaining === Infinity || freeTierUsage.remaining == null
+      ? '∞'
+      : freeTierUsage.remaining;
+    if (usedEl) usedEl.textContent = usedVal;
+    if (remainingEl) remainingEl.textContent = remainingVal;
+    if (projectsEl) projectsEl.textContent = projectCount;
+    if (signoutBtn) signoutBtn.style.display = 'inline-flex';
+    if (signinBtn) signinBtn.style.display = 'none';
+  } else {
+    if (avatarEl) avatarEl.textContent = '?';
+    if (nameEl) nameEl.textContent = 'Guest';
+    if (emailEl) emailEl.textContent = 'Not signed in';
+    // Use project count as conversions used; no limit when auth is off
+    if (usedEl) usedEl.textContent = projectCount;
+    if (remainingEl) remainingEl.textContent = authEnabled ? (freeTierUsage.remaining ?? '—') : '∞';
+    if (projectsEl) projectsEl.textContent = projectCount;
+    if (signoutBtn) signoutBtn.style.display = 'none';
+    if (signinBtn) signinBtn.style.display = authEnabled ? 'inline-flex' : 'none';
+  }
+
+  // Hide hero + split view, show profile view
+  if (mainHero) mainHero.classList.add('hidden');
+  if (mainSplit) mainSplit.classList.remove('visible');
+  mainHero?.closest('.main')?.classList.remove('split-visible');
+  view.style.display = 'flex';
+}
+
+function closeProfileModal() {
+  const view = document.getElementById('profile-view');
+  if (view) view.style.display = 'none';
+  // Return to hero
+  if (mainHero) mainHero.classList.remove('hidden');
+  // Sync nav back to Home
+  syncSidebarPrimaryNavToShellView();
+}
+
+function initProfileModal() {
+  document.getElementById('profile-back-home-btn')?.addEventListener('click', closeProfileModal);
+
+  document.getElementById('profile-signout-btn')?.addEventListener('click', () => {
+    closeProfileModal();
+    cognitoSignOut();
+  });
+
+  document.getElementById('profile-signin-btn')?.addEventListener('click', () => {
+    closeProfileModal();
+    showLoginModal(null);
+  });
+}
+
+
 
 function showContactNesterLabsModal() {
   const overlay = document.getElementById('contact-nesterlabs-overlay');
@@ -5666,6 +5757,7 @@ setInterval(() => {
 
 initLoginModal();
 initContactModal();
+initProfileModal();
 
 // ── Init ──
 loadSavedToken();

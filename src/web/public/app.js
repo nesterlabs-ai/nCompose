@@ -680,6 +680,12 @@ function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
 
+  // Close profile view if open
+  const profileView = document.getElementById('profile-view');
+  if (profileView && profileView.style.display !== 'none') {
+    profileView.style.display = 'none';
+  }
+
   // Abort in-flight refine stream (interactive, tied to current view).
   // Conversion stream is NOT aborted — it continues in background and
   // handleComplete() will save results to the project when done.
@@ -1371,6 +1377,10 @@ function resetToHero() {
   currentFrameworkOutputs = {};
   chatRefining = false;
 
+  // Always close profile view if open (no matter how resetToHero is called)
+  const profileView = document.getElementById('profile-view');
+  if (profileView) profileView.style.display = 'none';
+
   // Switch to hero view
   mainHero.classList.remove('hidden');
   mainSplit.classList.remove('visible');
@@ -1479,7 +1489,29 @@ document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
   if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
-    document.querySelectorAll('.sidebar__nav-item').forEach((item) => item.classList.remove('active'));
+    if (el.id === 'sidebar-profile-btn') {
+      clearAllSidebarActive();
+      el.classList.add('active');
+      showProfileModal();
+      // Auto-close sidebar on mobile
+      if (window.innerWidth <= 768) {
+        sidebar.classList.remove('open');
+        sidebarOverlay.classList.remove('visible');
+        updateMenuButtonVisibility();
+      }
+      return;
+    }
+    // Close profile view if open
+    const profileView = document.getElementById('profile-view');
+    if (profileView && profileView.style.display !== 'none') {
+      profileView.style.display = 'none';
+    }
+    // Home button: always reset to hero (hides split view, clears project state)
+    if (el.title === 'Home') {
+      resetToHero();
+      return;
+    }
+    clearAllSidebarActive();
     el.classList.add('active');
   });
 });
@@ -5096,17 +5128,43 @@ function runCommandPaletteIndex(index) {
   }
 }
 
-/** Home / Search / Profile only — skips All projects. */
+/** Clears ALL sidebar active states (nav items + project items), then optionally activates one. */
 function setSidebarPrimaryNavActive(activeEl) {
+  // Clear primary nav items
   document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
     if (item.id === 'all-projects-btn') return;
     item.classList.toggle('active', activeEl != null && item === activeEl);
+  });
+  // Also clear project list items when a primary nav item is activated
+  if (activeEl != null) {
+    document.querySelectorAll('.sidebar__project-item').forEach((item) => {
+      item.classList.remove('active');
+    });
+  }
+}
+
+/** Clears ALL sidebar active states so a project item can be the sole active element. */
+function clearAllSidebarActive() {
+  document.querySelectorAll('.sidebar__nav-item').forEach((item) => {
+    if (item.id === 'all-projects-btn') return;
+    item.classList.remove('active');
+  });
+  document.querySelectorAll('.sidebar__project-item').forEach((item) => {
+    item.classList.remove('active');
   });
 }
 
 /** Home highlighted only on landing; split/project view clears primary nav (project list shows selection). */
 function syncSidebarPrimaryNavToShellView() {
   if (!isCommandPaletteOpen()) {
+    // If profile view is open, keep Profile nav active regardless of hero state
+    const profileView = document.getElementById('profile-view');
+    if (profileView && profileView.style.display !== 'none') {
+      const profileNav = document.getElementById('sidebar-profile-btn');
+      if (profileNav) setSidebarPrimaryNavActive(profileNav);
+      updatePanelHeaderProject();
+      return;
+    }
     const onHero = mainHero && !mainHero.classList.contains('hidden');
     if (onHero) {
       const homeNav = document.querySelector('.sidebar__nav-item[title="Home"]');
@@ -5413,7 +5471,12 @@ function updateAuthUI() {
 
   if (isAuthenticated && currentUser) {
     if (userInfo) userInfo.style.display = 'flex';
-    if (userEmail) userEmail.textContent = currentUser.email || currentUser.name || 'User';
+    if (userEmail) {
+      userEmail.textContent = currentUser.email || currentUser.name || 'User';
+      userEmail.style.cursor = 'pointer';
+      userEmail.title = 'View profile';
+      userEmail.onclick = () => showProfileModal();
+    }
     if (logoutBtn) {
       logoutBtn.onclick = () => cognitoSignOut();
     }
@@ -5452,6 +5515,90 @@ function closeLoginModal() {
   overlay.setAttribute('aria-hidden', 'true');
   loginSuccessCallback = null;
 }
+
+function showProfileModal() {
+  const view = document.getElementById('profile-view');
+  if (!view) return;
+
+  const avatarEl = document.getElementById('profile-avatar');
+  const nameEl = document.getElementById('profile-name');
+  const emailEl = document.getElementById('profile-email');
+  const usedEl = document.getElementById('profile-stat-used');
+  const remainingEl = document.getElementById('profile-stat-remaining');
+  const projectsEl = document.getElementById('profile-stat-projects');
+  const signoutBtn = document.getElementById('profile-signout-btn');
+  const signinBtn = document.getElementById('profile-signin-btn');
+
+  const allProjects = loadProjects();
+  const projectCount = allProjects.length;
+
+  if (isAuthenticated && currentUser) {
+    const email = currentUser.email || '';
+    const displayName = currentUser.name || email.split('@')[0] || 'User';
+    const initial = displayName.charAt(0).toUpperCase();
+
+    if (avatarEl) avatarEl.textContent = initial;
+    if (nameEl) nameEl.textContent = displayName;
+    if (emailEl) emailEl.textContent = email;
+    // Use real API data if available, fall back to project count
+    const usedVal = (freeTierUsage.used != null && freeTierUsage.used > 0)
+      ? freeTierUsage.used
+      : projectCount;
+    const remainingVal = freeTierUsage.remaining === Infinity || freeTierUsage.remaining == null
+      ? '∞'
+      : freeTierUsage.remaining;
+    if (usedEl) usedEl.textContent = usedVal;
+    if (remainingEl) remainingEl.textContent = remainingVal;
+    if (projectsEl) projectsEl.textContent = projectCount;
+    if (signoutBtn) signoutBtn.style.display = 'inline-flex';
+    if (signinBtn) signinBtn.style.display = 'none';
+  } else {
+    if (avatarEl) avatarEl.textContent = '?';
+    if (nameEl) nameEl.textContent = 'Guest';
+    if (emailEl) emailEl.textContent = 'Not signed in';
+    // Use project count as conversions used; no limit when auth is off
+    if (usedEl) usedEl.textContent = projectCount;
+    if (remainingEl) remainingEl.textContent = authEnabled ? (freeTierUsage.remaining ?? '—') : '∞';
+    if (projectsEl) projectsEl.textContent = projectCount;
+    if (signoutBtn) signoutBtn.style.display = 'none';
+    if (signinBtn) signinBtn.style.display = authEnabled ? 'inline-flex' : 'none';
+  }
+
+  // Hide hero + split view, show profile view
+  if (mainHero) mainHero.classList.add('hidden');
+  if (mainSplit) mainSplit.classList.remove('visible');
+  mainHero?.closest('.main')?.classList.remove('split-visible');
+  view.style.display = 'flex';
+
+  // Ensure Profile nav stays active (sync may fire after DOM changes)
+  const profileNav = document.getElementById('sidebar-profile-btn');
+  if (profileNav) setSidebarPrimaryNavActive(profileNav);
+}
+
+function closeProfileModal() {
+  const view = document.getElementById('profile-view');
+  if (view) view.style.display = 'none';
+  // Return to hero
+  if (mainHero) mainHero.classList.remove('hidden');
+  // Sync nav back to Home
+  syncSidebarPrimaryNavToShellView();
+}
+
+function initProfileModal() {
+  document.getElementById('profile-back-home-btn')?.addEventListener('click', closeProfileModal);
+
+  document.getElementById('profile-signout-btn')?.addEventListener('click', () => {
+    closeProfileModal();
+    cognitoSignOut();
+  });
+
+  document.getElementById('profile-signin-btn')?.addEventListener('click', () => {
+    closeProfileModal();
+    showLoginModal(null);
+  });
+}
+
+
 
 function showContactNesterLabsModal() {
   const overlay = document.getElementById('contact-nesterlabs-overlay');
@@ -5730,6 +5877,7 @@ setInterval(() => {
 
 initLoginModal();
 initContactModal();
+initProfileModal();
 
 // ── Init ──
 loadSavedToken();

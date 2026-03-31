@@ -2,7 +2,7 @@ name: Deploy to Lightsail
 
 on:
   push:
-    branches: [main, working-preview, release/v1.0.0]
+    branches: [main, working-preview, release/v1.0.0, release/v1.1.0]
   workflow_dispatch: # Manual trigger from GitHub UI
 
 jobs:

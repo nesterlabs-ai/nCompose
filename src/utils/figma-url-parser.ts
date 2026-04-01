@@ -9,7 +9,33 @@ import type { FigmaUrlParts } from '../types/index.js';
  *   https://www.figma.com/design/XXXX/Title?node-id=123-456
  *   https://www.figma.com/design/XXXX/Title?node-id=123%3A456
  */
-export function parseFigmaUrl(url: string): FigmaUrlParts {
+export function parseFigmaUrl(rawInput: string): FigmaUrlParts {
+  // Extract the first URL from surrounding text (e.g. "Implement this design from Figma. @https://...")
+  const urlMatch = rawInput.match(/https?:\/\/[^\s]+/);
+  const url = urlMatch ? urlMatch[0] : rawInput.trim();
+
+  // Validate hostname to prevent SSRF (CWE-918)
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(
+      `Invalid Figma URL: "${url}"\n` +
+      'Expected format: https://www.figma.com/design/<fileKey>/...'
+    );
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Figma URL must use HTTPS protocol');
+  }
+
+  if (parsed.hostname !== 'www.figma.com' && parsed.hostname !== 'figma.com') {
+    throw new Error(
+      `Invalid Figma hostname: "${parsed.hostname}"\n` +
+      'URL must point to figma.com or www.figma.com'
+    );
+  }
+
   const fileMatch = url.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/);
   if (!fileMatch) {
     throw new Error(

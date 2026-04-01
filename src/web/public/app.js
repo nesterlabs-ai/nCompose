@@ -551,7 +551,7 @@ function showDuplicateDialog(project) {
   pendingDuplicateProject = project;
   const name = project.name || 'Untitled';
   const timeAgo = formatTimeAgo(project.updatedAt || project.createdAt);
-  duplicateMessage.innerHTML = `<strong>${name}</strong> was already converted <strong>${timeAgo}</strong>. Would you like to open the existing project or convert again?`;
+  duplicateMessage.innerHTML = `<strong>${escapeHtml(name)}</strong> was already converted <strong>${escapeHtml(timeAgo)}</strong>. Would you like to open the existing project or convert again?`;
   duplicateOverlay.setAttribute('aria-hidden', 'false');
 }
 
@@ -1350,7 +1350,7 @@ ${escapedCss}</style>
 <script>
 window.onerror = function(msg, src, line, col, err) {
   var el = document.getElementById('root');
-  if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + '</div>';
+  if (el) { el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3><p id="preview-err-msg"></p></div>'; document.getElementById('preview-err-msg').textContent = msg; }
 };
 try {
   var jsxCode = \`${escapedJSX}\`;
@@ -1360,7 +1360,7 @@ try {
   document.body.appendChild(script);
 } catch (e) {
   var el = document.getElementById('root');
-  if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
+  if (el) { el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3><p id="preview-err-msg"></p></div>'; document.getElementById('preview-err-msg').textContent = (e.message || String(e)); }
 }
 <\/script>
 ${visualEditScript}
@@ -1661,9 +1661,9 @@ function updateTypewriterVisibility() {
   }
 }
 
-heroFigmaUrlInput.addEventListener('focus', () => { updateTypewriterVisibility(); hideHeroChatResponse(); });
-heroFigmaUrlInput.addEventListener('blur', updateTypewriterVisibility);
-heroFigmaUrlInput.addEventListener('input', () => { updateTypewriterVisibility(); hideHeroChatResponse(); });
+heroFigmaUrlInput.addEventListener('focus', () => { console.log('[event] focus on hero input'); updateTypewriterVisibility(); hideHeroChatResponse(); });
+heroFigmaUrlInput.addEventListener('blur', () => { console.log('[event] blur on hero input'); updateTypewriterVisibility(); });
+heroFigmaUrlInput.addEventListener('input', () => { console.log('[event] input on hero input, value:', heroFigmaUrlInput.value.substring(0, 40)); updateTypewriterVisibility(); hideHeroChatResponse(); });
 updateTypewriterVisibility();
 if (!heroTypewriter.classList.contains('hidden')) runTypewriter();
 
@@ -1685,6 +1685,12 @@ function getSelectedFrameworks() {
 
 function isFigmaUrl(text) {
   return /figma\.com\/(design|file|proto)\//i.test(text);
+}
+
+/** Extract the actual Figma URL from text that may contain surrounding words (e.g. "Implement this design from Figma. @https://...") */
+function extractFigmaUrl(text) {
+  const match = text.match(/https?:\/\/[^\s]+figma\.com\/[^\s]+/i);
+  return match ? match[0].replace(/^@/, '') : text.trim();
 }
 
 // ── Hero Chat (LLM-powered assistant) ─────────────────────────────────────
@@ -1717,12 +1723,20 @@ function showHeroTypingIndicator() {
 }
 
 async function sendHeroChatMessage(text) {
+  console.log('[hero-chat] sendHeroChatMessage called, text:', text.substring(0, 80));
+  // Push user message BEFORE clearing input — prevents hideHeroChatResponse()
+  // from wiping the chat when the input's 'input' event fires
+  heroConversation.push({ role: 'user', content: text });
+  console.log('[hero-chat] heroConversation length:', heroConversation.length);
+
   appendHeroBubble('user', text);
+  console.log('[hero-chat] user bubble appended');
   heroFigmaUrlInput.value = '';
   autoResizeTextarea(heroFigmaUrlInput);
   updateTypewriterVisibility();
 
   const typingEl = showHeroTypingIndicator();
+  console.log('[hero-chat] typing indicator shown, starting fetch...');
 
   try {
     const res = await fetch('/api/hero-chat', {
@@ -1733,44 +1747,59 @@ async function sendHeroChatMessage(text) {
         history: heroConversation.slice(-10),
       }),
     });
+    console.log('[hero-chat] fetch complete, status:', res.status);
     const data = await res.json();
+    console.log('[hero-chat] response data:', JSON.stringify(data).substring(0, 200));
     const reply = data.reply || "Sorry, I couldn't process that. Try pasting a Figma URL!";
 
-    heroConversation.push({ role: 'user', content: text });
     heroConversation.push({ role: 'assistant', content: reply });
 
     if (typingEl) typingEl.remove();
     appendHeroBubble('assistant', reply);
-  } catch {
+    console.log('[hero-chat] assistant bubble appended, conversation length:', heroConversation.length);
+  } catch (err) {
+    console.error('[hero-chat] fetch error:', err);
     if (typingEl) typingEl.remove();
     appendHeroBubble('assistant', "Sorry, something went wrong. Try pasting a Figma design URL to get started!");
   }
 }
 
 function hideHeroChatResponse() {
+  console.log('[hero-chat] hideHeroChatResponse called, conversation length:', heroConversation.length, new Error().stack.split('\n')[2]?.trim());
   if (heroConversation.length > 0) return; // preserve ongoing chat
   const responseEl = document.getElementById('hero-chat-response');
-  if (responseEl) responseEl.style.display = 'none';
+  if (responseEl) {
+    console.log('[hero-chat] HIDING chat response container');
+    responseEl.style.display = 'none';
+  }
 }
 
 async function startConversion(skipDuplicateCheck) {
+  console.log('[startConversion] called, skipDuplicateCheck:', skipDuplicateCheck);
   // Ensure fingerprint + auth state are initialized before any auth checks
   await Promise.all([_fingerprintReady, _authReady]);
 
   const urlInput = getActiveUrlInput();
-  const figmaUrl = urlInput.value.trim();
+  const rawInput = urlInput.value.trim();
   const frameworks = getSelectedFrameworks();
+  console.log('[startConversion] rawInput:', rawInput.substring(0, 80), 'isFigmaUrl:', isFigmaUrl(rawInput));
 
-  if (!figmaUrl) {
+  if (!rawInput) {
+    console.log('[startConversion] empty input, focusing');
     urlInput.focus();
     return;
   }
 
   // If input is not a Figma URL, send to LLM chat assistant
-  if (!isFigmaUrl(figmaUrl)) {
-    sendHeroChatMessage(figmaUrl);
+  if (!isFigmaUrl(rawInput)) {
+    console.log('[startConversion] not a Figma URL, routing to hero chat');
+    sendHeroChatMessage(rawInput);
     return;
   }
+
+  // Extract the actual Figma URL from surrounding text
+  const figmaUrl = extractFigmaUrl(rawInput);
+  urlInput.value = figmaUrl;
 
   // Hide chat response if visible (user now pasting a real URL)
   hideHeroChatResponse();

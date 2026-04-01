@@ -4,6 +4,9 @@ dist/
 .credentials
 .cache/
 
+# Server logs
+logs/
+
 # Generated output
 output/
 web_output/

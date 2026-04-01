@@ -596,7 +596,7 @@ window.__REACT_ROOT__.render(React.createElement(App));`
 
     window.onerror = function(msg, src, line, col, err) {
       var el = document.getElementById('root');
-      if (el) el.innerHTML = '<div class="preview-error"><h3>Preview Error</h3>' + msg + (line ? ' (line ' + line + ')' : '') + '</div>';
+      if (el) { el.textContent = ''; var d = document.createElement('div'); d.className = 'preview-error'; var h = document.createElement('h3'); h.textContent = 'Preview Error'; d.appendChild(h); d.appendChild(document.createTextNode(msg + (line ? ' (line ' + line + ')' : ''))); el.appendChild(d); }
     };
     try {
       var jsxCode = \`${escapedJSX}\`;
@@ -695,7 +695,7 @@ window.__REACT_ROOT__.render(React.createElement(App));`
       document.body.appendChild(script);
     } catch (e) {
       var el = document.getElementById('root');
-      if (el) el.innerHTML = '<div class="preview-error"><h3>Babel Transpile Error</h3>' + (e.message || e) + '</div>';
+      if (el) { el.textContent = ''; var d = document.createElement('div'); d.className = 'preview-error'; var h = document.createElement('h3'); h.textContent = 'Babel Transpile Error'; d.appendChild(h); d.appendChild(document.createTextNode(e.message || e)); el.appendChild(d); }
       console.error('Babel transpile error:', e);
     }
   </script>

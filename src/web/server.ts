@@ -21,7 +21,7 @@ import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
 import rateLimit from 'express-rate-limit';
-import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
+import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, verifySignedFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
 import { isDynamoEnabled, saveUserProject } from './db/index.js';
 import { getOAuthUrl, exchangeCode, getUser, getRepos, createRepo, pushFiles } from './github.js';
@@ -261,8 +261,9 @@ function requireSessionOwner(req: any, res: any, next: any): void {
     if (!entry.ownerSub && !entry.ownerFingerprint) { next(); return; }
   }
 
-  // Guest user: match by fingerprint
-  const fp = req.headers['x-fingerprint'] || req.cookies?.[FINGERPRINT_COOKIE];
+  // Guest user: match by HMAC-verified fingerprint cookie (not the spoofable x-fingerprint header)
+  const rawCookie = req.cookies?.[FINGERPRINT_COOKIE];
+  const fp = rawCookie ? verifySignedFingerprint(rawCookie) : null;
   if (fp && entry.ownerFingerprint && entry.ownerFingerprint === fp) { next(); return; }
 
   // Legacy session with no owner — allow (backward compat)
@@ -511,6 +512,10 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
     return;
   }
 
+  // Capture fingerprint BEFORE SSE headers are sent — getFingerprint() may set a
+  // cookie, which is impossible after res.write() starts the streaming response.
+  const earlyFingerprint = (req as any)._fingerprint || getFingerprint(req, res);
+
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -585,7 +590,7 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
 
         // Store result in session (with owner binding)
         const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
-        const ownerFp = (req as any)._fingerprint || getFingerprint(req, res);
+        const ownerFp = earlyFingerprint;
         const ownerSub = req.user?.sub;
         setSession(sessionId, result, llmName, selectedFrameworks, ownerFp, ownerSub);
 

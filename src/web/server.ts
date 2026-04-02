@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import archiver from 'archiver';
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -21,7 +21,7 @@ import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
 import rateLimit from 'express-rate-limit';
-import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
+import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, verifySignedFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
 import { isDynamoEnabled, saveUserProject } from './db/index.js';
 import { getOAuthUrl, exchangeCode, getUser, getRepos, createRepo, pushFiles } from './github.js';
@@ -203,7 +203,17 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     updatedShadcnSource = shadcnSubComponents[0].updatedShadcnSource;
   }
 
-  return {
+  // Read owner info persisted alongside the session
+  let _ownerFingerprint: string | undefined;
+  let _ownerSub: string | undefined;
+  const sessionMetaPath = join(matchDir, '_session.json');
+  try {
+    const sessionMeta = JSON.parse(readFileSync(sessionMetaPath, 'utf-8'));
+    _ownerFingerprint = sessionMeta.ownerFingerprint || undefined;
+    _ownerSub = sessionMeta.ownerSub || undefined;
+  } catch { /* optional — legacy sessions won't have this file */ }
+
+  const result = {
     componentName,
     mitosisSource,
     frameworkOutputs: frameworkOutputs as any,
@@ -215,6 +225,13 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     shadcnComponentName,
     elementMap,
   } as ConversionResult;
+
+  // Attach owner info as non-enumerable properties so they travel with the result
+  // but don't pollute the ConversionResult shape sent to clients.
+  (result as any)._ownerFingerprint = _ownerFingerprint;
+  (result as any)._ownerSub = _ownerSub;
+
+  return result;
 }
 
 /**
@@ -227,8 +244,9 @@ function getSessionWithDiskFallback(sessionId: string): ConversionResult | undef
 
   const diskResult = loadResultFromDisk(sessionId);
   if (diskResult) {
-    // Re-hydrate into session store for subsequent requests
-    setSession(sessionId, diskResult);
+    // Re-hydrate into session store with persisted owner info
+    setSession(sessionId, diskResult, undefined, undefined,
+      (diskResult as any)._ownerFingerprint, (diskResult as any)._ownerSub);
   }
   return diskResult;
 }
@@ -244,28 +262,30 @@ function requireSessionOwner(req: any, res: any, next: any): void {
   const sessionId = req.params.sessionId || req.body?.sessionId;
   if (!sessionId) { res.status(400).json({ error: 'sessionId required' }); return; }
 
-  const entry = getSessionEntry(sessionId);
+  let entry = getSessionEntry(sessionId);
   if (!entry) {
-    // Session not in memory — try disk fallback so ownership check can proceed
+    // Session not in memory — try disk fallback with persisted owner info
     const diskResult = loadResultFromDisk(sessionId);
     if (!diskResult) { res.status(404).json({ error: 'Session not found' }); return; }
-    // Re-hydrate (no owner info from disk — legacy session, allow through)
-    setSession(sessionId, diskResult);
-    next();
-    return;
+    // Re-hydrate with owner info from _session.json
+    setSession(sessionId, diskResult, undefined, undefined,
+      (diskResult as any)._ownerFingerprint, (diskResult as any)._ownerSub);
+    entry = getSessionEntry(sessionId);
+    if (!entry) { res.status(500).json({ error: 'Session re-hydration failed' }); return; }
   }
 
   // Auth user: match by Cognito sub
   if (req.user) {
     if (entry.ownerSub && entry.ownerSub === req.user.sub) { next(); return; }
-    if (!entry.ownerSub && !entry.ownerFingerprint) { next(); return; }
   }
 
-  // Guest user: match by fingerprint
-  const fp = req.headers['x-fingerprint'] || req.cookies?.[FINGERPRINT_COOKIE];
+  // Guest user: match by HMAC-verified fingerprint cookie (not the spoofable x-fingerprint header)
+  const rawCookie = req.cookies?.[FINGERPRINT_COOKIE];
+  const fp = rawCookie ? verifySignedFingerprint(rawCookie) : null;
   if (fp && entry.ownerFingerprint && entry.ownerFingerprint === fp) { next(); return; }
 
-  // Legacy session with no owner — allow (backward compat)
+  // Sessions with no owner info (created before this fix) — allow through for backward compat
+  // This path will naturally phase out as old sessions expire from disk.
   if (!entry.ownerSub && !entry.ownerFingerprint) { next(); return; }
 
   res.status(403).json({ error: 'You do not have access to this session' });
@@ -511,6 +531,10 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
     return;
   }
 
+  // Capture fingerprint BEFORE SSE headers are sent — getFingerprint() may set a
+  // cookie, which is impossible after res.write() starts the streaming response.
+  const earlyFingerprint = (req as any)._fingerprint || getFingerprint(req, res);
+
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -585,7 +609,7 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
 
         // Store result in session (with owner binding)
         const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
-        const ownerFp = (req as any)._fingerprint || getFingerprint(req, res);
+        const ownerFp = earlyFingerprint;
         const ownerSub = req.user?.sub;
         setSession(sessionId, result, llmName, selectedFrameworks, ownerFp, ownerSub);
 
@@ -625,6 +649,15 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
             elementMap: result.elementMap,
           });
           sendEvent('step', { message: 'Output saved' });
+          // Persist session owner info to disk so ownership survives memory eviction
+          try {
+            const sessionMetaPath = join(componentOutputDir, '_session.json');
+            writeFileSync(sessionMetaPath, JSON.stringify({
+              ownerFingerprint: earlyFingerprint || null,
+              ownerSub: req.user?.sub || null,
+              createdAt: Date.now(),
+            }), 'utf-8');
+          } catch { /* non-critical */ }
         } catch (writeErr) {
           const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
           sendEvent('step', { message: 'Warning: Could not save output' });

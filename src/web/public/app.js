@@ -494,6 +494,13 @@ function deleteProject(id) {
   const wasActive = currentProjectId === id;
   const projects = loadProjects().filter(p => p.id !== id);
   saveProjects(projects);
+  // Cancel any pending debounced sync that might re-create this project in DynamoDB
+  clearTimeout(_syncDebounceTimer);
+  // Also delete from DynamoDB for authenticated users
+  if (isAuthenticated && authIdToken) {
+    apiFetch(`/api/auth/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      .catch(e => console.warn('[delete] Failed to delete from server:', e));
+  }
   if (wasActive) {
     resetToHero();
   } else {

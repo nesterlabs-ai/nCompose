@@ -8,6 +8,11 @@
 
 import { collectFontFamilies, buildGoogleFontsLink } from '../compile/font-resolver.js';
 
+/** Escape HTML special characters to prevent XSS in raw HTML templates. */
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 /**
  * Transform Mitosis-compiled React JSX into browser-runnable code.
  *
@@ -562,7 +567,7 @@ window.__REACT_ROOT__.render(React.createElement(App));`
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Preview: ${componentName}</title>
+  <title>Preview: ${escapeHtml(componentName)}</title>
   ${fontLink}
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }

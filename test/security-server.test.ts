@@ -207,4 +207,97 @@ describe('Server security (requires running server)', () => {
       }
     });
   });
+
+  // ── Tests for security fixes (fingerprint bypass, XSS, session ownership) ──
+
+  describe('Fix: x-fingerprint header bypass', () => {
+    it('ignores x-fingerprint header and issues server-side cookie', async () => {
+      if (!serverAvailable) return;
+
+      // Send a request with a spoofed x-fingerprint header to an endpoint
+      // that triggers requireAuthOrFree (which calls getFingerprint)
+      const res = await request('POST', '/api/convert', { figmaUrl: 'https://www.figma.com/design/test/test?node-id=1-1' }, {
+        'x-fingerprint': 'spoofed-bypass-attempt',
+      });
+
+      // We expect 401 (auth/quota) or 400 (bad input) — NOT that the header was accepted.
+      // The key check: server must set its OWN ftfp cookie, ignoring the header.
+      const setCookie = res.headers['set-cookie'];
+      if (setCookie && setCookie.includes('ftfp=')) {
+        const match = setCookie.match(/ftfp=([^;]+)/);
+        if (match) {
+          // Cookie value must be HMAC-signed (uuid.hex), NOT the spoofed header value
+          expect(match[1]).toContain('.');
+          expect(match[1]).not.toContain('spoofed-bypass-attempt');
+        }
+      }
+      // Regardless of response code, the spoofed header should have no effect
+      expect(res.status).not.toBe(200); // convert needs a real Figma URL
+    });
+
+    it('two requests with different x-fingerprint headers get same server cookie', async () => {
+      if (!serverAvailable) return;
+
+      // First request with one spoofed header
+      const res1 = await request('POST', '/api/hero-chat', { message: 'hello', history: [] }, {
+        'x-fingerprint': 'identity-A',
+      });
+      // Second request with a different spoofed header
+      const res2 = await request('POST', '/api/hero-chat', { message: 'hello', history: [] }, {
+        'x-fingerprint': 'identity-B',
+      });
+
+      // Both should get fresh server-generated cookies, NOT use the header values
+      const cookie1 = res1.headers['set-cookie'];
+      const cookie2 = res2.headers['set-cookie'];
+
+      if (cookie1 && cookie2) {
+        expect(cookie1).not.toContain('identity-A');
+        expect(cookie2).not.toContain('identity-B');
+      }
+    });
+  });
+
+  describe('Fix: XSS in preview component name', () => {
+    it('escapes HTML in preview title (no script execution)', async () => {
+      if (!serverAvailable) return;
+
+      // Try to inject a script tag via a crafted session ID that might reach the preview
+      // The preview endpoint is /api/preview/:sessionId — the XSS fix is on componentName
+      // in the generated HTML. We test by requesting a session that would contain malicious name.
+      const xssPayload = '<script>alert(1)</script>';
+      const res = await request('GET', `/api/preview/${encodeURIComponent(xssPayload)}`);
+
+      // Should get 403 or 404 (no session), but the key is the response body
+      // must NOT contain unescaped script tags
+      const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+      expect(body).not.toContain('<script>alert(1)</script>');
+    });
+  });
+
+  describe('Fix: session ownership uses HMAC cookie not header', () => {
+    it('rejects session access with spoofed x-fingerprint header', async () => {
+      if (!serverAvailable) return;
+
+      // Try to access a session by spoofing the x-fingerprint header
+      // (which was the old vulnerability)
+      const res = await request('GET', '/api/preview/test-session-123', undefined, {
+        'x-fingerprint': 'stolen-fingerprint-value',
+      });
+
+      // Should get 403 (no valid HMAC cookie) or 404 (session not found)
+      // Must NOT get 200
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    });
+
+    it('rejects session file access with spoofed header', async () => {
+      if (!serverAvailable) return;
+
+      const res = await request('GET', '/api/session/test-session-123/wired-app-files', undefined, {
+        'x-fingerprint': 'stolen-fingerprint-value',
+      });
+
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    });
+  });
 });

@@ -39,17 +39,29 @@
   --orange: #f97316;
   --input-bg: #27272a;
   --input-border: hsla(0, 0%, 100%, 0.1);
-  --hero-prompt-bg: #f5f3ef;
-  --hero-prompt-text: #1f2937;
-  --hero-prompt-muted: #4b5563;
-  --hero-prompt-placeholder: #9ca3af;
-  --hero-prompt-add-bg: rgba(0, 0, 0, 0.06);
-  --hero-prompt-add-hover: rgba(0, 0, 0, 0.1);
-  --hero-prompt-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.08);
-  --hero-prompt-focus-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 2px rgba(0, 0, 0, 0.16);
-  --hero-prompt-border: rgba(255, 255, 255, 0.9);
+  /* Hero prompt — Lovable dark: charcoal card on mesh gradient (see .hero__gradient) */
+  --hero-prompt-bg: #1a1a1a;
+  --hero-prompt-text: #fafafa;
+  --hero-prompt-muted: #a1a1aa;
+  /* Readable on charcoal (#1a1a1a); avoid 71717a — too low contrast */
+  --hero-prompt-placeholder: #a1a1aa;
+  --hero-prompt-add-bg: rgba(255, 255, 255, 0.08);
+  --hero-prompt-add-hover: rgba(255, 255, 255, 0.14);
+  --hero-prompt-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.45),
+    0 12px 28px -8px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+  --hero-prompt-focus-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.5),
+    0 14px 32px -8px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 48px rgba(239, 49, 57, 0.12);
+  --hero-prompt-border: rgba(255, 255, 255, 0.12);
+  --hero-prompt-radius: 32px;
   --chip-hover-bg: #3f3f46;
-  --send-btn-bg: #374151;
+  /* Light circle, dark arrow (Lovable-style send) */
+  --send-btn-bg: #d4d4d8;
+  --send-btn-icon: #27272a;
   --code-block-bg: #0a0a0a;
   --code-block-header-bg: hsla(0, 0%, 100%, 0.02);
   --editor-tabs-bg: hsla(0, 0%, 100%, 0.02);
@@ -65,6 +77,9 @@
   --tooltip-bg: #1e1e20;
   --tooltip-border: rgba(255, 255, 255, 0.1);
   --tooltip-accent-tint: rgba(239, 49, 57, 0.14);
+  /* Modals must be opaque — --surface is translucent in dark theme */
+  --modal-surface: #161618;
+  --modal-overlay-scrim: rgba(0, 0, 0, 0.78);
 }
 
 /* ── Light theme ── */
@@ -88,8 +103,10 @@
   --hero-prompt-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.06);
   --hero-prompt-focus-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 10px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 2px rgba(239, 49, 57, 0.25);
   --hero-prompt-border: #e4e4e7;
+  --hero-prompt-radius: 28px;
   --chip-hover-bg: #e4e4e7;
   --send-btn-bg: #27272a;
+  --send-btn-icon: #ffffff;
   --code-block-bg: #ffffff;
   --code-block-header-bg: #f4f4f5;
   --editor-tabs-bg: #f4f4f5;
@@ -97,6 +114,8 @@
   --tooltip-bg: #ffffff;
   --tooltip-border: rgba(0, 0, 0, 0.12);
   --tooltip-accent-tint: rgba(239, 49, 57, 0.09);
+  --modal-surface: #ffffff;
+  --modal-overlay-scrim: rgba(0, 0, 0, 0.5);
 }
 
 [data-theme="light"] .sidebar {
@@ -151,6 +170,7 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   background: var(--surface);
   border-right: 1px solid var(--border);
   transition: width 0.3s ease, transform 0.3s ease;
@@ -251,6 +271,21 @@ body {
   width: 100%;
 }
 
+.sidebar__brand-link {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--radius-sm);
+}
+
+.sidebar__brand-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .sidebar__logo {
   height: 22px;
   width: auto;
@@ -332,9 +367,24 @@ body {
 
 .sidebar__content {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 16px 14px;
   transition: padding 0.25s ease;
+}
+
+/* Fixed header area: nav through “All projects” — does not scroll */
+.sidebar__top-block {
+  flex-shrink: 0;
+  width: 100%;
+}
+
+/* Scrolls only here: project rows + new-project button (fills space between top and config) */
+.sidebar__bottom-block {
+  flex-shrink: 0;
+  width: 100%;
 }
 
 /* Primary nav (Home, Search) */
@@ -380,6 +430,26 @@ body {
   color: var(--text);
 }
 
+/* Help / product tour — same hit target as nav, slightly de-emphasized */
+.sidebar__nav-item--tour {
+  color: var(--text-secondary);
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.sidebar__nav-item--tour:hover {
+  color: var(--text);
+}
+
+.sidebar__nav-item--tour svg {
+  color: var(--text-muted);
+}
+
+.sidebar__nav-item--tour:hover svg {
+  color: var(--accent);
+}
+
 /* Section label (Projects) */
 .sidebar__section-label {
   font-size: 11px;
@@ -397,8 +467,10 @@ body {
 
 /* ── Project List ── */
 .sidebar__project-list {
-  max-height: 320px;
+  flex: 1 1 auto;
+  min-height: 48px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: var(--border-light) transparent;
@@ -532,6 +604,10 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-self: stretch;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .sidebar.collapsed .sidebar__project-item {
@@ -591,6 +667,14 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.sidebar.collapsed .sidebar__top-block,
+.sidebar.collapsed .sidebar__bottom-block {
+  width: 100%;
+  align-self: stretch;
 }
 
 .sidebar__section {
@@ -972,6 +1056,18 @@ body {
   position: absolute;
   inset: 0;
   z-index: 0;
+  pointer-events: none;
+}
+
+/* Lovable-style soft mesh — dark theme only */
+html:not([data-theme="light"]) .hero__gradient {
+  background:
+    radial-gradient(ellipse 90% 72% at 10% 44%, rgba(236, 72, 153, 0.42), transparent 56%),
+    radial-gradient(ellipse 88% 68% at 94% 36%, rgba(219, 39, 119, 0.38), transparent 54%),
+    radial-gradient(ellipse 78% 58% at 52% 90%, rgba(99, 102, 241, 0.2), transparent 60%),
+    radial-gradient(ellipse 115% 100% at 50% 48%, rgba(30, 58, 138, 0.5), transparent 65%),
+    radial-gradient(ellipse 58% 48% at 80% 16%, rgba(168, 85, 247, 0.22), transparent 52%),
+    #000000;
 }
 
 .hero__content {
@@ -1030,7 +1126,7 @@ body {
   padding: 12px;
   background: var(--hero-prompt-bg);
   border: 1px solid var(--hero-prompt-border);
-  border-radius: 28px;
+  border-radius: var(--hero-prompt-radius, 28px);
   box-shadow: var(--hero-prompt-shadow);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -1092,7 +1188,8 @@ body {
   left: 0;
   top: 6px;
   right: 0;
-  color: var(--hero-prompt-placeholder);
+  /* Match secondary text, not placeholder grey — readable on dark prompt bg */
+  color: var(--hero-prompt-muted);
   font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
@@ -1125,6 +1222,8 @@ body {
   border: none;
   background: transparent;
   color: var(--hero-prompt-text);
+  -webkit-text-fill-color: var(--hero-prompt-text);
+  caret-color: var(--hero-prompt-text);
   font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
@@ -1135,6 +1234,15 @@ body {
 
 .hero__prompt-input::placeholder {
   color: var(--hero-prompt-placeholder);
+  opacity: 1;
+}
+
+html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill,
+html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill:hover,
+html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--hero-prompt-text);
+  transition: background-color 99999s ease-out;
+  box-shadow: 0 0 0 1000px var(--hero-prompt-bg) inset;
 }
 
 .hero__prompt-footer {
@@ -1350,7 +1458,7 @@ body {
   justify-content: center;
   background: var(--send-btn-bg);
   border: none;
-  color: #fff;
+  color: var(--send-btn-icon, #fff);
   cursor: pointer;
   border-radius: 50%;
   transition: background 0.2s ease, color 0.2s ease;
@@ -1368,6 +1476,11 @@ body {
 
 .hero__prompt-send svg {
   stroke-width: 2.5;
+}
+
+html:not([data-theme="light"]) .hero__prompt-send .spinner {
+  border-color: rgba(39, 39, 42, 0.22);
+  border-top-color: #27272a;
 }
 
 /* ── Panels ── */
@@ -2635,11 +2748,13 @@ body {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
   z-index: 200;
   align-items: center;
   justify-content: center;
   padding: 20px;
+  background: var(--modal-overlay-scrim, rgba(0, 0, 0, 0.6));
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
 .modal-overlay.visible {
@@ -2835,7 +2950,9 @@ body {
 }
 
 .modal-dialog {
-  background: var(--surface);
+  position: relative;
+  z-index: 1;
+  background: var(--modal-surface, var(--surface));
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   max-width: 480px;
@@ -2844,11 +2961,10 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.55);
 }
 
 [data-theme="light"] .modal-dialog {
-  background: var(--surface);
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
 }
 
@@ -3578,7 +3694,7 @@ body {
   min-width: 0;
   background: var(--hero-prompt-bg);
   border: 1px solid var(--hero-prompt-border);
-  border-radius: 28px;
+  border-radius: var(--hero-prompt-radius, 28px);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
@@ -3588,6 +3704,8 @@ body {
 
 .chat-composer__body {
   min-width: 0;
+  /* Do not grow in the column flex layout; height comes only from the textarea content */
+  flex: 0 0 auto;
 }
 
 .chat-composer__textarea {
@@ -4390,46 +4508,6 @@ body {
   margin: 4px 0;
 }
 
-/* ── Sidebar user info ─────────────────────────────────────────────── */
-.sidebar__user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  margin: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.sidebar__user-badge {
-  flex: 1;
-  font-size: 12px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar__logout-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  white-space: nowrap;
-}
-
-.sidebar__logout-btn:hover {
-  color: var(--error);
-  background: var(--surface-hover);
-}
-
-.sidebar.collapsed .sidebar__user-info {
-  display: none !important; /* JS sets inline style="display:flex"; !important overrides it */
-}
-
 /* ── Free tier badge ───────────────────────────────────────────────── */
 .free-tier-badge {
   display: inline-flex;
@@ -4726,6 +4804,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   text-align: center;
+  white-space: nowrap;
 }
 
 .profile-actions {
@@ -4781,26 +4860,6 @@ body {
   color: var(--text-secondary);
   margin: 0;
   line-height: 1.5;
-}
-
-/* ── Profile Tour Button ───────────────────────────────────────────── */
-.profile-tour-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 8px 0 0;
-  margin: 0 auto;
-  transition: color 0.2s ease;
-}
-
-.profile-tour-btn:hover {
-  color: var(--text-secondary);
 }
 
 /* ── Onboarding Tour ───────────────────────────────────────────────── */

@@ -1486,7 +1486,7 @@ updateSidebarToggleTitle();
 
 // Sidebar nav item selection (Search opens command palette; All projects has its own handler)
 document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
-  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn') return;
+  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn' || el.id === 'sidebar-tour-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
     if (el.id === 'sidebar-profile-btn') {
@@ -3084,13 +3084,21 @@ const chatMicBtn = document.getElementById('chat-mic-btn');
 let chatRefining = false;
 
 const CHAT_TEXTAREA_MAX_PX = 220;
+/** One line + padding floor when empty (browsers differ on scrollHeight after collapse) */
+const CHAT_TEXTAREA_MIN_PX = 34;
 /** Matches `placeholder` on #chat-input */
 const CHAT_INPUT_PLACEHOLDER = 'Ask Nester…';
 
 function resizeChatInput() {
   if (!chatInput) return;
-  chatInput.style.height = 'auto';
-  chatInput.style.height = Math.min(chatInput.scrollHeight, CHAT_TEXTAREA_MAX_PX) + 'px';
+  // Must collapse before reading scrollHeight: `height:auto` then scrollHeight often stays at the
+  // previous tall box size, so an empty field keeps a multi-line height. Collapse first, then grow.
+  chatInput.style.height = '0px';
+  const next = Math.min(
+    Math.max(chatInput.scrollHeight, CHAT_TEXTAREA_MIN_PX),
+    CHAT_TEXTAREA_MAX_PX,
+  );
+  chatInput.style.height = `${next}px`;
 }
 
 function initChat() {
@@ -5498,31 +5506,14 @@ async function updateFreeTierDisplay() {
 }
 
 function updateAuthUI() {
-  const userInfo = document.getElementById('sidebar-user-info');
-  const userEmail = document.getElementById('sidebar-user-email');
-  const logoutBtn = document.getElementById('sidebar-logout-btn');
-
   if (!authEnabled) {
-    if (userInfo) userInfo.style.display = 'none';
     return;
   }
 
   if (isAuthenticated && currentUser) {
-    if (userInfo) userInfo.style.display = 'flex';
-    if (userEmail) {
-      userEmail.textContent = currentUser.email || currentUser.name || 'User';
-      userEmail.style.cursor = 'pointer';
-      userEmail.title = 'View profile';
-      userEmail.onclick = () => showProfileModal();
-    }
-    if (logoutBtn) {
-      logoutBtn.onclick = () => cognitoSignOut();
-    }
-    // Hide free tier badge for authenticated users
+    // Hide free tier badge for authenticated users (email / sign out live in Profile)
     const badge = document.getElementById('free-tier-badge');
     if (badge) badge.style.display = 'none';
-  } else {
-    if (userInfo) userInfo.style.display = 'none';
   }
 }
 
@@ -6436,11 +6427,12 @@ if (!isOnboardingDone()) {
   setTimeout(startOnboarding, 700);
 }
 
-// Profile page "Take the tour" button
-document.getElementById('profile-tour-btn')?.addEventListener('click', () => {
+function launchProductTour() {
   closeProfileModal();
   setTimeout(startOnboarding, 300);
-});
+}
+
+document.getElementById('sidebar-tour-btn')?.addEventListener('click', launchProductTour);
 
 // ── Visual Edit ──
 

@@ -151,14 +151,17 @@ describe('HMAC fingerprint cookies', () => {
     expect(res._cookies[FINGERPRINT_COOKIE].value).toContain('.');
   });
 
-  it('prefers x-fingerprint header over cookie', () => {
+  it('ignores x-fingerprint header (client-controlled, not trusted)', () => {
     const req = mockReq({ headers: { 'x-fingerprint': 'client-fp-123' } });
     const res = mockRes();
     const fp = getFingerprint(req, res);
 
-    expect(fp).toBe('client-fp-123');
-    // No cookie set when header is used
-    expect(res._cookies[FINGERPRINT_COOKIE]).toBeUndefined();
+    // Should NOT use the header value — generates a fresh server-side fingerprint
+    expect(fp).not.toBe('client-fp-123');
+    expect(fp).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    // Should set a signed cookie instead
+    expect(res._cookies[FINGERPRINT_COOKIE]).toBeDefined();
+    expect(res._cookies[FINGERPRINT_COOKIE].value).toContain('.');
   });
 
   it('sets secure flag on HTTPS', () => {
@@ -228,13 +231,18 @@ describe('requireAuthOrFree — multi-signal', () => {
   });
 
   it('blocks when fingerprint quota exhausted', async () => {
-    const fp = `exhaust-fp-${Date.now()}`;
+    // Generate a signed cookie via getFingerprint, then exhaust that fingerprint's quota
+    const setupReq = mockReq({ ip: `fresh-ip-setup-${Date.now()}` });
+    const setupRes = mockRes();
+    const fp = getFingerprint(setupReq, setupRes);
+    const signedCookie = setupRes._cookies[FINGERPRINT_COOKIE].value;
+
     // Exhaust fingerprint quota (default 10)
     for (let i = 0; i < 10; i++) await incrementFreeTierUsage(fp);
 
     const req = mockReq({
       ip: `fresh-ip-${Date.now()}`,
-      headers: { 'x-fingerprint': fp },
+      cookies: { [FINGERPRINT_COOKIE]: signedCookie },
     });
     const res = mockRes();
     let nextCalled = false;

@@ -50,7 +50,7 @@ function signFingerprint(fp: string): string {
   return `${fp}.${hmac}`;
 }
 
-function verifySignedFingerprint(signed: string): string | null {
+export function verifySignedFingerprint(signed: string): string | null {
   const dotIdx = signed.lastIndexOf('.');
   if (dotIdx === -1) return null;
   const fp = signed.slice(0, dotIdx);
@@ -75,13 +75,9 @@ function setFingerprintCookie(res: any, req: any, signedValue: string): void {
 }
 
 export function getFingerprint(req: any, res: any): string {
-  // Primary: client-side FingerprintJS visitor ID sent via header (not HMAC'd — client-controlled)
-  const headerFp = req.headers['x-fingerprint'];
-  if (headerFp && typeof headerFp === 'string') {
-    return headerFp;
-  }
-
-  // Fallback: server-generated HMAC-signed cookie
+  // Always use server-generated HMAC-signed cookie as the authoritative fingerprint.
+  // The x-fingerprint header (FingerprintJS) is intentionally ignored for quota enforcement
+  // because it's client-controlled and trivially spoofable.
   const cookies = req.cookies || {};
   const raw = cookies[FINGERPRINT_COOKIE];
 

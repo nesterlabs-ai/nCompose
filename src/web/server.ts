@@ -66,6 +66,10 @@ const sessionStore = new Map<string, SessionEntry>();
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const tokenStore = new Map<string, { token: string; createdAt: number }>();
 
+// In-memory OAuth state storage with TTL (10 minutes)
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const oauthStateStore = new Map<string, number>();
+
 function getSession(id: string): ConversionResult | undefined {
   const entry = sessionStore.get(id);
   if (!entry) return undefined;
@@ -373,11 +377,70 @@ setInterval(() => {
       tokenStore.delete(id);
     }
   }
+  for (const [s, createdAt] of oauthStateStore) {
+    if (now - createdAt > OAUTH_STATE_TTL_MS) {
+      oauthStateStore.delete(s);
+    }
+  }
 }, 10 * 60 * 1000);
 
 // Middleware
 app.use(express.json({ limit: config.server.jsonLimit }));
 app.use(cookieParser());
+
+// ── CORS ─────────────────────────────────────────────────────────────────
+app.use((req: any, res: any, next: any) => {
+  const origin = req.headers.origin as string | undefined;
+  const isDev = process.env.NODE_ENV !== 'production';
+  const allowedOrigin =
+    origin === 'https://compose.nesterlabs.com' ? origin
+    : isDev && origin && new URL(origin).hostname === 'localhost' ? origin
+    : undefined;
+
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Fingerprint, X-GitHub-Token');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+
+// ── CSRF protection ─────────────────────────────────────────────────────
+app.use((req: any, res: any, next: any) => {
+  if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    next();
+    return;
+  }
+  const originHeader = req.headers.origin as string | undefined;
+  const refererHeader = req.headers.referer as string | undefined;
+  // Allow requests with neither header (same-origin browsers, curl, API tools)
+  if (!originHeader && !refererHeader) {
+    next();
+    return;
+  }
+  const isDev = process.env.NODE_ENV !== 'production';
+  const source = originHeader || refererHeader!;
+  let hostname: string;
+  try {
+    hostname = new URL(source).hostname;
+  } catch {
+    log.warn('csrf', `Blocked request with malformed origin/referer: ${source}`);
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  if (hostname === 'compose.nesterlabs.com' || (isDev && hostname === 'localhost')) {
+    next();
+    return;
+  }
+  log.warn('csrf', `Blocked cross-origin ${req.method} ${req.originalUrl} from ${source}`);
+  res.status(403).json({ error: 'Forbidden' });
+});
 
 // ── Security headers ────────────────────────────────────────────────────
 app.use((_req: any, res: any, next: any) => {
@@ -1583,7 +1646,7 @@ app.get('/api/config', (_req: any, res: any) => {
 /**
  * GET /api/github/oauth-url — Returns GitHub OAuth authorization URL
  */
-app.get('/api/github/oauth-url', (req: any, res: any) => {
+app.get('/api/github/oauth-url', requireAuthOrFree as any, (req: any, res: any) => {
   try {
     const redirectUri = req.query.redirect_uri as string;
     if (!redirectUri) {
@@ -1591,6 +1654,7 @@ app.get('/api/github/oauth-url', (req: any, res: any) => {
       return;
     }
     const result = getOAuthUrl(redirectUri);
+    oauthStateStore.set(result.state, Date.now());
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1601,13 +1665,18 @@ app.get('/api/github/oauth-url', (req: any, res: any) => {
 /**
  * POST /api/github/exchange-code — Exchanges OAuth code for access token
  */
-app.post('/api/github/exchange-code', async (req: any, res: any) => {
+app.post('/api/github/exchange-code', requireAuthOrFree as any, async (req: any, res: any) => {
   try {
-    const { code, redirectUri } = req.body;
+    const { code, redirectUri, state } = req.body;
     if (!code || !redirectUri) {
       res.status(400).json({ error: 'code and redirectUri are required' });
       return;
     }
+    if (!state || !oauthStateStore.has(state)) {
+      res.status(403).json({ error: 'Invalid or expired OAuth state' });
+      return;
+    }
+    oauthStateStore.delete(state);
     const result = await exchangeCode(code, redirectUri);
     res.json(result);
   } catch (err) {
@@ -1620,7 +1689,7 @@ app.post('/api/github/exchange-code', async (req: any, res: any) => {
 /**
  * GET /api/github/user — Returns authenticated GitHub user info
  */
-app.get('/api/github/user', async (req: any, res: any) => {
+app.get('/api/github/user', requireAuthOrFree as any, async (req: any, res: any) => {
   try {
     const token = req.headers['x-github-token'] as string;
     if (!token) {
@@ -1639,7 +1708,7 @@ app.get('/api/github/user', async (req: any, res: any) => {
 /**
  * GET /api/github/repos — Returns authenticated user's repositories
  */
-app.get('/api/github/repos', async (req: any, res: any) => {
+app.get('/api/github/repos', requireAuthOrFree as any, async (req: any, res: any) => {
   try {
     const token = req.headers['x-github-token'] as string;
     if (!token) {
@@ -1658,7 +1727,7 @@ app.get('/api/github/repos', async (req: any, res: any) => {
 /**
  * POST /api/github/create-repo — Creates a new GitHub repository
  */
-app.post('/api/github/create-repo', async (req: any, res: any) => {
+app.post('/api/github/create-repo', expensiveLimiter as any, requireAuthOrFree as any, async (req: any, res: any) => {
   try {
     const { githubToken, repo: name, repoDescription, isPrivate } = req.body;
     if (!githubToken || !name) {
@@ -1677,7 +1746,7 @@ app.post('/api/github/create-repo', async (req: any, res: any) => {
 /**
  * POST /api/github/push — Pushes files to a GitHub repository
  */
-app.post('/api/github/push', async (req: any, res: any) => {
+app.post('/api/github/push', expensiveLimiter as any, requireAuthOrFree as any, async (req: any, res: any) => {
   try {
     const { githubToken, owner, repo, branch, commitMessage, files } = req.body;
     if (!githubToken || !owner || !repo || !branch || !commitMessage || !Array.isArray(files)) {
@@ -1895,6 +1964,11 @@ app.get('/api/preview/:sessionId/assets/:filename', requireSessionOwner as any, 
   }
 
   res.status(404).send('Asset not found');
+});
+
+// ── Health endpoint (no auth, no rate limit) ─────────────────────────────
+app.get('/health', (_req: any, res: any) => {
+  res.json({ ok: true, timestamp: new Date().toISOString() });
 });
 
 // Global Express error handler — catches any unhandled errors in route handlers

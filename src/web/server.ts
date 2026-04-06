@@ -1158,7 +1158,12 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   // classify intent and skip the full refinement pipeline for conversational
   // messages like greetings, affirmations, or meta-questions.
   const intent = (!visualEdits && !dataVeId && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
-  log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 80)}"`);
+  log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 500)}"`);
+  if (resolvedSelectedElement) {
+    log.info('refine', `Resolved element — dataVeId: ${resolvedSelectedElement.dataVeId}, tag: <${resolvedSelectedElement.tagName}>, text: "${(resolvedSelectedElement.textContent || '').substring(0, 50)}", variant: ${resolvedSelectedElement.variantLabel || 'none'}`);
+  } else if (!visualEdits) {
+    log.info('refine', `No element targeting — plain chat mode (prompt goes to full component)`);
+  }
 
   if (intent === 'conversational') {
     const chatMessages: LLMMessage[] = [

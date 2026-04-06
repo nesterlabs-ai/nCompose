@@ -466,6 +466,15 @@ app.use((req: any, res: any, next: any) => {
   next();
 });
 
+// Log page visits (HTML page loads only, not assets)
+app.use((req: any, _res: any, next: any) => {
+  if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html')) {
+    const ip = req.ip || req.connection?.remoteAddress || '?';
+    log.info('visit', `ip=${ip} ua="${(req.headers['user-agent'] || '').substring(0, 120)}"`);
+  }
+  next();
+});
+
 // Serve static files
 app.use(express.static(join(__dirname, 'public')));
 
@@ -566,6 +575,12 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
   }, 15_000);
 
   const sessionId = generateSessionId();
+  const convertStartTime = Date.now();
+  const llmName = requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM;
+  const userIp = req.ip || req.connection?.remoteAddress || '?';
+  const userId = req.user?.sub || (req as any)._fingerprint || 'anon';
+
+  log.info('convert', `START sessionId=${sessionId} figmaUrl=${figmaUrl} frameworks=[${selectedFrameworks}] llm=${llmName} user=${userId} ip=${userIp}`);
 
   // Send sessionId early so the client can create a placeholder project immediately
   sendEvent('session', { sessionId });
@@ -607,8 +622,10 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
           await incrementIPUsage((req as any)._clientIP);
         }
 
+        const convertDuration = ((Date.now() - convertStartTime) / 1000).toFixed(1);
+        log.info('convert', `SUCCESS sessionId=${sessionId} component="${result.componentName}" duration=${convertDuration}s frameworks=[${selectedFrameworks}] llm=${llmName} assets=${result.assets?.length ?? 0} user=${userId}`);
+
         // Store result in session (with owner binding)
-        const llmName = (requestedLLM && typeof requestedLLM === 'string' ? requestedLLM : config.server.defaultLLM);
         const ownerFp = earlyFingerprint;
         const ownerSub = req.user?.sub;
         setSession(sessionId, result, llmName, selectedFrameworks, ownerFp, ownerSub);
@@ -735,7 +752,9 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
     })
     .catch((err) => {
       clearInterval(heartbeat);
+      const convertDuration = ((Date.now() - convertStartTime) / 1000).toFixed(1);
       const message = err instanceof Error ? err.message : String(err);
+      log.error('convert', `FAILED sessionId=${sessionId} duration=${convertDuration}s error="${message.substring(0, 200)}" user=${userId}`);
       sendEvent('error', { message });
       if (!res.writableEnded) res.end();
     })
@@ -1031,7 +1050,9 @@ app.post('/api/hero-chat', requireAuthOrFree as any, async (req: any, res: any) 
  */
 app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requireSessionOwner as any, (req: any, res: any) => {
   const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits } = req.body;
-  log.info('refine', `sessionId=${sessionId} userRequest="${(userRequest || '').substring(0, 100)}" dataVeId=${dataVeId || 'none'} visualEdits=${visualEdits ? 'yes' : 'no'}`);
+  const refineUserId = req.user?.sub || (req as any)._fingerprint || 'anon';
+  const refineIp = req.ip || req.connection?.remoteAddress || '?';
+  log.info('refine', `sessionId=${sessionId} userRequest="${(userRequest || '').substring(0, 100)}" dataVeId=${dataVeId || 'none'} visualEdits=${visualEdits ? 'yes' : 'no'} user=${refineUserId} ip=${refineIp}`);
 
   if (!sessionId || typeof sessionId !== 'string') {
     res.status(400).json({ error: 'sessionId is required' });
@@ -1158,7 +1179,12 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   // classify intent and skip the full refinement pipeline for conversational
   // messages like greetings, affirmations, or meta-questions.
   const intent = (!visualEdits && !dataVeId && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
-  log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 80)}"`);
+  log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 500)}"`);
+  if (resolvedSelectedElement) {
+    log.info('refine', `Resolved element — dataVeId: ${resolvedSelectedElement.dataVeId}, tag: <${resolvedSelectedElement.tagName}>, text: "${(resolvedSelectedElement.textContent || '').substring(0, 50)}", variant: ${resolvedSelectedElement.variantLabel || 'none'}`);
+  } else if (!visualEdits) {
+    log.info('refine', `No element targeting — plain chat mode (prompt goes to full component)`);
+  }
 
   if (intent === 'conversational') {
     const chatMessages: LLMMessage[] = [

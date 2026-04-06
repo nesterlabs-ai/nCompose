@@ -16,10 +16,13 @@ Paste a Figma URL, get framework-native code with proper CSS, accessibility, ico
 - **Accessibility** — Generated code is validated with [axe-core](https://github.com/dequelabs/axe-core) for WCAG compliance (serious/critical violations trigger auto-fix)
 - **Fidelity validation** — CSS coverage, text content, layout structure, BEM consistency, and semantic HTML are all validated against the Figma source
 - **Live preview** — WebContainer-powered Vite dev server in the browser with hot reload, or server-rendered static preview with full variant grid
-- **Iterative refinement** — Chat with the LLM to refine generated code after initial conversion
-- **Project persistence** — Projects persist across browser reloads with full variant grid, icons, code tabs, and chat history
-- **Template wiring** — Wire generated components into a starter app with Tailwind CSS, `cn()` utility, and CSS variables
+- **Visual edit mode** — Click any element in the preview to target it, then describe changes in natural language or edit CSS properties directly
+- **Iterative refinement** — Chat with the LLM to refine generated code after initial conversion, with intent classification to separate conversational messages from code changes
+- **Authentication** — Optional AWS Cognito integration with email/password and Google login; anonymous users get a free tier (10 conversions)
+- **Project persistence** — Projects persist in localStorage and optionally in DynamoDB for authenticated users with cross-device sync
+- **Template wiring** — Wire generated components into a starter app with Tailwind CSS, `cn()` utility, and CSS variables; shadcn/ui component discovery for recognized primitives
 - **GitHub push** — Push generated code directly to GitHub via OAuth
+- **Security hardened** — SSRF protection, SVG sanitization (DOMPurify), prompt injection defense, rate limiting, security headers (HSTS, X-Frame-Options, etc.)
 
 ---
 
@@ -27,7 +30,7 @@ Paste a Figma URL, get framework-native code with proper CSS, accessibility, ico
 
 ### Prerequisites
 
-- **Node.js** 18+
+- **Node.js** 22+
 - **Figma Personal Access Token** — [Generate here](https://www.figma.com/developers/api#access-tokens)
 - **LLM API Key** — Anthropic (Claude), OpenAI (GPT-4o), or DeepSeek
 
@@ -47,8 +50,9 @@ Create a `.env` file in the project root:
 FIGMA_TOKEN=your_figma_personal_access_token
 
 # At least one LLM provider is required:
-ANTHROPIC_API_KEY=your_anthropic_key      # For --llm claude (default)
-OPENAI_API_KEY=your_openai_key            # For --llm openai or deepseek
+ANTHROPIC_API_KEY=your_anthropic_key      # For --llm claude
+OPENAI_API_KEY=your_openai_key            # For --llm openai
+DEEPSEEK_API_KEY=your_deepseek_key        # For --llm deepseek (default)
 ```
 
 ### Usage
@@ -66,7 +70,7 @@ Open [http://localhost:3000](http://localhost:3000) — paste a Figma URL, selec
 ```bash
 npm run dev -- convert "https://www.figma.com/design/XXXX/...?node-id=123-456" \
   -f react,vue,svelte \
-  --llm claude \
+  --llm deepseek \
   -o ./output
 ```
 
@@ -135,7 +139,8 @@ The web interface provides a full-featured development experience:
 - **Project sidebar** — Recent projects with thumbnails, click to restore, delete
 - **Code view modes** — Switch between generated component code and wired starter app
 - **File explorer** — Tree view with folder expand/collapse and file type icons
-- **Chat refinement** — Iteratively refine code by chatting with the LLM
+- **Visual edit** — Click elements in the preview to target them, then describe changes or edit CSS properties directly
+- **Chat refinement** — Iteratively refine code by chatting with the LLM; intent classification auto-detects conversational vs code-change messages
 - **GitHub push** — Push to GitHub via OAuth
 - **Download** — ZIP download of all generated files
 - **Light/dark theme** — Toggle with persistence
@@ -182,7 +187,7 @@ Options:
   -f, --frameworks <list>      Comma-separated frameworks: react,vue,svelte,angular,solid
                                (default: react)
   --llm <provider>             LLM provider: claude, openai, deepseek
-                               (default: claude)
+                               (default: deepseek)
   -o, --output <dir>           Output directory (default: ./output)
   --template                   Wire into starter app with Tailwind
   --preview                    Open preview after conversion
@@ -199,9 +204,9 @@ Options:
 
 | Provider | Flag | Model | Env Variable |
 |----------|------|-------|-------------|
-| Anthropic | `--llm claude` | Claude Sonnet 4.5 | `ANTHROPIC_API_KEY` |
+| DeepSeek | `--llm deepseek` (default) | deepseek-chat | `DEEPSEEK_API_KEY` |
+| Anthropic | `--llm claude` | claude-sonnet-4-20250514 | `ANTHROPIC_API_KEY` |
 | OpenAI | `--llm openai` | GPT-4o | `OPENAI_API_KEY` |
-| DeepSeek | `--llm deepseek` | DeepSeek | `OPENAI_API_KEY` |
 
 ---
 
@@ -249,6 +254,32 @@ src/
 ```
 
 For detailed architecture documentation, see [docs/WORKFLOW.md](docs/WORKFLOW.md).
+
+---
+
+## Security
+
+- **SSRF protection** — `parseFigmaUrl()` validates hostname via `new URL()`, rejects non-`figma.com` domains, enforces HTTPS
+- **XSS prevention** — `escapeHtml()` on all user-controlled content rendered via `innerHTML`; `textContent` for error messages
+- **SVG sanitization** — DOMPurify strips `<script>` tags and event handlers from SVG assets; per-response CSP (`default-src 'none'`) on SVG endpoints
+- **Prompt injection defense** — User input wrapped in XML delimiter tags (`<user_request>`, `<user_message>`) on all LLM input points; `NO_CHANGE` sentinel guard in refinement
+- **Security headers** — `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`
+- **Rate limiting** — Global (60 req/min) and expensive-operation (10 req/15min) rate limits via `express-rate-limit`
+- **Path traversal protection** — Asset filenames validated to reject `..`, `/`, `\`
+- **Fingerprint tracking** — HMAC-signed cookies with `crypto.timingSafeEqual` to prevent timing attacks
+
+---
+
+## Authentication (Optional)
+
+Authentication is optional — all features work without it. When enabled via AWS Cognito:
+
+- **Anonymous users** get 10 free conversions (tracked by HMAC fingerprint cookie)
+- **Authenticated users** get 20 conversions with project persistence in DynamoDB
+- **Anonymous → login sync** — projects created before login are automatically migrated to the user's account
+- Configure with `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, and `DYNAMODB_TABLE_NAME` environment variables
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full setup.
 
 ---
 

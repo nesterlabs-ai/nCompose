@@ -12,6 +12,12 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_LOGS_REGION:-us-west-2}
+        awslogs-group: /figma-to-code/caddy
+        awslogs-create-group: "true"
 
   app:
     build: .
@@ -30,6 +36,13 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
     volumes:
       - web_output:/app/web_output
+      - ./logs:/app/logs
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_LOGS_REGION:-us-west-2}
+        awslogs-group: /figma-to-code/app
+        awslogs-create-group: "true"
 
 volumes:
   web_output:

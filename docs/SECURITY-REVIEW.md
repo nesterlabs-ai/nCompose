@@ -1,42 +1,29 @@
 # Security Review — Figma-to-Code Web Service
 
-**Date:** 2026-03-27 (updated)
+**Date:** 2026-04-02 (updated)
 **Branch:** `feat/chat-ui-upgrade`
-**Status:** Pre-launch audit (updated after rate-limiting & abuse-prevention work)
+**Status:** Post-launch — critical and high-priority items fixed, remaining items tracked below
 
 ---
 
-## CRITICAL (Fix Before Launch)
+## Fixed Issues
 
-### 1. Exposed Secrets in `.credentials` and `.env`
-
-**Files:** `.credentials`, `.env`
-
-Both files contain **live production secrets** on disk — Figma PAT, Anthropic API key, DeepSeek key, AWS credentials. Even though `.gitignore`'d, they exist in the working tree and could be accidentally committed.
-
-**Action:** Rotate ALL exposed keys immediately. Use environment-based secret management (AWS Secrets Manager, GitHub Secrets) for production. Never store secrets in files on disk.
-
----
-
-### 2. ~~Predictable Session IDs (IDOR)~~ — FIXED
+### 1. ~~Predictable Session IDs (IDOR)~~ — FIXED
 
 **File:** `src/utils/session-id.ts`
 
-~~Session IDs are just timestamps: `YYYYMMDD-HHMMSS`. Only ~86,400 possible values per day.~~
-
-**Fix applied:** `generateSessionId()` now uses `crypto.randomUUID()` — 122 bits of entropy.
+`generateSessionId()` uses `crypto.randomUUID()` — 122 bits of entropy. Brute-force infeasible.
 
 ---
 
-### 3. ~~Unauthenticated Endpoints Expose All Sessions~~ — FIXED
+### 2. ~~Unauthenticated Endpoints~~ — FIXED
 
-~~Multiple endpoints accept any `sessionId` with no ownership check.~~
-
-**Fix applied:** All session endpoints now have `requireSessionOwner` middleware:
+All session endpoints now have `requireSessionOwner` middleware:
 
 | Endpoint | Auth | Owner Check |
 |----------|------|:-----------:|
 | `POST /api/refine` | `requireAuthOrFree` + `expensiveLimiter` | YES |
+| `POST /api/hero-chat` | `requireAuthOrFree` | YES |
 | `GET /api/session/:id/wired-app-files` | — | YES |
 | `GET /api/session/:id/push-files` | — | YES |
 | `POST /api/save-file` | `requireAuthOrFree` | YES |
@@ -44,229 +31,334 @@ Both files contain **live production secrets** on disk — Figma PAT, Anthropic 
 | `GET /api/preview/:id/assets/:filename` | — | YES |
 | `GET /api/download/:id` | `requireAuth` | YES |
 
-Combined with `crypto.randomUUID()` session IDs (#2), brute-force is infeasible.
-
 ---
 
-### 4. ~~Path Traversal in Asset Serving~~ — FIXED
+### 3. ~~Path Traversal in Asset Serving~~ — FIXED
 
 **File:** `src/web/server.ts`
 
-~~`filename` param is passed directly to `join()` without validation.~~
-
-**Fix applied:** Asset route now rejects filenames containing `..`, `/`, or `\` with a 400 response before any file I/O. Route also gated by `requireSessionOwner`.
+Asset route rejects filenames containing `..`, `/`, or `\` with 400 before any file I/O. Also gated by `requireSessionOwner`.
 
 ---
 
-## HIGH (Fix Before Launch)
+### 4. ~~No Rate Limiting~~ — FIXED
 
-### 5. ~~No Rate Limiting~~ — FIXED (2026-03-27)
-
-~~No rate limiting on any endpoint.~~
-
-**Fix applied:** Three layers of rate limiting now in place:
+Three layers:
 
 | Layer | Scope | Limit |
 |-------|-------|-------|
-| **Global** (`express-rate-limit`) | All `/api/*` routes, per IP | 60 req / 60s |
+| **Global** (`express-rate-limit`) | All `/api/*`, per IP | 60 req / 60s |
 | **Expensive** (`express-rate-limit`) | `/api/convert` + `/api/refine`, per IP | 10 req / 15min |
 | **Per-session refine cap** | Per session | 20 free / 50 auth |
 
-Standard `RateLimit-*` headers (`draft-7`) returned on all API responses. All limits configurable via environment variables (`RATE_LIMIT_GLOBAL_MAX`, `RATE_LIMIT_EXPENSIVE_MAX`, etc.).
-
-**Remaining:** `/api/store-token` and `/api/verify-token` are covered by the global limiter but don't have dedicated expensive limits. Consider adding a tighter per-IP limit for token brute-force if needed.
+Standard `RateLimit-*` headers (`draft-7`). All limits configurable via `RATE_LIMIT_*` env vars.
 
 ---
 
-### 6. Missing Security Headers
+### 5. ~~Security Headers~~ — FIXED
 
-**File:** `src/web/server.ts:228-238`
+**File:** `src/web/server.ts`
 
-Only COOP/COEP set (for WebContainer). Missing:
+Applied via middleware on all responses:
+- `X-Frame-Options: SAMEORIGIN`
+- `X-Content-Type-Options: nosniff`
+- `X-XSS-Protection: 0` (disabled — can introduce vulnerabilities in modern browsers)
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `X-DNS-Prefetch-Control: off`
+- `X-Download-Options: noopen`
+- `X-Permitted-Cross-Domain-Policies: none`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- `Cross-Origin-Opener-Policy: same-origin` (for SharedArrayBuffer/WebContainer)
+- `Cross-Origin-Embedder-Policy: credentialless` (for SharedArrayBuffer/WebContainer)
 
-- `Content-Security-Policy` (XSS protection)
-- `X-Frame-Options` (clickjacking)
-- `X-Content-Type-Options: nosniff` (MIME sniffing)
-- `Strict-Transport-Security` (HTTPS enforcement)
-- `Referrer-Policy`
-
-**Action:** Add all headers via middleware.
-
----
-
-### 7. No CORS Policy
-
-No explicit CORS middleware. Defaults to allowing all origins. Any malicious site can call your API endpoints.
-
-**Action:** Add `cors()` middleware restricted to your production domain.
+CSP intentionally omitted — app depends on external CDNs (unpkg, StackBlitz WebContainer).
 
 ---
 
-### 8. No CSRF Protection
+### 6. ~~XSS via innerHTML~~ — FIXED
 
-State-changing POST endpoints (`/api/convert`, `/api/refine`, `/api/store-token`, `/api/save-file`) have no CSRF token validation. Cross-site forms can trigger conversions.
+**File:** `src/web/public/app.js`
 
-**Action:** Add CSRF token middleware or validate `Origin`/`Referer` headers.
-
----
-
-### 9. XSS via innerHTML
-
-**File:** `src/web/public/app.js:504`
-
-```js
-duplicateMessage.innerHTML = `<strong>${name}</strong> was already converted...`;
-```
-
-`project.name` (from Figma) is injected unescaped. A Figma file named `<img src=x onerror="alert(1)">` triggers XSS.
-
-Also found in: custom dropdown rendering (lines 5422, 5437), error display in `preview.ts` (lines 572, 671).
-
-**Action:** Use `escapeHtml(name)` everywhere innerHTML uses dynamic data.
+`escapeHtml()` applied to all dynamic data rendered via `innerHTML`: project names, file paths, error messages, dropdown items.
 
 ---
 
-### 10. SVG-Based XSS
+### 7. ~~SVG-Based XSS~~ — FIXED
 
-**File:** `src/web/server.ts:1108-1125`
+**File:** `src/web/server.ts`
 
-SVGs from Figma are served with `Content-Type: image/svg+xml` without sanitization. SVGs can contain `<script>` tags and event handlers.
-
-**Action:** Sanitize SVG content — strip `<script>`, `onload`, `onerror`, etc. before serving.
+SVG assets sanitized via `isomorphic-dompurify` with `USE_PROFILES: { svg: true, svgFilters: true }`. Strips `<script>`, event handlers, `javascript:` URIs. Per-response CSP: `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`.
 
 ---
 
-### 11. LLM Prompt Injection
+### 8. ~~LLM Prompt Injection~~ — FIXED
 
-**File:** `src/web/server.ts:512-524, 541-554`
+**Files:** `src/web/refine.ts`, `src/web/server.ts`
 
-`buildFloatingEditPrompt()` and `buildVisualEditSavePrompt()` inject user-controlled data (`variantLabel`, `textContent`, CSS property values) directly into LLM prompts without escaping. Attacker can craft inputs to override LLM instructions and generate malicious code.
-
-**Action:** Escape special characters in all user-controlled prompt values.
-
----
-
-### 12. Unbounded In-Memory Stores (OOM DoS)
-
-**File:** `src/web/server.ts:54-59`
-
-`sessionStore` and `tokenStore` are unbounded `Map` objects. Attacker can create unlimited sessions/tokens until server runs OOM.
-
-**Action:** Add max capacity (e.g., 1000 sessions, 5000 tokens). Evict oldest when full.
+- User input wrapped in XML delimiter tags: `<user_request>` (refinement/visual edit) and `<user_message>` (hero chat)
+- System prompts instruct LLM to treat tag contents as opaque data
+- `NO_CHANGE` sentinel guard: if LLM returns "NO_CHANGE", server returns existing code unchanged
+- Hero chat: `role=system` messages from client history filtered out (only `user`/`assistant` pass through)
 
 ---
 
-## MEDIUM
+### 9. ~~Free-Tier Bypass (Fingerprint Header)~~ — FIXED
 
-### 13. postMessage Without Origin Validation
+**Files:** `src/web/auth/middleware.ts`, `src/web/server.ts`
 
-**Files:** `src/web/preview.ts:755-826`, `src/web/public/app.js:4885,5125,5342`
-
-Preview iframe accepts `postMessage` from **any origin** (`'*'`) and performs DOM mutations (delete elements, update styles). Any website can send messages to the iframe.
-
-**Action:** Validate `e.origin` against expected origin. Send to specific origin, not `'*'`.
+- `x-fingerprint` header is **no longer trusted** — was client-controlled and trivially spoofable
+- Only the HMAC-signed server cookie (`ftfp`) is authoritative for quota enforcement
+- `requireSessionOwner` verifies fingerprint via `verifySignedFingerprint()` on the cookie, not the header
+- IP-based tracking (`ipUsageMap` + DynamoDB `IP#<addr>`) provides secondary signal
+- Abuse attempts logged via structured logger
 
 ---
 
-### 14. ~~Free-Tier Bypass~~ — FIXED (2026-03-27)
+### 10. ~~Cookie Security~~ — FIXED
 
 **File:** `src/web/auth/middleware.ts`
 
-~~Usage tracked via fingerprint cookie. Attacker deletes cookie → gets new fingerprint → unlimited free conversions.~~
-
-**Fix applied:** Multi-signal abuse prevention + HMAC-signed cookies:
-
-- `ipUsageMap` (in-memory) + DynamoDB (`IP#<addr>` key) track per-IP conversion count
-- `requireAuthOrFree` runs `Promise.all([getFreeTierInfo(fp), getIPUsageInfo(ip)])` — blocks if **either** signal exceeds the limit
-- Clearing cookies no longer bypasses the quota (IP signal still blocks)
-- Abuse attempts logged: `console.warn('[abuse] Blocked: fp=... ipUsed=... ip=...')`
-- `/api/refine` now also gates on `requireAuthOrFree` + per-session refine cap (20 free / 50 auth)
-- **HMAC-signed fingerprint cookies** (`uuid.hmac_sha256`) — forging a valid cookie requires the server secret (`FINGERPRINT_SECRET` env var). Invalid/unsigned cookies are rejected and re-issued. Uses `crypto.timingSafeEqual` to prevent timing attacks.
+- `secure` flag: dynamic (`req.secure || x-forwarded-proto === 'https'`)
+- `sameSite: 'lax'` — kept as-is (`'strict'` breaks external link navigation)
+- Expiry: 90 days (configurable via `FINGERPRINT_COOKIE_MAX_AGE_MS`)
+- **HMAC-signed** (`uuid.hmac_sha256`) — forging requires `FINGERPRINT_SECRET`
+- `crypto.timingSafeEqual` prevents timing attacks on signature verification
 
 ---
 
-### 15. ~~Cookie Security~~ — FIXED (2026-03-27)
+### 11. ~~SSRF~~ — FIXED
 
-**File:** `src/web/auth/middleware.ts`
+**File:** `src/utils/figma-url-parser.ts`
 
-- ~~Missing `secure` flag~~ — **Fixed:** dynamic (`req.secure || x-forwarded-proto === 'https'`)
-- `sameSite: 'lax'` — **Kept as-is.** `'strict'` would break external link navigation (Figma plugin redirects, email links). `'lax'` is the safe middle ground.
-- ~~1-year expiry~~ — **Fixed:** reduced to 90 days (configurable via `FINGERPRINT_COOKIE_MAX_AGE_MS`)
+`parseFigmaUrl()` validates:
+- Protocol must be HTTPS
+- Hostname must be `figma.com` or `www.figma.com`
+- Path must contain `/file/` or `/design/`
+- `node-id` format validated to strict `digits:digits`
 
 ---
 
-### 16. NPM Dependency Vulnerabilities
+### 12. ~~Audit Logging~~ — FIXED
 
-`package.json` has known vulnerabilities:
+**File:** `src/web/logger.ts`
 
+Dual-output structured logger (terminal + daily rotating file `logs/server-YYYY-MM-DD.log`). Tags: `convert`, `refine`, `llm`, `free-tier`, `auth`, `server`, `hero-chat`. All LLM calls logged via `withLogging()` wrapper.
+
+---
+
+### 13. ~~Console.log Leaking Code~~ — FIXED
+
+LLM response logging truncated to 80-100 chars. Uses structured logger instead of raw `console.log`.
+
+---
+
+### 14. ~~XSS in Preview Title~~ — FIXED
+
+**File:** `src/web/preview.ts`
+
+Component names from Figma were injected unescaped into the preview `<title>` tag. Added `escapeHtml()` to sanitize `&`, `<`, `>`, `"` before interpolation.
+
+---
+
+### 15. ~~Project Delete Not Persisted~~ — FIXED
+
+**File:** `src/web/public/app.js`
+
+- `deleteProject()` now calls `DELETE /api/auth/projects/:id` for authenticated users (removes from DynamoDB)
+- Cancels pending `debouncedPersistProject` timer (`clearTimeout(_syncDebounceTimer)`) that could re-create the project after deletion
+
+---
+
+### 16. ~~SSE Header Crash~~ — FIXED
+
+**File:** `src/web/server.ts`
+
+`getFingerprint(req, res)` was called after SSE streaming started, causing `Cannot set headers after they are sent to the client`. Fixed by capturing the fingerprint **before** SSE headers are set (`earlyFingerprint`).
+
+---
+
+### 17. ~~Session Ownership Bypass After Memory Eviction~~ — FIXED
+
+**File:** `src/web/server.ts`
+
+After in-memory sessions expired (1hr TTL), disk-loaded sessions had no owner info — anyone with the sessionId could access them.
+
+- `_session.json` is now written alongside output files with `ownerFingerprint` and `ownerSub`
+- `loadResultFromDisk()` reads `_session.json` and attaches owner info to re-hydrated sessions
+- `requireSessionOwner` and `getSessionWithDiskFallback` pass persisted owner on re-hydration
+- Legacy sessions (no `_session.json`) still allowed through temporarily — phases out as old output dirs are cleaned
+
+---
+
+## Open Issues
+
+### HIGH
+
+#### 18. No CORS Policy
+
+No explicit CORS middleware. Relies on implicit same-origin restrictions.
+
+**Risk:** Any malicious site can call API endpoints if user has an active session.
+
+**Action:** Add `cors()` middleware restricted to production domain (`compose.nesterlabs.com`).
+
+---
+
+#### 19. No CSRF Protection
+
+State-changing POST endpoints (`/api/convert`, `/api/refine`, `/api/hero-chat`, `/api/save-file`) have no CSRF token validation.
+
+**Risk:** Cross-site forms can trigger conversions on behalf of a logged-in user.
+
+**Action:** Add CSRF token middleware or validate `Origin`/`Referer` headers on state-changing requests.
+
+---
+
+#### 20. Docker Runs as Root
+
+**File:** `Dockerfile`
+
+Container runs as `root`. If compromised, attacker has full system access.
+
+**Action:** Add `USER` directive after build steps.
+
+---
+
+#### 21. GitHub OAuth — No Server-Side State Verification
+
+**Files:** `src/web/github.ts`, `src/web/server.ts`
+
+OAuth `state` param is generated but never stored/verified server-side. Client-side validation provides no CSRF protection. Also, `redirect_uri` is accepted from the client without validation.
+
+**Risk:** OAuth CSRF attack — attacker can link their GitHub account to victim's session. Arbitrary `redirect_uri` can steal OAuth codes.
+
+**Action:** Store `state` server-side, verify on exchange. Validate `redirect_uri` against a whitelist or construct it server-side.
+
+---
+
+#### 22. GitHub API Routes Have No Auth Middleware
+
+**File:** `src/web/server.ts`
+
+All `/api/github/*` endpoints (oauth-url, exchange-code, user, repos, create-repo, push) have no `requireAuth` or `requireAuthOrFree` middleware.
+
+**Risk:** Anyone can proxy GitHub API operations through these endpoints.
+
+**Action:** Add `requireAuth` to all GitHub API routes.
+
+---
+
+#### 23. Free-Tier Race Condition (TOCTOU)
+
+**Files:** `src/web/auth/middleware.ts`, `src/web/server.ts`
+
+Quota check (`getFreeTierInfo`) and increment (`incrementFreeTierUsage`) are separated by the full conversion duration (~200s). Concurrent requests all pass the check.
+
+**Risk:** An attacker fires 10+ simultaneous requests and gets unlimited free conversions.
+
+**Action:** Atomic check-and-increment — increment first with a DynamoDB conditional expression, roll back if conversion fails.
+
+---
+
+### MEDIUM
+
+#### 24. postMessage Without Origin Validation (Partial)
+
+- GitHub OAuth handler validates origin — **OK**
+- Visual edit iframe messages do **NOT** validate origin — preview iframe accepts `postMessage` from `'*'`
+
+**Risk:** Any cross-origin window can send control messages to the preview iframe (DOM mutations, style changes).
+
+**Action:** Validate `e.origin` against expected origin in all `postMessage` listeners. Send to specific origin, not `'*'`.
+
+---
+
+#### 25. Unbounded In-Memory Stores (OOM DoS)
+
+**File:** `src/web/server.ts`
+
+`sessionStore` and `tokenStore` are unbounded `Map` objects. Cleanup runs every 10 minutes (TTL-based), but no max capacity protection.
+
+**Risk:** Attacker creates many sessions until server OOMs.
+
+**Action:** Add max capacity (e.g., 10,000 sessions). Evict oldest when full.
+
+---
+
+#### 26. ZIP Filename Not Sanitized
+
+**File:** `src/web/server.ts`
+
+`result.componentName` used directly in `Content-Disposition` header without sanitization. Special characters (quotes, newlines) could cause header injection.
+
+**Action:** Sanitize with `/[^a-zA-Z0-9-_.]/g` → `'_'` or properly quote per RFC 6266.
+
+---
+
+#### 27. Recursive Directory Read Without Limits
+
+**File:** `src/web/server.ts`
+
+`readDirToFilesMap()` recursively reads all files with no depth or size limit.
+
+**Risk:** DoS via deeply nested or very large project directories.
+
+**Action:** Add max depth (10 levels), max file size (10MB), max total size (100MB).
+
+---
+
+#### 28. NPM Dependency Vulnerabilities
+
+Known vulnerable packages (as of 2026-03-27):
 - `undici` — HTTP smuggling, memory exhaustion (HIGH)
 - `hono` — cookie injection, arbitrary file access (HIGH)
 - `minimatch`/`picomatch` — ReDoS (HIGH)
 - `express-rate-limit` — IPv4-mapped IPv6 bypass (HIGH)
 
-**Action:** Run `npm audit fix`. Update vulnerable packages.
+**Action:** Run `npm audit fix`. Re-audit periodically.
 
 ---
 
-### 17. Docker Runs as Root
+#### 29. CSS Injection via visualEdits
 
-**File:** `Dockerfile`
+**File:** `src/web/server.ts`
 
-Container runs as `root` — if compromised, attacker has full system access.
+`applyVisualEditsToCSS()` concatenates user-provided CSS values directly (e.g., `${kebabProp}: ${value};`). Values containing `}` can inject arbitrary CSS rules.
 
-**Action:** Add `USER nodejs` directive after build steps.
-
----
-
-### 18. Recursive Directory Read Without Limits
-
-**File:** `src/web/server.ts:825-843`
-
-`readDirToFilesMap()` recursively reads all files with no depth or size limit. Can be DoS'd with deeply nested or large project directories.
-
-**Action:** Add max depth (5), max file size (10MB), max total size (50MB).
+**Action:** Validate CSS values don't contain `{`, `}`, or `;` outside of expected patterns.
 
 ---
 
-## LOW
+#### 30. Excessive GitHub OAuth Scope
 
-| # | Issue | File |
-|---|-------|------|
-| 19 | Error messages leak internal paths/stack traces | `server.ts:481-492` |
-| 20 | GitHub token stored in plain sessionStorage | `app.js:3829` |
-| 21 | ZIP filename from Figma not sanitized (header injection) | `server.ts:768` |
-| 22 | No audit logging for security events | `server.ts` (all) |
-| 23 | `requestTimeout: 0` disables request timeout | `server.ts:1153` |
-| 24 | Console.log leaks first 100 chars of React code | `server.ts:1062` |
-| 25 | Caddyfile missing security headers (defense-in-depth) | `Caddyfile` |
+**File:** `src/web/github.ts`
+
+Requests `repo` scope (full read/write to ALL repositories). App only needs push/create.
+
+**Action:** Use `public_repo` or fine-grained GitHub App permissions.
 
 ---
 
-## Priority Action Plan
+### LOW
 
-### Completed
+| # | Issue | Location | Notes |
+|---|-------|----------|-------|
+| 31 | Secrets in `.env` git history | `.env` + git history | Committed in 4 early commits on `fix/figma-api-extraction` and `feat/design-to-code-1` branches. Repo is private. Rotate keys before making public. Purge with `git filter-repo`. |
+| 32 | Error messages leak internal details | `server.ts` | Main error handler returns generic message. GitHub API errors and file save errors still pass through unredacted. |
+| 33 | GitHub token in sessionStorage | `app.js` | Vulnerable to XSS exfiltration (mitigated by innerHTML XSS fix). Consider storing server-side only. |
+| 34 | `requestTimeout: 0` | `server.ts` | Intentionally disabled for SSE streams. Creates slow-client DoS risk but required for long-running conversions. |
+| 35 | Caddyfile missing security headers | `Caddyfile` | Defense-in-depth — app-level headers cover this, but Caddy-level headers would protect non-app routes. |
+| 36 | Ephemeral HMAC fingerprint secret | `middleware.ts` | Falls back to random secret if `FINGERPRINT_SECRET` not set. Cookies invalidated on restart. Set in production env. |
+| 37 | `trust proxy` set after middleware | `server.ts` | `app.set('trust proxy')` is set after `attachUser` middleware. First requests may see wrong IP. |
+| 38 | Cognito auth token in JS global | `app.js` | `authIdToken` accessible to any script on the page. Consider HttpOnly cookie approach. |
 
-- [x] ~~Predictable session IDs~~ (#2 — `crypto.randomUUID()`)
-- [x] ~~Unauthenticated endpoints~~ (#3 — `requireSessionOwner` on all session routes)
-- [x] ~~Path traversal in asset serving~~ (#4 — rejects `..`, `/`, `\`)
-- [x] ~~No rate limiting~~ (#5 — global + expensive + per-session refine cap)
-- [x] ~~Free-tier bypass~~ (#14 — multi-signal: fingerprint + IP tracking + HMAC-signed cookies)
-- [x] ~~Cookie security~~ (#15 — `secure` flag, HMAC signing, 90-day expiry)
+---
 
-### Before launch (this week)
+## Summary
 
-1. Rotate all exposed secrets (#1)
-2. Add security headers middleware (#6)
-3. Fix innerHTML XSS — `escapeHtml()` (#9)
-4. Add CORS restrictions (#7)
-
-### Next sprint
-
-5. CSRF protection (#8)
-6. SVG sanitization (#10)
-7. LLM prompt injection — escape user-controlled values (#11)
-8. Bound in-memory stores (#12)
-9. postMessage origin validation (#13)
-10. `npm audit fix` (#16)
-11. Docker non-root user (#17)
-12. Recursive directory read limits (#18)
+| Status | Count | Items |
+|--------|-------|-------|
+| **Fixed** | 17 | Session IDs, session auth, path traversal, rate limiting, security headers, XSS (innerHTML + preview title), SVG XSS, prompt injection, fingerprint header bypass, cookie security, SSRF, audit logging, console log leak, project delete persistence, SSE header crash, session ownership on disk |
+| **Open — High** | 6 | CORS, CSRF, Docker non-root, GitHub OAuth CSRF + redirect, GitHub routes no auth, free-tier race condition |
+| **Open — Medium** | 7 | postMessage origin, unbounded stores, ZIP filename, recursive dir read, NPM vulnerabilities, CSS injection via visualEdits, excessive GitHub OAuth scope |
+| **Open — Low** | 8 | Secrets in git history, error leaking, GitHub token storage, request timeout, Caddyfile headers, ephemeral HMAC secret, trust proxy ordering, auth token in JS global |

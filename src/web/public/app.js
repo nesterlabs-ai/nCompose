@@ -4771,7 +4771,7 @@ function initGitHubDialog() {
       const data = await apiFetch('/api/github/exchange-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: p.code, redirectUri: `${window.location.origin}/auth/github/callback` }),
+        body: JSON.stringify({ code: p.code, redirectUri: `${window.location.origin}/auth/github/callback`, state: p.state }),
       }).then(apiJson);
       const token = data?.accessToken;
       if (!token) throw new Error('No access token returned.');

@@ -28,7 +28,7 @@ jobs:
       - name: Sync code to server via rsync
         uses: burnett01/rsync-deployments@7.0.2
         with:
-          switches: -avz --delete --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='output' --exclude='web_output' --exclude='.env'
+          switches: -avz --delete --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='output' --exclude='web_output' --exclude='.env' --exclude='logs'
           path: ./
           remote_path: /home/ubuntu/app/
           remote_host: ${{ secrets.LIGHTSAIL_HOST }}

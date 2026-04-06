@@ -24,8 +24,10 @@ This document describes the end-to-end workflow of the figma-to-code service, co
 16. [Output Writing](#output-writing)
 17. [Web UI & Preview System](#web-ui--preview-system)
 18. [Iterative Refinement (Chat)](#iterative-refinement-chat)
-19. [Session Persistence & Recovery](#session-persistence--recovery)
-20. [Template Wiring (Starter App)](#template-wiring-starter-app)
+19. [Security](#security)
+20. [Authentication & Persistence](#authentication--persistence)
+21. [Session Persistence & Recovery](#session-persistence--recovery)
+22. [Template Wiring (Starter App)](#template-wiring-starter-app)
 
 ---
 
@@ -261,6 +263,14 @@ For non-variant, non-page nodes (individual cards, modals, forms, etc.).
 - LLM generates Mitosis code with `css={{}}` inline styles (plain string literals only)
 - Class-based CSS is also extracted if the LLM outputs it
 
+### B3-alt: Template Mode (shadcn/ui)
+When template mode is enabled (always on in the web UI), PATH B can bypass Mitosis entirely:
+- **Shadcn component discovery**: Scans the node tree for recognizable UI primitives (checkbox, radio, button, input, dropdown, toggle, etc.)
+- **Structural components**: Sidebars and tables get specialized shadcn codegen
+- **Composite sections**: Multiple shadcn primitives are generated individually, then assembled into a layout
+- Output is React + Tailwind CSS directly (no Mitosis intermediate step)
+- Falls back to standard Mitosis pipeline if no shadcn components are detected
+
 ### B4: Compilation
 - Mitosis parses and compiles to target frameworks
 - CSS (if extracted) is injected into each framework output
@@ -315,9 +325,11 @@ For COMPONENT_SET charts (multiple chart variants), each variant generates a sep
 ## LLM Generation & Retry Loop
 
 ### Providers
-- **Claude** (claude-sonnet-4-5) via Anthropic API
+- **DeepSeek** (deepseek-chat) via OpenAI-compatible API (default)
+- **Claude** (claude-sonnet-4-20250514) via Anthropic API
 - **GPT-4o** via OpenAI API
-- **DeepSeek** via OpenAI-compatible API
+
+All providers are wrapped with a `withLogging()` decorator that logs request/response sizes, duration, and provider name to both terminal and `logs/server-YYYY-MM-DD.log`.
 
 ### Retry Logic (3 attempts + fallback)
 1. Send system + user prompt to LLM
@@ -441,6 +453,77 @@ After initial conversion, users can refine the component through a chat interfac
 6. Conversation history is maintained (last 20 turns) for context
 
 If the LLM drops CSS during refinement, the original CSS is automatically re-injected as a safety net.
+
+### Intent Classification
+Before sending to the LLM, `classifyMessageIntent()` determines if the user's message is conversational (greetings, affirmations, meta-questions) or a code change request. Conversational messages return an LLM chat response directly without running the Mitosis pipeline.
+
+### Visual Edit Mode
+Users can click any element in the preview to target it for modification:
+1. Preview iframe injects hover/click handlers; selected elements send `postMessage` to the parent with computed styles, bounding rect, and `data-ve-id`
+2. **Floating prompt**: User types a natural language prompt targeting the clicked element — `buildFloatingEditPrompt()` enriches the prompt with element metadata (tag, text, class, variant context)
+3. **Batch visual edits**: User changes CSS properties (color, font size, padding) through the visual editor — `buildVisualEditSavePrompt()` constructs a detailed prompt listing all changes per element
+4. `applyVisualEditsToCSS()` patches CSS directly by matching selectors for visual property changes
+
+---
+
+## Security
+
+### SSRF Protection
+`parseFigmaUrl()` validates URLs via `new URL()` — rejects non-`figma.com` hostnames, enforces HTTPS, validates path format (`/file/` or `/design/`), and validates `node-id` format (`digits:digits`).
+
+### XSS Prevention
+- `escapeHtml()` (DOM-based encoding) applied to all user-controlled content rendered via `innerHTML` — project names, file names, progress messages
+- `textContent` used for error messages
+- SVG assets sanitized with DOMPurify (`USE_PROFILES: { svg: true, svgFilters: true }`) before serving
+- Per-response CSP on SVG endpoints: `default-src 'none'; style-src 'unsafe-inline'`
+
+### Prompt Injection Defense
+User input is wrapped in XML delimiter tags on all 4 LLM input points:
+- `<user_request>` tags in refinement (refine.ts)
+- `<user_message>` tags in hero chat (server.ts)
+- System prompts instruct the LLM to treat tag contents as opaque data
+- `NO_CHANGE` sentinel: if the LLM returns "NO_CHANGE", the server returns existing code unchanged with a safe canned message
+
+### Security Headers
+Applied via middleware on all responses:
+- `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 0`
+- `Referrer-Policy: strict-origin-when-cross-origin`, `X-DNS-Prefetch-Control: off`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains` (HTTPS only)
+- `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless` (for WebContainer/SharedArrayBuffer)
+
+### Rate Limiting
+- **Global**: 60 requests per minute on `/api` via `express-rate-limit` (draft-7 headers)
+- **Expensive operations**: 10 requests per 15 minutes on `/api/convert` and `/api/refine`
+- **Per-session refine cap**: 20 refines for anonymous users, 50 for authenticated
+
+### Path Traversal Protection
+Asset filenames are validated to reject `..`, `/`, and `\` characters.
+
+---
+
+## Authentication & Persistence
+
+### Authentication (Optional)
+When `COGNITO_USER_POOL_ID` is set, AWS Cognito JWT verification is enabled:
+- `attachUser` middleware reads Bearer tokens and sets `req.user` on every request
+- `requireAuth` blocks unauthenticated access; `requireAuthOrFree` allows anonymous users within free-tier quota
+- `requireSessionOwner` validates session ownership by Cognito `sub` or fingerprint
+
+### Free-Tier Tracking
+- Anonymous users identified by HMAC-signed fingerprint cookie (`ftfp`, 90-day expiry, `httpOnly`, `sameSite: lax`)
+- Primary signal: client-side FingerprintJS visitor ID via `X-Fingerprint` header; fallback: server-generated cookie
+- HMAC signing uses `crypto.timingSafeEqual()` to prevent timing attacks
+- Default: 10 free conversions (anonymous), 20 (authenticated)
+
+### DynamoDB Persistence (Optional)
+When `DYNAMODB_TABLE_NAME` is set, project metadata and chat history are persisted:
+- Single-table design with `PK/SK` key schema and GSI for user project listing
+- Entities: `FreeTierUsage`, `UserProject`, `ProjectChat`, `FP-User Link`
+- Anonymous → login sync: localStorage projects are migrated to the user's DynamoDB account on first login
+- Falls back to in-memory `Map` when DynamoDB is disabled
+
+### Server Logger
+Dual-output logger writes to both terminal (with ANSI colors) and daily rotating file at `logs/server-YYYY-MM-DD.log`. Levels: DEBUG, INFO, WARN, ERROR. Tagged messages (e.g., `[convert]`, `[refine]`, `[llm]`, `[free-tier]`). File write failures are silently swallowed to prevent server crashes.
 
 ---
 

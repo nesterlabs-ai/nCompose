@@ -1,6 +1,6 @@
 # Deployment Guide — compose.nesterlabs.com
 
-> Last updated: 2026-03-23
+> Last updated: 2026-04-02
 
 ---
 
@@ -69,7 +69,7 @@ User → https://compose.nesterlabs.com
 
 ## CI/CD Pipeline
 
-**Trigger:** Push to `main`, `working-preview`, or `release/v1.0.0` branches (or manual dispatch from GitHub Actions UI).
+**Trigger:** Push to `main`, `working-preview`, `release/v1.0.0`, or `release/v1.1.0` branches (or manual dispatch from GitHub Actions UI).
 
 **File:** `.github/workflows/deploy.yml`
 
@@ -109,7 +109,7 @@ Set these at: **GitHub repo → Settings → Secrets and variables → Actions**
 | `Dockerfile` | Multi-stage build: builder (npm ci + tsc) → production (node:22-alpine, prod deps only) |
 | `docker-compose.yml` | Caddy reverse proxy + app service + DynamoDB env vars + persistent volumes |
 | `Caddyfile` | Domain → reverse proxy config with SSE streaming support (`flush_interval -1`) |
-| `.dockerignore` | Excludes node_modules, dist, output, .env, .git, docs from Docker context |
+| `.dockerignore` | Excludes node_modules, dist, output, web_output, .env, .git, .cache, docs, `*.md` (except README.md) |
 | `.github/workflows/deploy.yml` | CI/CD: test → rsync → docker compose up |
 | `.env` | Environment variables (NOT in git — lives on server only) |
 | `.env.example` | Template for `.env` |
@@ -129,7 +129,7 @@ Set these at: **GitHub repo → Settings → Secrets and variables → Actions**
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | For `--llm claude` (claude-sonnet-4-5) |
+| `ANTHROPIC_API_KEY` | For `--llm claude` (claude-sonnet-4-20250514) |
 | `OPENAI_API_KEY` | For `--llm openai` (gpt-4o) |
 
 ### DynamoDB Persistence
@@ -154,11 +154,21 @@ When `DYNAMODB_TABLE_NAME` is empty, all persistence falls back to in-memory (or
 
 When `COGNITO_USER_POOL_ID` is empty, all auth middleware passes through (no auth required).
 
-### Free Tier
+### Free Tier & Rate Limiting
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FREE_TIER_MAX_CONVERSIONS` | `5` | Max free conversions for anonymous users |
+| `FREE_TIER_MAX_CONVERSIONS` | `10` | Max free conversions for anonymous users |
+| `AUTH_MAX_CONVERSIONS` | `20` | Max conversions for authenticated users |
+| `FREE_TIER_MAX_REFINES_PER_SESSION` | `20` | Max chat refines per session (anonymous) |
+| `AUTH_MAX_REFINES_PER_SESSION` | `50` | Max chat refines per session (authenticated) |
+| `RATE_LIMIT_GLOBAL_MAX` | `60` | Global API rate limit (requests per window) |
+| `RATE_LIMIT_GLOBAL_WINDOW_MS` | `60000` | Global rate limit window (1 minute) |
+| `RATE_LIMIT_EXPENSIVE_MAX` | `10` | Expensive ops (convert/refine) rate limit |
+| `RATE_LIMIT_EXPENSIVE_WINDOW_MS` | `900000` | Expensive ops window (15 minutes) |
+| `FINGERPRINT_SECRET` | auto-generated | HMAC secret for fingerprint cookie signing |
+| `FINGERPRINT_COOKIE_MAX_AGE_MS` | `7776000000` | Fingerprint cookie expiry (90 days) |
+| `TRUST_PROXY` | `false` | Express trust proxy setting (set `true` behind load balancer) |
 
 ### Server Config
 
@@ -308,8 +318,8 @@ req.user = { sub, email, name }
 
 ### Free-Tier Tracking
 
-- Anonymous users get `FREE_TIER_MAX_CONVERSIONS` (default: 5) free conversions
-- Tracked by fingerprint cookie (`ftfp`, httpOnly, 1-year expiry)
+- Anonymous users get `FREE_TIER_MAX_CONVERSIONS` (default: 10) free conversions
+- Tracked by HMAC-signed fingerprint cookie (`ftfp`, httpOnly, 90-day expiry)
 - **With DynamoDB**: Persists across server restarts (atomic counter at `FP#{fingerprint}|USAGE`)
 - **Without DynamoDB**: In-memory `Map` (resets on restart)
 - Authenticated users bypass free-tier limits entirely
@@ -371,9 +381,13 @@ environment:
   - NODE_ENV=production
   - PORT=3000
   - SERVER_OUTPUT_DIR=/app/web_output
+  - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-}
+  - DYNAMODB_REGION=${DYNAMODB_REGION:-us-west-2}
+  - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+  - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
 ```
 
-Everything else (FIGMA_TOKEN, LLM keys, AWS credentials, DynamoDB, Cognito, GitHub OAuth, fidelity) comes from `.env` automatically.
+Everything else (FIGMA_TOKEN, LLM keys, Cognito, GitHub OAuth, fidelity, rate limits) comes from `.env` automatically via `env_file`.
 
 ---
 
@@ -609,7 +623,8 @@ Add the DNS `A` record for the new subdomain, then redeploy.
 - **DynamoDB** for persistent state (free-tier tracking, user projects)
 - **In-memory sessions** with disk fallback (1hr TTL, survives restarts via disk)
 - **Cognito** for optional user authentication
-- **No rate limiting** beyond free-tier tracking
+- **Rate limiting** — global (60/min) + expensive ops (10/15min) via `express-rate-limit`
+- **Security hardened** — SSRF protection, SVG sanitization, prompt injection defense, security headers
 
 ### If You Need to Scale
 
@@ -619,7 +634,6 @@ Add the DNS `A` record for the new subdomain, then redeploy.
 | Persistent sessions | Already partially solved via disk fallback; add Redis for full session store |
 | Multiple instances | Add load balancer (Caddy can do this); DynamoDB already handles shared state |
 | Monitoring | Add health endpoint + Prometheus/Grafana |
-| Rate limiting | Add express-rate-limit middleware |
 | CDN | Put Cloudflare in front of Caddy |
 | Full-text search on projects | Add DynamoDB GSI or ElasticSearch |
 
@@ -708,7 +722,82 @@ sudo usermod -aG docker ubuntu
 | CI/CD SSH command_timeout | 20 min | `deploy.yml` |
 | DynamoDB project TTL | 90 days | `src/web/db/project-repo.ts` |
 | DynamoDB free-tier TTL | 365 days | `src/web/db/free-tier-repo.ts` |
-| Fingerprint cookie maxAge | 1 year | `src/web/auth/middleware.ts` |
+| Fingerprint cookie maxAge | 90 days | `src/web/auth/middleware.ts` |
+
+---
+
+## Security
+
+### Security Headers (server.ts)
+Applied via middleware on all responses:
+- `X-Frame-Options: SAMEORIGIN` — anti-clickjacking (allows preview iframes)
+- `X-Content-Type-Options: nosniff` — prevents MIME sniffing
+- `X-XSS-Protection: 0` — disabled (can introduce vulnerabilities in modern browsers)
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `X-DNS-Prefetch-Control: off`
+- `X-Download-Options: noopen`
+- `X-Permitted-Cross-Domain-Policies: none`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains` (HTTPS only)
+- `Cross-Origin-Opener-Policy: same-origin` (for SharedArrayBuffer/WebContainer)
+- `Cross-Origin-Embedder-Policy: credentialless` (for SharedArrayBuffer/WebContainer)
+
+CSP is intentionally omitted — the app depends on multiple external CDNs (unpkg, StackBlitz WebContainer).
+
+### SSRF Protection (figma-url-parser.ts)
+`parseFigmaUrl()` validates URLs via `new URL()`:
+- Rejects non-HTTPS protocol
+- Rejects hostnames other than `figma.com` or `www.figma.com`
+- Only allows `/file/` or `/design/` path segments
+- Validates `node-id` format to strict `digits:digits`
+
+### SVG Sanitization (server.ts)
+SVG assets served from `/api/preview/:sessionId/assets/:filename`:
+- Sanitized via `isomorphic-dompurify` with `USE_PROFILES: { svg: true, svgFilters: true }` — strips `<script>`, event handlers, `javascript:` URIs
+- Per-response CSP header: `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`
+- Path traversal protection: filenames reject `..`, `/`, `\`
+
+### Prompt Injection Defense (refine.ts, server.ts)
+- User input wrapped in XML delimiter tags: `<user_request>` (refinement) and `<user_message>` (hero chat)
+- System prompts instruct the LLM to treat tag contents as opaque data
+- `NO_CHANGE` guard: if LLM returns "NO_CHANGE", server returns existing code unchanged with a safe canned message
+- Hero chat: `role=system` messages from client history are filtered out (only `user`/`assistant` pass through)
+
+### Rate Limiting (server.ts)
+- **Global**: 60 requests per minute on `/api` (draft-7 RateLimit headers)
+- **Expensive**: 10 requests per 15 minutes on `/api/convert` and `/api/refine`
+- **Per-session refine cap**: 20 refines (anonymous), 50 (authenticated)
+- Configurable via `RATE_LIMIT_*` env vars
+
+---
+
+## Logging
+
+### Server Logger (src/web/logger.ts)
+Dual-output logger — writes to terminal (ANSI colors) AND daily rotating file:
+- File location: `logs/server-YYYY-MM-DD.log` (inside Docker: `/app/logs/`)
+- Format: `2026-04-01T14:30:00.123Z [INFO] [tag] message`
+- Levels: DEBUG, INFO, WARN, ERROR
+- Tags: `convert`, `refine`, `llm`, `free-tier`, `auth`, `server`, `hero-chat`
+- File write failures silently swallowed (never crashes the server)
+
+### LLM Request/Response Logging (src/llm/logged-provider.ts)
+`withLogging()` wraps all LLM providers:
+- INFO: provider name, prompt sizes (chars), response size, duration (seconds)
+- DEBUG: first 150 chars of user prompt and response
+- ERROR: failure with duration context
+
+### Viewing Logs
+```bash
+# Tail live logs
+docker compose logs -f app
+
+# Grep for specific events
+docker compose logs app | grep '\[llm\]'
+docker compose logs app | grep '\[free-tier\]'
+
+# Access log files inside container
+docker compose exec app cat logs/server-$(date +%Y-%m-%d).log
+```
 
 ---
 
@@ -719,10 +808,34 @@ sudo usermod -aG docker ubuntu
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | POST | `/api/convert` | AuthOrFree | SSE — Figma-to-code conversion |
-| POST | `/api/refine` | Required | SSE — iterative chat refinement |
-| GET | `/api/preview/:sessionId` | None | Standalone preview HTML |
-| GET | `/api/preview/:sessionId/assets/:filename` | None | SVG assets for preview |
+| POST | `/api/refine` | AuthOrFree | SSE — iterative chat refinement |
+| POST | `/api/hero-chat` | AuthOrFree | Hero section chat interactions |
+| GET | `/api/preview/:sessionId` | SessionOwner | Standalone preview HTML |
+| GET | `/api/preview/:sessionId/assets/:filename` | SessionOwner | SVG assets for preview (DOMPurify sanitized) |
 | GET | `/api/download/:sessionId` | Required | ZIP download of component |
+
+### Session & File Management
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/store-token` | None | Store Figma token server-side, returns tokenId |
+| GET | `/api/verify-token/:id` | None | Check if stored Figma token is still valid |
+| GET | `/api/session/:sessionId/wired-app-files` | SessionOwner | Get wired starter app files |
+| GET | `/api/session/:sessionId/push-files` | SessionOwner | Get files for GitHub push |
+| POST | `/api/save-file` | AuthOrFree | Save edited file back to session |
+| GET | `/api/config` | None | App configuration (available LLM providers) |
+
+### GitHub Integration
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/github/oauth-url` | None | Generate GitHub OAuth authorization URL |
+| POST | `/api/github/exchange-code` | None | Exchange OAuth code for access token |
+| GET | `/api/github/user` | None | Get GitHub user info (token in header) |
+| GET | `/api/github/repos` | None | List user's GitHub repos |
+| POST | `/api/github/create-repo` | None | Create new GitHub repo |
+| POST | `/api/github/push` | None | Push generated code to GitHub repo |
+| GET | `/auth/github/callback` | None | OAuth callback page (closes popup) |
 
 ### Authentication & Projects
 
@@ -742,9 +855,9 @@ sudo usermod -aG docker ubuntu
 ## Known Issues
 
 ### Visual Edit CSS Loss During Refinement
-**Status:** Identified, not yet fixed.
+**Status:** Identified, partially mitigated.
 
-When using visual edit to change text or color, the preview sometimes renders without CSS. Root cause: the safety net (`server.ts:557`) only catches when the LLM completely drops CSS (`!refined.css`). When the LLM outputs partial/truncated CSS, `refined.css` is truthy and the safety net is bypassed, resulting in missing styles. Affects larger components with complex CSS more frequently.
+When using visual edit to change text or color, the preview sometimes renders without CSS. Root cause: the safety net only catches when the LLM completely drops CSS (`!refined.css`). When the LLM outputs partial/truncated CSS, `refined.css` is truthy and the safety net is bypassed. The `repairTruncatedCSS()` function mitigates some cases by closing unclosed braces, but incomplete declarations can still cause issues on larger components.
 
 ### In-Memory Session Volatility
 Sessions are stored in-memory with a 1-hour TTL. Container restarts lose active sessions. Disk fallback (`loadResultFromDisk`) restores conversion results but not conversation history. DynamoDB stores chat history for authenticated users only.
@@ -873,7 +986,7 @@ docker compose logs caddy | grep -i timeout
 
 ### Verification Tests
 
-1. **Free tier survives restart**: Convert 3x → `docker compose restart app` → refresh → badge shows "7 remaining"
+1. **Free tier survives restart**: Convert 3x → `docker compose restart app` → refresh → badge shows "7 remaining" (of 10 total)
 2. **Anonymous → login sync**: Convert 2 projects → login → projects show under account
 3. **No DynamoDB fallback**: Remove `DYNAMODB_TABLE_NAME` from .env → works exactly as before
 4. **Cross-device**: Login device A → convert → login device B → projects appear

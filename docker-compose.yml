@@ -17,7 +17,6 @@ services:
       options:
         awslogs-region: ${AWS_LOGS_REGION:-us-west-2}
         awslogs-group: /figma-to-code/caddy
-        awslogs-stream-prefix: caddy
         awslogs-create-group: "true"
 
   app:
@@ -43,7 +42,6 @@ services:
       options:
         awslogs-region: ${AWS_LOGS_REGION:-us-west-2}
         awslogs-group: /figma-to-code/app
-        awslogs-stream-prefix: app
         awslogs-create-group: "true"
 
 volumes:

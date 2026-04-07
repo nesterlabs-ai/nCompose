@@ -7,7 +7,7 @@
  */
 
 import type { LLMProvider, LLMMessage } from '../llm/provider.js';
-import type { Framework } from '../types/index.js';
+import type { Framework, VariantSpec } from '../types/index.js';
 import { parseMitosisCode } from '../compile/parse-and-validate.js';
 import { generateFrameworkCode } from '../compile/generate.js';
 import { injectCSS } from '../compile/inject-css.js';
@@ -85,6 +85,8 @@ export async function refineComponent(options: {
   selectedElement?: SelectedElementContext;
   /** Element map for resolving dataVeId to metadata (from session) */
   elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string; insideLoop?: boolean }>;
+  /** Per-variant visual specs for scoped edits */
+  variantSpec?: VariantSpec;
   onStep?: (step: string) => void;
 }): Promise<RefinementResult> {
   const {
@@ -168,18 +170,56 @@ ${displayText ? `- Current text: "${displayText}"` : ''}`;
     const propsDesc = Object.entries(selectedElement.variantProps)
       .map(([k, v]) => `${k}="${v}"`)
       .join(', ');
-    const normalizedHint = Object.entries(selectedElement.variantProps)
-      .map(([k, v]) => {
-        const norm = String(v).trim().toLowerCase().replace(/\\s+/g, '-');
-        return `${k}==='${norm}'`;
-      })
-      .join(' && ');
+
+    // Build flat variant spec context — show the LLM the complete blueprint for each variant
+    let variantSpecContext = '';
+    if (options.variantSpec?.flatVariants) {
+      const flat = options.variantSpec.flatVariants;
+
+      // Find the selected variant's key
+      const selectedKey = Object.keys(flat).find((key) => {
+        const fv = flat[key];
+        return Object.entries(selectedElement.variantProps!).every(
+          ([k, v]) => fv.props[k]?.toLowerCase().replace(/\s+/g, '-') === String(v).toLowerCase().replace(/\s+/g, '-'),
+        );
+      });
+
+      if (selectedKey && flat[selectedKey]) {
+        const selected = flat[selectedKey];
+        variantSpecContext += `\n\nVARIANT BLUEPRINT — Complete specification for each variant:`;
+        variantSpecContext += `\n\nSELECTED VARIANT "${selectedElement.variantLabel}" (apply the user's change to THIS only):`;
+        variantSpecContext += `\n  Props: ${JSON.stringify(selected.props)}`;
+        variantSpecContext += `\n  Styles: ${JSON.stringify({ container: selected.container, text: selected.text })}`;
+        variantSpecContext += `\n  Text content: ${JSON.stringify(selected.textContent)}`;
+
+        // Show a few other variants so LLM knows what to preserve
+        const otherKeys = Object.keys(flat).filter((k) => k !== selectedKey).slice(0, 5);
+        if (otherKeys.length > 0) {
+          variantSpecContext += `\n\nOTHER VARIANTS (DO NOT change these — preserve exactly as shown):`;
+          for (const k of otherKeys) {
+            const ov = flat[k];
+            const label = Object.values(ov.props).join(' / ');
+            variantSpecContext += `\n  "${label}": text=${JSON.stringify(ov.textContent)}, styles=${JSON.stringify({ container: ov.container, text: ov.text })}`;
+          }
+          const remaining = Object.keys(flat).length - 1 - otherKeys.length;
+          if (remaining > 0) variantSpecContext += `\n  ... and ${remaining} more variants (all unchanged)`;
+        }
+      }
+    }
+
     elementContextBlock += `
 
 CRITICAL - Variant-specific change: The user selected this element inside ONE variant only (labeled "${selectedElement.variantLabel}").
-The preview grid shows multiple variants. You MUST add conditional logic so the change applies ONLY when the component receives these variant props.
-Props from selection: ${propsDesc}. Use normalized values for comparison (e.g. ${normalizedHint}).
-Render the new content ONLY when the condition matches. For ALL other variants, keep the original content unchanged.`;
+The preview grid shows multiple variants. You MUST ensure the change applies ONLY to this variant.
+Props from selection: ${propsDesc}.
+
+APPROACH: If the current code uses a shared prop like {children} for text, add conditional rendering so only this variant gets the new value:
+  {variant === "x" && state === "y" ? "new text" : children}
+For style changes in cva() compoundVariants:
+  - Find the compoundVariant entry that matches ALL the selected props (${propsDesc}).
+  - If an existing compoundVariant matches ALL axes exactly, modify that entry.
+  - If an existing compoundVariant only partially matches (e.g. matches style+state but NOT size), DO NOT edit it — that would affect other variants too. Instead, CREATE A NEW compoundVariant entry scoped to ALL axes (${Object.keys(selectedElement.variantProps!).join(', ')}), and apply the change there. The more-specific entry will take precedence via CSS specificity.
+All other variants MUST remain exactly as they are — do not modify their text, styles, or behavior.${variantSpecContext}`;
   } else if (hasDataVeId) {
     elementContextBlock += `
 CRITICAL: Apply the requested change ONLY to THIS specific element (data-ve-id="${selectedElement.dataVeId}"). Do NOT modify any other elements in the component. Every other element must remain exactly as-is.`;
@@ -222,7 +262,13 @@ User request:
 <user_request>${userPrompt}</user_request>${elementContextBlock}
 
 `;
-  if (isShadcn) {
+  const hasTwoFiles = isShadcn && currentMitosis.includes('// FILE 1:') && currentMitosis.includes('// FILE 2:');
+  if (hasTwoFiles) {
+    newUserMessage += `This component has TWO files (wrapper + sub-component). Output BOTH files in your response, preserving the "// FILE 1:" and "// FILE 2:" markers.
+- For TEXT/CONTENT changes → edit FILE 1 (wrapper) — add conditional rendering like: {variant === "x" && state === "y" ? "new text" : children}
+- For STYLE/COLOR/BACKGROUND changes → edit FILE 2 (sub-component) — modify ONLY the specific compoundVariant entry matching the selected variant props. Do NOT modify other compoundVariant entries.
+Do NOT use Mitosis syntax. These are React files.`;
+  } else if (isShadcn) {
     newUserMessage += `This is a shadcn/ui React component (NOT a Mitosis component). Output the COMPLETE updated React file. Do NOT use Mitosis syntax (like state.classes or css={{}}). Preserve the // shadcn/ui codegen comment at the top.`;
   } else {
     newUserMessage += `Output the COMPLETE updated .lite.tsx file. If the component uses a CSS section (---CSS---), include the updated CSS after the delimiter.`;

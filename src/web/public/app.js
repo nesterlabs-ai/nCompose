@@ -7013,6 +7013,8 @@ if (veUnsavedSave) {
         changes: item.changes,
         tagName: item.tagName,
         textContent: (item.textContent || '').substring(0, 80),
+        variantLabel: item.variantLabel || null,
+        variantProps: item.variantProps || null,
       };
     }
 

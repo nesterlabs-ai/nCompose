@@ -9,6 +9,7 @@ import {
   CATEGORY_HTML_TAGS,
   CATEGORY_ARIA_ROLES,
   toKebabCase,
+  computeVariantSpec,
 } from './figma/component-set-parser.js';
 import type { ComponentCategory } from './figma/component-set-parser.js';
 import {
@@ -1116,6 +1117,9 @@ export async function convertFigmaToCode(
               : `// ${csComponentName} — shadcn/ui component (React only).\n`;
           }
 
+          // Compute per-variant visual spec for scoped visual edits
+          const csVariantSpec = computeVariantSpec(csData);
+
           const _shadcnCsResult = {
             componentName: csComponentName,
             mitosisSource: `// shadcn/ui codegen — see React output.\n${shadcnResult.consumerCode}`,
@@ -1123,6 +1127,7 @@ export async function convertFigmaToCode(
             assets: csAssets,
             componentPropertyDefinitions: csData.componentPropertyDefinitions,
             variantMetadata: csVariantMetadata,
+            variantSpec: csVariantSpec,
             updatedShadcnSource: shadcnResult.updatedShadcnSource,
             shadcnComponentName: shadcnResult.shadcnComponentName,
           };
@@ -1334,6 +1339,9 @@ async function convertComponentSet(
     })),
   };
 
+  // Compute per-variant visual spec (base + axis diffs) for scoped visual edits
+  const variantSpec = computeVariantSpec(componentSetData);
+
   const fidelityReport = buildFidelityReport({
     rawCode: parseResult.rawCode,
     css: variantCSS,
@@ -1356,6 +1364,7 @@ async function convertComponentSet(
     componentPropertyDefinitions: componentSetData.componentPropertyDefinitions,
     css: variantCSS,
     variantMetadata,
+    variantSpec,
     fidelityReport,
     elementMap,
   };

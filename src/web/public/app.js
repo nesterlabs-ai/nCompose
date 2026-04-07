@@ -125,6 +125,10 @@ const viewPreview = document.getElementById('view-preview');
 const viewCode = document.getElementById('view-code');
 const previewEmpty = document.getElementById('preview-empty');
 let previewFrame = document.getElementById('preview-frame');
+const previewInner = document.getElementById('preview-inner');
+const previewZoomInBtn = document.getElementById('preview-zoom-in');
+const previewZoomOutBtn = document.getElementById('preview-zoom-out');
+const previewZoomResetBtn = document.getElementById('preview-zoom-reset');
 
 // Replace the preview iframe with a fresh one (gives full isolated JS context).
 function replacePreviewIframe(url) {
@@ -298,6 +302,36 @@ let currentShadcnSubComponents = null;
 let currentComponentPropertyDefs = null;
 let currentVariantMetadata = null;
 let currentElementMap = null;
+let previewZoom = 1;
+
+function setPreviewZoom(newZoom) {
+  previewZoom = Math.max(0.25, Math.min(newZoom, 2));
+  if (!previewInner) return;
+  previewInner.style.transform = `scale(${previewZoom})`;
+  previewInner.style.width = `${100 / previewZoom}%`;
+  previewInner.style.height = `${100 / previewZoom}%`;
+  if (previewZoomResetBtn) {
+    previewZoomResetBtn.textContent = `${Math.round(previewZoom * 100)}%`;
+  }
+}
+
+if (previewZoomInBtn) {
+  previewZoomInBtn.addEventListener('click', function () {
+    setPreviewZoom(previewZoom + 0.1);
+  });
+}
+
+if (previewZoomOutBtn) {
+  previewZoomOutBtn.addEventListener('click', function () {
+    setPreviewZoom(previewZoom - 0.1);
+  });
+}
+
+if (previewZoomResetBtn) {
+  previewZoomResetBtn.addEventListener('click', function () {
+    setPreviewZoom(1);
+  });
+}
 
 // ── Undo State ──
 let undoStack = []; // { frameworkOutputs, tabsDataSnapshot, wiredAppFilesSnapshot }

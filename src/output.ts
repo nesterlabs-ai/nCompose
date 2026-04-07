@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Framework, AssetEntry, FidelityReport, ChartComponent, ShadcnSubComponent } from './types/index.js';
+import type { Framework, AssetEntry, FidelityReport, ChartComponent, ShadcnSubComponent, VariantSpec } from './types/index.js';
 import { FRAMEWORK_EXTENSIONS } from './types/index.js';
 
 export interface WriteOutputOptions {
@@ -29,6 +29,8 @@ export interface WriteOutputOptions {
   shadcnSubComponents?: ShadcnSubComponent[];
   /** Element-to-code map for visual edit (data-ve-id → metadata) */
   elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
+  /** Per-variant visual specifications (base + axis diffs) for scoped visual edits */
+  variantSpec?: VariantSpec;
 }
 
 /**
@@ -88,6 +90,13 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
     };
     writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     writtenPaths.push(metadataPath);
+  }
+
+  // Write per-variant visual specifications for scoped visual edits
+  if (options.variantSpec) {
+    const specPath = join(outputDir, `${componentName}.variant-spec.json`);
+    writeFileSync(specPath, JSON.stringify(options.variantSpec, null, 2), 'utf-8');
+    writtenPaths.push(specPath);
   }
 
   // Write LLM-customized shadcn component source

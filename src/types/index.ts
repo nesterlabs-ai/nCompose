@@ -117,6 +117,65 @@ export interface ConversionResult {
   shadcnSubComponents?: ShadcnSubComponent[];
   /** Element-to-code map for visual edit (data-ve-id path → metadata) */
   elementMap?: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>;
+  /** Per-variant visual specifications (base + axis diffs) for scoped visual edits */
+  variantSpec?: VariantSpec;
+}
+
+// ── Variant Spec Types (for variant-spec.json) ────────────────────────────
+
+/** CSS properties that are identical across ALL variants — shared base. */
+export interface VariantSpecBase {
+  container: Record<string, string>;
+  text: Record<string, string>;
+  children: Record<string, Record<string, string>>;
+}
+
+/** CSS properties that differ for a specific axis value (only the diff from base). */
+export interface VariantSpecDiff {
+  container?: Record<string, string>;
+  text?: Record<string, string>;
+  children?: Record<string, Record<string, string>>;
+}
+
+/** A single value within an axis (e.g., "Primary" within the "Style" axis). */
+export interface VariantSpecAxisValue {
+  value: string;
+  diff: VariantSpecDiff;
+}
+
+/** A variant axis with its values and per-value diffs. */
+export interface VariantSpecAxis {
+  name: string;
+  defaultValue: string;
+  /** True if this axis maps to CSS selectors (:hover, [disabled]) rather than component props */
+  isStateAxis: boolean;
+  values: VariantSpecAxisValue[];
+}
+
+/** Complete resolved spec for one specific variant combination. */
+export interface FlatVariantSpec {
+  /** Axis props that identify this variant, e.g. { Style: "Primary", State: "Default", Size: "Medium" } */
+  props: Record<string, string>;
+  /** Resolved CSS for the container element */
+  container: Record<string, string>;
+  /** Resolved CSS for text layers */
+  text: Record<string, string>;
+  /** Text content for this variant (e.g. label, placeholder) */
+  textContent: Record<string, string>;
+  /** Resolved CSS for child elements */
+  children: Record<string, Record<string, string>>;
+}
+
+/** Full variant specification file — persisted as variant-spec.json. */
+export interface VariantSpec {
+  componentName: string;
+  generatedAt: string;
+  base: VariantSpecBase;
+  axes: VariantSpecAxis[];
+  /** Component properties (text, boolean, instance swap) from Figma */
+  properties: Record<string, { type: string; default: any }>;
+  /** Complete resolved spec per variant combination — key is "axisVal1|axisVal2|..." */
+  flatVariants: Record<string, FlatVariantSpec>;
 }
 
 /**

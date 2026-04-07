@@ -57,6 +57,7 @@
  */
 
 import { config } from '../config.js';
+import type { VariantSpec, VariantSpecBase, VariantSpecDiff, VariantSpecAxis, VariantSpecAxisValue, FlatVariantSpec } from '../types/index.js';
 
 // ============================================================================
 // SECTION 1: TYPES & INTERFACES
@@ -2911,5 +2912,205 @@ export function summarizeComponent(data: ComponentSetData): object {
       hasInlineRuns:  (l.inlineRuns?.length ?? 0) > 0,
       hasVectorInfo:  !!l.vectorInfo,
     })),
+  };
+}
+
+// ============================================================================
+// SECTION 17: VARIANT SPEC COMPUTATION (base + axis diffs)
+// ============================================================================
+
+/**
+ * Compute the intersection of a CSS property map across all variants.
+ * Returns only properties whose value is identical in every variant.
+ */
+function intersectProps(variants: VariantEntry[], getter: (v: VariantEntry) => Record<string, string>): Record<string, string> {
+  if (variants.length === 0) return {};
+  const first = getter(variants[0]);
+  const result: Record<string, string> = {};
+  for (const [key, val] of Object.entries(first)) {
+    if (variants.every((v) => getter(v)[key] === val)) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+/**
+ * Compute diff: properties in `variant` that differ from `base`.
+ * Only includes keys that exist in variant and have a different value, or
+ * keys that exist in variant but not in base.
+ */
+function specDiff(base: Record<string, string>, variant: Record<string, string>): Record<string, string> {
+  const diff: Record<string, string> = {};
+  for (const [k, v] of Object.entries(variant)) {
+    if (base[k] !== v) diff[k] = v;
+  }
+  return diff;
+}
+
+/**
+ * Compute a VariantSpecDiff (container + text + children) by diffing a variant's styles against the base.
+ */
+function computeStyleDiff(base: VariantSpecBase, styles: VariantStyles): VariantSpecDiff {
+  const container = specDiff(base.container, styles.container);
+  const text = specDiff(base.text, styles.text);
+  const children: Record<string, Record<string, string>> = {};
+  for (const [childKey, childStyles] of Object.entries(styles.children)) {
+    const baseChild = base.children[childKey] || {};
+    const childDiff = specDiff(baseChild, childStyles);
+    if (Object.keys(childDiff).length > 0) children[childKey] = childDiff;
+  }
+  const diff: VariantSpecDiff = {};
+  if (Object.keys(container).length > 0) diff.container = container;
+  if (Object.keys(text).length > 0) diff.text = text;
+  if (Object.keys(children).length > 0) diff.children = children;
+  return diff;
+}
+
+/**
+ * Compute the base + axis diffs variant spec from a parsed ComponentSetData.
+ *
+ * Algorithm:
+ * 1. Intersect all variants' styles → base (properties identical across ALL variants)
+ * 2. For each axis, for each axis value, find variants matching that value with
+ *    all other axes at default. Diff against default variant → axis value diff.
+ */
+export function computeVariantSpec(data: ComponentSetData): VariantSpec {
+  const { variants, defaultVariant, axes, stateAxis } = data;
+
+  // Step 1: Compute base — properties identical across ALL variants
+  const base: VariantSpecBase = {
+    container: intersectProps(variants, (v) => v.styles.container),
+    text: intersectProps(variants, (v) => v.styles.text),
+    children: {},
+  };
+
+  // Intersect children: collect all child keys, then intersect per key
+  const allChildKeys = new Set<string>();
+  for (const v of variants) {
+    for (const k of Object.keys(v.styles.children)) allChildKeys.add(k);
+  }
+  for (const childKey of allChildKeys) {
+    const childVariants = variants.filter((v) => v.styles.children[childKey]);
+    if (childVariants.length === variants.length) {
+      // Child exists in all variants — intersect its props
+      base.children[childKey] = intersectProps(childVariants, (v) => v.styles.children[childKey]);
+    }
+  }
+
+  // Step 2: Compute per-axis diffs
+  const specAxes: VariantSpecAxis[] = [];
+
+  for (const axis of axes) {
+    const isState = stateAxis?.name === axis.name;
+    const defaultValue = defaultVariant.props[axis.name] ?? axis.values[0];
+
+    const axisValues: VariantSpecAxisValue[] = [];
+
+    for (const val of axis.values) {
+      // Find variant(s) matching this axis value with all OTHER axes at default
+      const match = variants.find((v) => {
+        if (v.props[axis.name] !== val) return false;
+        // All other axes should be at their default value
+        for (const otherAxis of axes) {
+          if (otherAxis.name === axis.name) continue;
+          const otherDefault = defaultVariant.props[otherAxis.name] ?? otherAxis.values[0];
+          if (v.props[otherAxis.name] !== otherDefault) return false;
+        }
+        return true;
+      });
+
+      if (!match) {
+        // No exact match — use first variant with this axis value
+        const fallback = variants.find((v) => v.props[axis.name] === val);
+        if (fallback) {
+          axisValues.push({ value: val, diff: computeStyleDiff(base, fallback.styles) });
+        } else {
+          axisValues.push({ value: val, diff: {} });
+        }
+        continue;
+      }
+
+      axisValues.push({ value: val, diff: computeStyleDiff(base, match.styles) });
+    }
+
+    specAxes.push({
+      name: axis.name,
+      defaultValue,
+      isStateAxis: isState,
+      values: axisValues,
+    });
+  }
+
+  // Step 3: Build component properties map
+  const properties: Record<string, { type: string; default: any }> = {};
+  for (const [key, def] of Object.entries(data.componentPropertyDefinitions)) {
+    if (def.type === 'VARIANT') continue; // Axes are handled separately
+    const cleanKey = key.replace(/#\d+:\d+$/, ''); // Strip Figma property ID suffix
+    properties[cleanKey] = {
+      type: def.type?.toLowerCase() || 'unknown',
+      default: def.defaultValue,
+    };
+  }
+
+  // Step 4: Build flat variant specs — complete resolved spec per variant combination
+  // Each variant gets its full styles + text content so visual edits have a complete blueprint
+  const flatVariants: Record<string, FlatVariantSpec> = {};
+
+  // Build text content per variant from variantTextDiffs
+  // variantTextDiffs tracks text that changes across variants
+  const textDiffs = data.variantTextDiffs || [];
+
+  // Collect default text content from the Label property or variantTextDiffs
+  const defaultTextContent: Record<string, string> = {};
+  // Add text from component properties (like Label)
+  for (const [key, def] of Object.entries(data.componentPropertyDefinitions)) {
+    if (def.type === 'TEXT') {
+      const cleanKey = key.replace(/#\d+:\d+$/, '');
+      defaultTextContent[cleanKey] = def.defaultValue || '';
+    }
+  }
+  // Add text from variantTextDiffs defaults
+  for (const td of textDiffs) {
+    defaultTextContent[td.layerKey] = td.defaultText;
+  }
+
+  for (const variant of variants) {
+    // Build variant key from axis values: "subtle|default|medium"
+    const keyParts = axes.map((a) => (variant.props[a.name] || '').trim().toLowerCase().replace(/\s+/g, '-'));
+    const variantKey = keyParts.join('|');
+
+    // Resolve text content for this variant
+    const textContent: Record<string, string> = { ...defaultTextContent };
+    for (const td of textDiffs) {
+      // Check if any axis value in this variant matches a text diff
+      for (const [axisVal, text] of Object.entries(td.variantTexts)) {
+        // Match against each axis prop value
+        for (const propVal of Object.values(variant.props)) {
+          if (propVal === axisVal) {
+            textContent[td.layerKey] = text;
+          }
+        }
+      }
+    }
+
+    flatVariants[variantKey] = {
+      props: { ...variant.props },
+      container: { ...variant.styles.container },
+      text: { ...variant.styles.text },
+      textContent,
+      children: Object.fromEntries(
+        Object.entries(variant.styles.children).map(([k, v]) => [k, { ...v }]),
+      ),
+    };
+  }
+
+  return {
+    componentName: data.name,
+    generatedAt: new Date().toISOString(),
+    base,
+    axes: specAxes,
+    properties,
+    flatVariants,
   };
 }

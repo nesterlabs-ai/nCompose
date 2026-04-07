@@ -207,6 +207,11 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     updatedShadcnSource = shadcnSubComponents[0].updatedShadcnSource;
   }
 
+  // Read variant-spec.json for scoped visual edits
+  let variantSpec: any;
+  const variantSpecPath = join(matchDir, `${componentName}.variant-spec.json`);
+  try { variantSpec = JSON.parse(readFileSync(variantSpecPath, 'utf-8')); } catch { /* optional */ }
+
   // Read owner info persisted alongside the session
   let _ownerFingerprint: string | undefined;
   let _ownerSub: string | undefined;
@@ -228,6 +233,7 @@ function loadResultFromDisk(sessionId: string): ConversionResult | undefined {
     updatedShadcnSource,
     shadcnComponentName,
     elementMap,
+    variantSpec,
   } as ConversionResult;
 
   // Attach owner info as non-enumerable properties so they travel with the result
@@ -727,6 +733,7 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
             shadcnComponentName: result.shadcnComponentName,
             shadcnSubComponents: result.shadcnSubComponents,
             elementMap: result.elementMap,
+            variantSpec: result.variantSpec,
           });
           sendEvent('step', { message: 'Output saved' });
           // Persist session owner info to disk so ownership survives memory eviction
@@ -803,6 +810,7 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
           shadcnSubComponents: result.shadcnSubComponents ?? undefined,
           componentPropertyDefinitions: result.componentPropertyDefinitions ?? undefined,
           variantMetadata: result.variantMetadata ?? undefined,
+          variantSpec: result.variantSpec ?? undefined,
         });
       } catch (thenErr) {
         log.error('convert', 'Error in post-conversion handler', thenErr);
@@ -1022,7 +1030,7 @@ Return the fully rewritten React component code incorporating this requested mod
  * Build a batch visual-edit save prompt server-side.
  */
 function buildVisualEditSavePrompt(
-  visualEdits: Record<string, { changes: Record<string, string | boolean>; tagName?: string; textContent?: string }>,
+  visualEdits: Record<string, { changes: Record<string, string | boolean>; tagName?: string; textContent?: string; variantLabel?: string; variantProps?: Record<string, string> }>,
   elementMap: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>,
   _isShadcn: boolean,
 ): string {
@@ -1044,11 +1052,30 @@ function buildVisualEditSavePrompt(
     const className = entry?.className || '';
 
     lines.push(`${i}. Target Element: <${tagName.toUpperCase()}>${className ? ` class="${className}"` : ''} containing text "${textSnippet}"`);
+
+    // Add variant scoping if this edit is for a specific variant
+    if (item.variantLabel && item.variantProps && Object.keys(item.variantProps).length > 0) {
+      const propsDesc = Object.entries(item.variantProps).map(([k, v]) => `${k}="${v}"`).join(', ');
+      lines.push(`   VARIANT SCOPE: This change applies ONLY to variant "${item.variantLabel}" (${propsDesc}).`);
+      lines.push(`   - For TEXT changes: add conditional rendering in the wrapper, e.g. {variant === "${Object.values(item.variantProps)[0]?.toLowerCase()}" ? "new text" : children}`);
+      lines.push(`   - For STYLE changes: modify ONLY the compoundVariant entry matching these exact props. Do NOT change other variants.`);
+      lines.push(`   - ALL other variants MUST remain exactly as they are.`);
+    }
+
     lines.push('   Updates to apply:');
 
     for (const [prop, value] of Object.entries(item.changes)) {
       if (prop === 'delete') {
         lines.push('   - -> Remove/Delete this element completely');
+      } else if (prop === 'textContent' || prop === 'text') {
+        lines.push(`   - -> Change text content to '${value}'`);
+        if (item.variantProps) {
+          const conditions = Object.entries(item.variantProps)
+            .map(([k, v]) => `${k} === "${String(v).toLowerCase().replace(/\s+/g, '-')}"`)
+            .join(' && ');
+          lines.push(`     IMPORTANT: Use conditional rendering: {${conditions} ? "${value}" : children}`);
+          lines.push(`     Do NOT change the default children prop value. Add the conditional where {children} is rendered.`);
+        }
       } else {
         lines.push(`   - -> Change CSS property '${prop}' to '${value}'`);
       }
@@ -1238,10 +1265,23 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   // Swap currentMitosis to the sub-component code so the LLM can see and modify it.
   let refiningShadcnSub = false;
   const isShadcnWrapper = currentMitosis.includes('shadcn/ui codegen');
+  const isVariantScopedEdit = variantProps && Object.keys(variantProps).length > 0;
+
   if (isShadcnWrapper && session.result.updatedShadcnSource) {
-    currentMitosis = `// shadcn/ui codegen\n${session.result.updatedShadcnSource}`;
-    refiningShadcnSub = true;
-    log.info('refine', `Shadcn sub-component swap: sending updatedShadcnSource (${session.result.updatedShadcnSource.length} chars) instead of thin wrapper`);
+    if (isVariantScopedEdit) {
+      // Variant-scoped edit on shadcn component: send BOTH files so LLM can edit the right one
+      // - Style changes (bg, border, color) → modify compoundVariant in button.tsx
+      // - Text changes (children, label) → add conditional in wrapper
+      const wrapperCode = session.result.frameworkOutputs?.react || '';
+      const subComponent = session.result.updatedShadcnSource;
+      currentMitosis = `// shadcn/ui codegen — TWO FILES below. Edit the appropriate one based on the change type.\n// FILE 1: WRAPPER — edit this for text/content changes\n${wrapperCode}\n\n// FILE 2: SUB-COMPONENT — edit this for style/color/background changes\n${subComponent}`;
+      refiningShadcnSub = true;
+      log.info('refine', `Variant-scoped edit: sending BOTH wrapper (${wrapperCode.length} chars) + sub-component (${subComponent.length} chars)`);
+    } else {
+      currentMitosis = `// shadcn/ui codegen\n${session.result.updatedShadcnSource}`;
+      refiningShadcnSub = true;
+      log.info('refine', `Shadcn sub-component swap: sending updatedShadcnSource (${session.result.updatedShadcnSource.length} chars) instead of thin wrapper`);
+    }
   }
 
   // Construct the effective prompt server-side from raw payload data
@@ -1324,6 +1364,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
     componentName: session.result.componentName,
     selectedElement: resolvedSelectedElement,
     elementMap: session.result.elementMap,
+    variantSpec: session.result.variantSpec,
     onStep: (step) => sendEvent('step', { message: sanitizeStepMessage(step) }),
   })
     .then((refined) => {
@@ -1407,8 +1448,37 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
       }
 
       // Update session
-      if (refiningShadcnSub) {
-        // Shadcn sub-component refinement: update the sub-component source, NOT the wrapper
+      if (refiningShadcnSub && isVariantScopedEdit) {
+        // Variant-scoped edit: LLM received both files. Parse response to split wrapper vs sub-component.
+        const fullOutput = refined.frameworkOutputs.react || refined.mitosisSource;
+        const file2Marker = '// FILE 2:';
+        const file2Idx = fullOutput.indexOf(file2Marker);
+        if (file2Idx > 0) {
+          const wrapperCode = fullOutput.substring(0, file2Idx).replace(/\/\/ FILE 1:.*\n?/, '').replace(/\/\/ shadcn\/ui codegen.*\n?/, '').trim();
+          const subCode = fullOutput.substring(file2Idx).replace(/\/\/ FILE 2:.*\n?/, '').trim();
+          if (wrapperCode.length > 50) session.result.frameworkOutputs.react = wrapperCode;
+          if (subCode.length > 50) {
+            session.result.updatedShadcnSource = subCode;
+            if (session.result.shadcnSubComponents && session.result.shadcnComponentName) {
+              const sub = session.result.shadcnSubComponents.find(
+                (s: any) => s.shadcnComponentName === session.result.shadcnComponentName,
+              );
+              if (sub) sub.updatedShadcnSource = subCode;
+            }
+          }
+          log.info('refine', `Variant edit: split response — wrapper (${wrapperCode.length} chars) + sub-component (${subCode.length} chars)`);
+        } else {
+          const looksLikeWrapper = fullOutput.includes('export default function');
+          if (looksLikeWrapper) {
+            session.result.frameworkOutputs.react = fullOutput.replace(/\/\/ shadcn\/ui codegen.*\n?/, '').trim();
+            log.info('refine', `Variant edit: single file response → saved as wrapper`);
+          } else {
+            session.result.updatedShadcnSource = fullOutput.replace(/\/\/ shadcn\/ui codegen.*\n?/, '').trim();
+            log.info('refine', `Variant edit: single file response → saved as sub-component`);
+          }
+        }
+      } else if (refiningShadcnSub) {
+        // Regular shadcn refinement: update the sub-component source, NOT the wrapper
         const updatedSubSource = refined.frameworkOutputs.react || refined.mitosisSource.replace(/^\/\/ shadcn\/ui codegen\n?/, '');
         session.result.updatedShadcnSource = updatedSubSource;
         // Also update the shadcnSubComponents array entry

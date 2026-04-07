@@ -1635,7 +1635,7 @@ function initProFrameworkChipHandlers() {
       'click',
       (e) => {
         e.preventDefault();
-        showContactNesterLabsModal();
+        showContactNesterLabsModal('pro');
       },
       true,
     );
@@ -5811,7 +5811,7 @@ function initGlobalSearch() {
   workspaceSearchCollapseAll?.addEventListener('click', () => collapseAllWorkspaceSearchGroups());
   workspaceSearchCopyAll?.addEventListener('click', () => copyAllWorkspaceSearchResults());
   function openWorkspaceSearchProUpgrade() {
-    showContactNesterLabsModal();
+    showContactNesterLabsModal('pro');
   }
   document.getElementById('workspace-search-replace-all')?.addEventListener('click', openWorkspaceSearchProUpgrade);
   document.getElementById('workspace-search-preserve-btn')?.addEventListener('click', openWorkspaceSearchProUpgrade);
@@ -6213,9 +6213,34 @@ function initProfileModal() {
 
 
 
-function showContactNesterLabsModal() {
+/** Contact modal copy: limit = quota exhausted; pro = upgrade interest (frameworks, workspace PRO, etc.) */
+const CONTACT_NESTERLABS_VARIANTS = {
+  limit: {
+    title: 'Conversion Limit Reached',
+    heading: "You've used all 20 conversions",
+    subtext:
+      "To unlock more conversions, get in touch with NesterLabs and we'll set you up with an extended plan.",
+  },
+  pro: {
+    title: 'Nester Compose PRO',
+    heading: 'Unlock advanced features',
+    subtext:
+      'Multi-framework export, workspace bulk replace, and other PRO features are available through NesterLabs. Contact us to learn about plans.',
+  },
+};
+
+function showContactNesterLabsModal(variant = 'limit') {
   const overlay = document.getElementById('contact-nesterlabs-overlay');
   if (!overlay) return;
+  const key = variant === 'pro' ? 'pro' : 'limit';
+  const config = CONTACT_NESTERLABS_VARIANTS[key];
+  const titleEl = document.getElementById('contact-dialog-title-text');
+  const headingEl = document.getElementById('contact-dialog-heading');
+  const subtextEl = document.getElementById('contact-dialog-subtext');
+  if (titleEl) titleEl.textContent = config.title;
+  if (headingEl) headingEl.textContent = config.heading;
+  if (subtextEl) subtextEl.textContent = config.subtext;
+  overlay.dataset.contactVariant = key;
   overlay.setAttribute('aria-hidden', 'false');
   overlay.classList.add('visible');
 }

@@ -279,16 +279,31 @@
           <div class="hero__prompt-controls">
             <span class="hero__prompt-label">Frameworks</span>
             <div class="hero__prompt-chips">
-              <label class="chip-label"><input type="checkbox" name="framework" value="react" checked /><span
-                  class="chip chip--prompt">React</span></label>
-              <label class="chip-label"><input type="checkbox" name="framework" value="vue" /><span
-                  class="chip chip--prompt">Vue</span></label>
-              <label class="chip-label"><input type="checkbox" name="framework" value="svelte" /><span
-                  class="chip chip--prompt">Svelte</span></label>
-              <label class="chip-label"><input type="checkbox" name="framework" value="angular" /><span
-                  class="chip chip--prompt">Angular</span></label>
-              <label class="chip-label"><input type="checkbox" name="framework" value="solid" /><span
-                  class="chip chip--prompt">Solid</span></label>
+              <label class="chip-label chip-label--framework-locked" title="React is always included in your export">
+                <input type="checkbox" name="framework" value="react" checked disabled
+                  aria-label="React (always included)" />
+                <span class="chip chip--prompt">React</span>
+              </label>
+              <label class="chip-label chip-label--framework-pro" title="PRO — contact NesterLabs for access">
+                <input type="checkbox" name="framework" value="vue" aria-label="Vue (PRO)" />
+                <span class="chip chip--prompt">Vue</span>
+                <span class="framework-pro-tag workspace-search__pro-badge" aria-hidden="true">PRO</span>
+              </label>
+              <label class="chip-label chip-label--framework-pro" title="PRO — contact NesterLabs for access">
+                <input type="checkbox" name="framework" value="svelte" aria-label="Svelte (PRO)" />
+                <span class="chip chip--prompt">Svelte</span>
+                <span class="framework-pro-tag workspace-search__pro-badge" aria-hidden="true">PRO</span>
+              </label>
+              <label class="chip-label chip-label--framework-pro" title="PRO — contact NesterLabs for access">
+                <input type="checkbox" name="framework" value="angular" aria-label="Angular (PRO)" />
+                <span class="chip chip--prompt">Angular</span>
+                <span class="framework-pro-tag workspace-search__pro-badge" aria-hidden="true">PRO</span>
+              </label>
+              <label class="chip-label chip-label--framework-pro" title="PRO — contact NesterLabs for access">
+                <input type="checkbox" name="framework" value="solid" aria-label="Solid (PRO)" />
+                <span class="chip chip--prompt">Solid</span>
+                <span class="framework-pro-tag workspace-search__pro-badge" aria-hidden="true">PRO</span>
+              </label>
             </div>
             <button type="button" class="hero__template-btn" id="hero-template-btn">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

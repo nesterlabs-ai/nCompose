@@ -20,6 +20,7 @@ import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
+import { stripAllDataVeIds } from '../compile/strip-ve-ids.js';
 import rateLimit from 'express-rate-limit';
 import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, verifySignedFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
@@ -781,12 +782,12 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
           }
         }
 
-        // Send framework outputs for code display
+        // Send framework outputs for code display — strip data-ve-id (preview-only attribute)
         sendEvent('complete', {
           sessionId,
           componentName: result.componentName,
           frameworks: selectedFrameworks,
-          frameworkOutputs: result.frameworkOutputs,
+          frameworkOutputs: stripAllDataVeIds(result.frameworkOutputs),
           mitosisSource: result.mitosisSource,
           elementMap: result.elementMap,
           templateWired,
@@ -1478,7 +1479,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
       }
 
       const completePayload: any = {
-        frameworkOutputs: session.result.frameworkOutputs,
+        frameworkOutputs: stripAllDataVeIds(session.result.frameworkOutputs),
         mitosisSource: session.result.mitosisSource,
         elementMap: session.result.elementMap,
       };
@@ -1562,8 +1563,9 @@ app.get('/api/download/:sessionId', requireAuth as any, requireSessionOwner as a
     name: `${result.componentName}/${result.componentName}.lite.tsx`,
   });
 
-  // Add framework outputs
-  for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+  // Add framework outputs — strip data-ve-id (preview-only attribute)
+  const cleanOutputsForZip = stripAllDataVeIds(result.frameworkOutputs);
+  for (const [fw, code] of Object.entries(cleanOutputsForZip)) {
     if (code && !code.startsWith('// Error')) {
       const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
       archive.append(code, {
@@ -1864,8 +1866,9 @@ app.get('/api/session/:sessionId/push-files', requireSessionOwner as any, (req: 
 
     // Chart components are inlined into the main React JSX — no separate files needed.
 
-    // Framework outputs
-    for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+    // Framework outputs — strip data-ve-id (preview-only attribute)
+    const cleanOutputsForListing = stripAllDataVeIds(result.frameworkOutputs);
+    for (const [fw, code] of Object.entries(cleanOutputsForListing)) {
       if (code && !code.startsWith('// Error')) {
         const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
         files.push({

@@ -2,6 +2,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Framework, AssetEntry, FidelityReport, ChartComponent, ShadcnSubComponent, VariantSpec } from './types/index.js';
 import { FRAMEWORK_EXTENSIONS } from './types/index.js';
+import { stripDataVeIds } from './compile/strip-ve-ids.js';
 
 export interface WriteOutputOptions {
   outputDir: string;
@@ -67,14 +68,14 @@ export function writeOutputFiles(options: WriteOutputOptions): string[] {
   writeFileSync(mitosisPath, mitosisSource, 'utf-8');
   writtenPaths.push(mitosisPath);
 
-  // Write framework outputs
+  // Write framework outputs — strip data-ve-id (preview-only attribute) before writing
   for (const [fw, code] of Object.entries(frameworkOutputs)) {
     // Skip error outputs
     if (code.startsWith('// Error generating')) continue;
 
     const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
     const filePath = join(outputDir, `${componentName}${ext}`);
-    writeFileSync(filePath, code, 'utf-8');
+    writeFileSync(filePath, stripDataVeIds(code), 'utf-8');
     writtenPaths.push(filePath);
   }
 

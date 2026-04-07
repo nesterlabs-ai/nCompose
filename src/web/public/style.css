@@ -1892,6 +1892,13 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
   min-height: 0;
 }
 
+/* Empty/loading share the column with this wrapper; both had flex:1 and split height ~50/50,
+   leaving a white band (preview-outer) under the placeholder. Collapse the wrapper while the
+   iframe is hidden so the empty state (or loading spinner) fills the preview panel. */
+.preview-outer:has(#preview-frame[style*='display: none']) {
+  display: none;
+}
+
 .preview-inner {
   transform-origin: top left;
   display: flex;

@@ -940,41 +940,6 @@ function applyVisualEditsToCSS(
 }
 
 /**
- * Shadcn helper: apply simple color visual edits directly to hex-based utility classes
- * inside updatedShadcnSource / React output (e.g. text-[#xxxxxx], bg-[#xxxxxx], border-[#xxxxxx]).
- * For now this is coarse-grained and may affect all variants for that component.
- */
-function applyVisualEditsToShadcnSource(
-  source: string,
-  visualEdits: Record<string, { changes: Record<string, string | boolean> }>,
-): string {
-  let code = source;
-  const hexProps = ['color', 'textColor', 'background', 'backgroundColor', 'borderColor'];
-
-  for (const item of Object.values(visualEdits)) {
-    for (const [prop, raw] of Object.entries(item.changes)) {
-      if (!hexProps.includes(prop)) continue;
-      if (typeof raw !== 'string') continue;
-      const value = raw.trim();
-      if (!/^#([0-9a-fA-F]{3,8})$/.test(value)) continue;
-
-      if (prop === 'color' || prop === 'textColor') {
-        // Replace any text-[#xxxxxx] utility with the new hex
-        code = code.replace(/text-\[#([0-9a-fA-F]{3,8})\]/g, `text-[${value}]`);
-      } else if (prop === 'background' || prop === 'backgroundColor') {
-        // Replace any bg-[#xxxxxx] utility
-        code = code.replace(/bg-\[#([0-9a-fA-F]{3,8})\]/g, `bg-[${value}]`);
-      } else if (prop === 'borderColor') {
-        // Replace any border-[#xxxxxx] utility (handles border and border-2, etc.)
-        code = code.replace(/border-\[#([0-9a-fA-F]{3,8})\]/g, `border-[${value}]`);
-      }
-    }
-  }
-
-  return code;
-}
-
-/**
  * Strip previously-injected CSS from framework output so we can re-inject with updated CSS.
  * Each framework injects CSS differently; this reverses that injection.
  */
@@ -1032,10 +997,11 @@ Return the fully rewritten React component code incorporating this requested mod
 function buildVisualEditSavePrompt(
   visualEdits: Record<string, { changes: Record<string, string | boolean>; tagName?: string; textContent?: string; variantLabel?: string; variantProps?: Record<string, string> }>,
   elementMap: Record<string, { path: string; tagName: string; textContent?: string; className?: string; id?: string }>,
-  _isShadcn: boolean,
+  isShadcn: boolean,
 ): string {
-  const cssHint =
-    'Apply these changes by updating the CSS rules in the ---CSS--- section. Find the CSS selector that targets the element (by its class name) and update the relevant CSS property there. Do NOT use inline styles or css={{}}. You MUST include the complete ---CSS--- section with ALL existing rules plus the modifications.';
+  const cssHint = isShadcn
+    ? 'Apply these changes using Tailwind utility classes or inline styles within the React source.'
+    : 'Apply these changes by updating the CSS rules in the ---CSS--- section. Find the CSS selector that targets the element (by its class name) and update the relevant CSS property there. Do NOT use inline styles or css={{}}. You MUST include the complete ---CSS--- section with ALL existing rules plus the modifications.';
 
   const lines: string[] = [
     'You are an expert Frontend Developer. Please update the component code to permanently apply the following visual style edits.',
@@ -1084,7 +1050,9 @@ function buildVisualEditSavePrompt(
     i++;
   }
 
-  lines.push('IMPORTANT: Output the complete .lite.tsx code followed by ---CSS--- and the complete updated CSS. Do NOT omit the CSS section.');
+  if (!isShadcn) {
+    lines.push('IMPORTANT: Output the complete .lite.tsx code followed by ---CSS--- and the complete updated CSS. Do NOT omit the CSS section.');
+  }
   lines.push('Return the fully rewritten component code containing these exact modifications.');
   return lines.join('\n');
 }
@@ -1411,27 +1379,6 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
               const stripped = stripInjectedCSS(code, fw);
               refined.frameworkOutputs[fw] = injectCSS(stripped, patchedCSS, fw);
             }
-          }
-        }
-
-        // Additionally, for shadcn/ui components with hex-based utilities,
-        // mirror simple color edits into the sub-component source so the code
-        // (e.g. text-[#xxxxxx]) reflects the new values.
-        if (isShadcnWrapper && session.result.updatedShadcnSource) {
-          const patchedSub = applyVisualEditsToShadcnSource(
-            session.result.updatedShadcnSource,
-            visualEdits as Record<string, { changes: Record<string, string | boolean> }>,
-          );
-          if (patchedSub !== session.result.updatedShadcnSource) {
-            session.result.updatedShadcnSource = patchedSub;
-            // Also reflect into React output for that sub-component when available
-            if (refiningShadcnSub && refined.frameworkOutputs.react) {
-              refined.frameworkOutputs.react = applyVisualEditsToShadcnSource(
-                refined.frameworkOutputs.react,
-                visualEdits as Record<string, { changes: Record<string, string | boolean> }>,
-              );
-            }
-            console.log('[refine] Applied visual edits directly to shadcn updatedShadcnSource.');
           }
         }
       } else if (!refined.css && currentCSS) {

@@ -2227,6 +2227,7 @@ function startPreviewForSession(frameworks, chartComponents) {
   // while the WebContainer restarts for the new project.
   previewFrame.style.display = 'none';
   if (previewHeader) previewHeader.style.display = 'none';
+  previewEmpty.style.display = 'none';
   setPreviewLoading(true, 'Loading preview...');
 
   const hasReact = Array.isArray(frameworks) && frameworks.includes('react');

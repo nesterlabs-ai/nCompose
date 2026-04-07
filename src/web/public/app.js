@@ -3197,7 +3197,75 @@ function buildCompletionTitle() {
   return 'Component updated successfully.';
 }
 
-/** Derive list of changed files from refine response data */
+/**
+ * Extra tabs in "Components" (generated) view for shadcn/ui sources — keys `shadcn:<name>`.
+ * Preview + refine apply edits here; without these, users only see Mitosis + framework outputs.
+ */
+function appendGeneratedShadcnTabs(tabs) {
+  const without = tabs.filter((t) => !String(t.key).startsWith('shadcn:'));
+  const byName = new Map();
+  if (currentUpdatedShadcnSource && currentShadcnComponentName) {
+    byName.set(currentShadcnComponentName, currentUpdatedShadcnSource);
+  }
+  if (currentShadcnSubComponents) {
+    for (const sub of currentShadcnSubComponents) {
+      if (sub.shadcnComponentName && sub.updatedShadcnSource) {
+        byName.set(sub.shadcnComponentName, sub.updatedShadcnSource);
+      }
+    }
+  }
+  const extra = [];
+  for (const [cn, code] of byName) {
+    extra.push({
+      key: `shadcn:${cn}`,
+      explorerName: `ui/${cn}.tsx`,
+      code,
+      ext: '.tsx',
+    });
+  }
+  return [...without, ...extra];
+}
+
+function generatedTabLabel(tab) {
+  if (codeViewMode === 'wired') return tab.key;
+  return tab.explorerName || `${currentComponentName || 'Component'}${tab.ext || ''}`;
+}
+
+/** Compare refine response to pre-refine snapshot so the chat card only lists files that actually changed */
+function computeFilesChangedAccurate(data, prev) {
+  const files = [];
+  const name = currentComponentName || 'Component';
+  const extMap = { react: '.jsx', vue: '.vue', svelte: '.svelte', angular: '.ts', solid: '.tsx' };
+  if (data.frameworkOutputs) {
+    for (const fw of Object.keys(data.frameworkOutputs)) {
+      const next = data.frameworkOutputs[fw];
+      const before = prev.frameworkOutputs[fw];
+      if (next !== before) {
+        files.push(`${name}${extMap[fw] || `.${fw}`}`);
+      }
+    }
+  }
+  if (data.mitosisSource != null && data.mitosisSource !== prev.mitosis) {
+    files.unshift(`${name}.lite.tsx`);
+  }
+  if (data.updatedShadcnSource && currentShadcnComponentName) {
+    if (data.updatedShadcnSource !== prev.updatedShadcn) {
+      files.push(`ui/${currentShadcnComponentName}.tsx`);
+    }
+  }
+  if (data.shadcnSubComponents) {
+    for (const sub of data.shadcnSubComponents) {
+      if (!sub.shadcnComponentName) continue;
+      const p = prev.shadcnSubs.find((s) => s.shadcnComponentName === sub.shadcnComponentName);
+      if (!p || p.updatedShadcnSource !== sub.updatedShadcnSource) {
+        files.push(`ui/${sub.shadcnComponentName}.tsx`);
+      }
+    }
+  }
+  return [...new Set(files)];
+}
+
+/** Fallback when no snapshot (should not happen for complete) */
 function deriveFilesChanged(data) {
   const files = [];
   if (data && data.frameworkOutputs) {
@@ -3658,10 +3726,9 @@ function parseRefineSSEEvent(eventStr, loadingMsg) {
     case 'complete':
       setChatLoading(false);
       removeChatMessage(loadingMsg);
-      handleRefineComplete(data);
       {
+        const filesChanged = handleRefineComplete(data) || [];
         const title = buildCompletionTitle();
-        const filesChanged = deriveFilesChanged(data);
         addRichAssistantMessage({ title, filesChanged });
       }
       break;
@@ -3674,6 +3741,13 @@ function parseRefineSSEEvent(eventStr, loadingMsg) {
 }
 
 function handleRefineComplete(data) {
+  const refinePrevSnapshot = {
+    mitosis: tabsData.find((t) => t.key === 'mitosis')?.code,
+    frameworkOutputs: { ...currentFrameworkOutputs },
+    updatedShadcn: currentUpdatedShadcnSource,
+    shadcnSubs: currentShadcnSubComponents ? currentShadcnSubComponents.map((s) => ({ ...s })) : [],
+  };
+
   console.log('[refine] handleRefineComplete called', {
     hasFrameworkOutputs: !!data.frameworkOutputs,
     hasMitosisSource: !!data.mitosisSource,
@@ -3696,6 +3770,12 @@ function handleRefineComplete(data) {
   // Update shadcn sub-component data when refined
   if (data.updatedShadcnSource) {
     currentUpdatedShadcnSource = data.updatedShadcnSource;
+    if (currentShadcnComponentName && wiredAppFiles) {
+      const shadcnPath = `src/components/ui/${currentShadcnComponentName}.tsx`;
+      wiredAppFiles[shadcnPath] = data.updatedShadcnSource;
+      const wiredTab = tabsData.find((t) => t.key === shadcnPath);
+      if (wiredTab) wiredTab.code = data.updatedShadcnSource;
+    }
   }
   if (data.shadcnSubComponents) {
     currentShadcnSubComponents = data.shadcnSubComponents;
@@ -3737,8 +3817,21 @@ function handleRefineComplete(data) {
     }
   }
 
-  // Keep generatedTabsData in sync (for Generated/Wired toggle)
-  generatedTabsData = tabsData.map(t => ({ ...t }));
+  // Rebuild tabs so shadcn/ui sources appear in Components view and wired tree stays current
+  if (codeViewMode === 'generated') {
+    tabsData = appendGeneratedShadcnTabs(tabsData);
+  } else if (codeViewMode === 'wired' && wiredAppFiles && Object.keys(wiredAppFiles).length > 0) {
+    const paths = Object.keys(wiredAppFiles).sort();
+    tabsData = paths.map((path) => ({
+      key: path,
+      label: path,
+      code: wiredAppFiles[path] || '',
+      ext: path.includes('.') ? path.slice(path.lastIndexOf('.')) : '',
+    }));
+  }
+  generatedTabsData = tabsData.map((t) => ({ ...t }));
+  buildExplorer();
+  buildEditorTabs();
 
   // Persist updated outputs to project history
   if (currentProjectId) {
@@ -3752,9 +3845,29 @@ function handleRefineComplete(data) {
   // Clear stale visual-edit selection so the next click starts fresh
   selectedElementInfo = null;
 
-  // Refresh Monaco if a tab is open, otherwise defer to switchMode
-  if (activeFile && monacoEditor) {
-    const currentTab = tabsData.find(t => t.key === activeFile);
+  const filesChangedList = computeFilesChangedAccurate(data, refinePrevSnapshot);
+  const isVisualEditBatch = lastUserRequestText && lastUserRequestText.includes('visual edit');
+
+  if (isVisualEditBatch) {
+    switchMode('code');
+    if (codeViewMode === 'wired' && currentShadcnComponentName) {
+      const p = `src/components/ui/${currentShadcnComponentName}.tsx`;
+      if (tabsData.some((t) => t.key === p)) openFile(p);
+      else if (tabsData.some((t) => t.key === 'react')) openFile('react');
+    } else if (currentShadcnComponentName && currentUpdatedShadcnSource) {
+      const k = `shadcn:${currentShadcnComponentName}`;
+      if (tabsData.some((t) => t.key === k)) openFile(k);
+      else if (tabsData.some((t) => t.key === 'react')) openFile('react');
+    } else if (tabsData.some((t) => t.key === 'react')) {
+      openFile('react');
+    } else if (activeFile && monacoEditor) {
+      const currentTab = tabsData.find((t) => t.key === activeFile);
+      if (currentTab) monacoEditor.setValue(currentTab.code || '');
+    } else {
+      tabsNeedRefresh = true;
+    }
+  } else if (activeFile && monacoEditor) {
+    const currentTab = tabsData.find((t) => t.key === activeFile);
     if (currentTab) {
       monacoEditor.setValue(currentTab.code || '');
     }
@@ -3788,38 +3901,48 @@ function handleRefineComplete(data) {
       delete webContainerLastWritten[wcPath];
       delete webContainerLastWritten[cssPath];
 
-      // Also rewrite App.jsx with a new timestamp to force Vite full re-render
-      const appJsxPath = 'src/App.jsx';
-      const appJsx = `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
-        `// Refined: ${Date.now()}\n` +
-        `function App() {\n  return (\n    <div className="p-6">\n` +
-        `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
-        `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
-      delete webContainerLastWritten[appJsxPath];
+      // Rewrite App.tsx (main.tsx imports ./App.tsx — App.jsx was unused, so preview never picked up refreshes)
+      const appTsxPath = 'src/App.tsx';
+      const hasVariantGrid = !!(currentUpdatedShadcnSource && currentComponentPropertyDefs);
+      const appTsx = hasVariantGrid
+        ? `// refined: ${Date.now()}\n${buildShadcnVariantGridApp(
+            currentComponentName,
+            currentComponentPropertyDefs,
+            currentVariantMetadata,
+          )}`
+        : `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
+          `// Refined: ${Date.now()}\n` +
+          `function App() {\n  return (\n    <div className="p-6">\n` +
+          `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
+          `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
+      delete webContainerLastWritten[appTsxPath];
 
       // Include updated shadcn sub-component files so WebContainer serves the latest code
       const wcFiles = {
         [wcPath]: finalCode,
         [cssPath]: css || `/* ${currentComponentName} */`,
-        [appJsxPath]: appJsx,
+        [appTsxPath]: appTsx,
       };
-      if (data.updatedShadcnSource && currentShadcnComponentName) {
+      if (currentUpdatedShadcnSource && currentShadcnComponentName) {
         const shadcnPath = `src/components/ui/${currentShadcnComponentName}.tsx`;
-        wcFiles[shadcnPath] = data.updatedShadcnSource;
+        wcFiles[shadcnPath] = currentUpdatedShadcnSource;
         delete webContainerLastWritten[shadcnPath];
       }
-      if (data.shadcnSubComponents) {
-        for (const sub of data.shadcnSubComponents) {
+      if (currentShadcnSubComponents) {
+        for (const sub of currentShadcnSubComponents) {
+          if (!sub.shadcnComponentName || !sub.updatedShadcnSource) continue;
           const shadcnPath = `src/components/ui/${sub.shadcnComponentName}.tsx`;
           wcFiles[shadcnPath] = sub.updatedShadcnSource;
           delete webContainerLastWritten[shadcnPath];
         }
       }
       writeWebContainerFiles(wcFiles).then(() => {
-        // Force reload after Vite processes file changes
+        // Force reload after Vite processes file changes (cache-bust iframe URL — same URL can stay cached)
         setTimeout(() => {
           if (previewFrame && webContainerPreviewUrl) {
-            const url = webContainerPreviewUrl;
+            const base = webContainerPreviewUrl;
+            const sep = base.includes('?') ? '&' : '?';
+            const url = `${base}${sep}_=${Date.now()}`;
             replacePreviewIframe('about:blank');
             setTimeout(() => { replacePreviewIframe(url); }, 150);
           }
@@ -3832,6 +3955,8 @@ function handleRefineComplete(data) {
       replacePreviewIframe(staticUrl);
     }
   }
+
+  return filesChangedList;
 }
 
 // Chat input events
@@ -4115,7 +4240,7 @@ function buildExplorer() {
     renderWiredExplorerTree(explorerFiles, tree);
   } else {
     tabsData.forEach((tab) => {
-      const displayName = codeViewMode === 'wired' ? tab.key : currentComponentName + tab.ext;
+      const displayName = generatedTabLabel(tab);
       const item = document.createElement('div');
       item.className = 'explorer-file';
       item.dataset.key = tab.key;
@@ -4170,7 +4295,7 @@ function buildEditorTabs() {
   openFiles.forEach((key) => {
     const tab = tabsData.find((t) => t.key === key);
     if (!tab) return;
-    const tabLabel = codeViewMode === 'wired' ? tab.key : currentComponentName + tab.ext;
+    const tabLabel = generatedTabLabel(tab);
     const el = document.createElement('div');
     el.className = `editor-tab${key === activeFile ? ' active' : ''}`;
     el.dataset.key = key;
@@ -4286,6 +4411,7 @@ function buildTabs(data) {
       ext: FRAMEWORK_EXT[fw] || '.tsx',
     })),
   ];
+  tabsData = appendGeneratedShadcnTabs(tabsData);
 
   const firstKey = tabsData[0]?.key;
   openFiles = firstKey ? [firstKey] : [];

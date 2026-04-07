@@ -3563,12 +3563,14 @@ function sendChatMessage(customText, savedSelectedElement, displayMessage) {
   if (typeof apiPrompt === 'object' && apiPrompt._visualEdits) {
     // Batch visual-edit save — send only the edits map
     payload.visualEdits = apiPrompt._visualEdits;
-  } else if (selElement && selElement.dataVeId) {
+  } else if (selElement && (selElement.dataVeId || selElement.variantLabel || selElement.tagName)) {
     // Floating prompt targeting a specific element — send raw text + targeting info
     payload.userRequest = typeof apiPrompt === 'string' ? apiPrompt : apiPrompt._rawText || apiPrompt;
-    payload.dataVeId = selElement.dataVeId;
+    if (selElement.dataVeId) payload.dataVeId = selElement.dataVeId;
     if (selElement.variantLabel) payload.variantLabel = selElement.variantLabel;
     if (selElement.variantProps) payload.variantProps = selElement.variantProps;
+    if (selElement.tagName) payload.tagName = selElement.tagName;
+    if (selElement.textContent) payload.textContent = selElement.textContent;
   } else {
     // Regular chat — send raw user text
     payload.userRequest = apiPrompt;

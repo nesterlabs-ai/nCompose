@@ -3901,38 +3901,48 @@ function handleRefineComplete(data) {
       delete webContainerLastWritten[wcPath];
       delete webContainerLastWritten[cssPath];
 
-      // Also rewrite App.jsx with a new timestamp to force Vite full re-render
-      const appJsxPath = 'src/App.jsx';
-      const appJsx = `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
-        `// Refined: ${Date.now()}\n` +
-        `function App() {\n  return (\n    <div className="p-6">\n` +
-        `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
-        `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
-      delete webContainerLastWritten[appJsxPath];
+      // Rewrite App.tsx (main.tsx imports ./App.tsx — App.jsx was unused, so preview never picked up refreshes)
+      const appTsxPath = 'src/App.tsx';
+      const hasVariantGrid = !!(currentUpdatedShadcnSource && currentComponentPropertyDefs);
+      const appTsx = hasVariantGrid
+        ? `// refined: ${Date.now()}\n${buildShadcnVariantGridApp(
+            currentComponentName,
+            currentComponentPropertyDefs,
+            currentVariantMetadata,
+          )}`
+        : `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
+          `// Refined: ${Date.now()}\n` +
+          `function App() {\n  return (\n    <div className="p-6">\n` +
+          `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
+          `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
+      delete webContainerLastWritten[appTsxPath];
 
       // Include updated shadcn sub-component files so WebContainer serves the latest code
       const wcFiles = {
         [wcPath]: finalCode,
         [cssPath]: css || `/* ${currentComponentName} */`,
-        [appJsxPath]: appJsx,
+        [appTsxPath]: appTsx,
       };
-      if (data.updatedShadcnSource && currentShadcnComponentName) {
+      if (currentUpdatedShadcnSource && currentShadcnComponentName) {
         const shadcnPath = `src/components/ui/${currentShadcnComponentName}.tsx`;
-        wcFiles[shadcnPath] = data.updatedShadcnSource;
+        wcFiles[shadcnPath] = currentUpdatedShadcnSource;
         delete webContainerLastWritten[shadcnPath];
       }
-      if (data.shadcnSubComponents) {
-        for (const sub of data.shadcnSubComponents) {
+      if (currentShadcnSubComponents) {
+        for (const sub of currentShadcnSubComponents) {
+          if (!sub.shadcnComponentName || !sub.updatedShadcnSource) continue;
           const shadcnPath = `src/components/ui/${sub.shadcnComponentName}.tsx`;
           wcFiles[shadcnPath] = sub.updatedShadcnSource;
           delete webContainerLastWritten[shadcnPath];
         }
       }
       writeWebContainerFiles(wcFiles).then(() => {
-        // Force reload after Vite processes file changes
+        // Force reload after Vite processes file changes (cache-bust iframe URL — same URL can stay cached)
         setTimeout(() => {
           if (previewFrame && webContainerPreviewUrl) {
-            const url = webContainerPreviewUrl;
+            const base = webContainerPreviewUrl;
+            const sep = base.includes('?') ? '&' : '?';
+            const url = `${base}${sep}_=${Date.now()}`;
             replacePreviewIframe('about:blank');
             setTimeout(() => { replacePreviewIframe(url); }, 150);
           }

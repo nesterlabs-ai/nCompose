@@ -116,6 +116,9 @@ const heroForm = document.getElementById('hero-form');
 const heroAttachBtn = document.getElementById('hero-attach-btn');
 const heroFileUpload = document.getElementById('hero-file-upload');
 
+/** Vue, Svelte, Angular, Solid are PRO-only in the UI; conversion uses React for all users. */
+const PRO_FRAMEWORKS = new Set(['vue', 'svelte', 'angular', 'solid']);
+
 // Left panel
 const figmaUrlInput = document.getElementById('figma-url');
 const convertBtn = document.getElementById('convert-btn');
@@ -825,11 +828,9 @@ function restoreProject(projectId) {
   // Set URL input
   figmaUrlInput.value = project.figmaUrl || '';
 
-  // Sync framework checkboxes (hero only; panel URL bar has no duplicate chips)
+  // Sync framework checkboxes (hero only; non-React targets are PRO-only in UI)
   const frameworks = project.frameworks || [];
-  mainHero.querySelectorAll('input[name="framework"]').forEach(cb => {
-    cb.checked = frameworks.includes(cb.value);
-  });
+  syncHeroFrameworkCheckboxesFromProject(frameworks);
 
   // Hide progress, clear empty state
   if (progressCollapsible) progressCollapsible.style.display = 'none';
@@ -1627,6 +1628,21 @@ heroForm?.addEventListener('submit', (e) => {
   startConversion();
 });
 
+function initProFrameworkChipHandlers() {
+  mainHero.querySelectorAll('input[name="framework"]').forEach((input) => {
+    if (!PRO_FRAMEWORKS.has(input.value)) return;
+    input.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        showContactNesterLabsModal();
+      },
+      true,
+    );
+  });
+}
+initProFrameworkChipHandlers();
+
 // Attach button opens file picker (for future file upload support)
 heroAttachBtn?.addEventListener('click', () => heroFileUpload?.click());
 
@@ -1724,9 +1740,19 @@ function getActiveUrlInput() {
   return mainHero.classList.contains('hidden') ? figmaUrlInput : heroFigmaUrlInput;
 }
 
+function syncHeroFrameworkCheckboxesFromProject(_projectFrameworks) {
+  mainHero.querySelectorAll('input[name="framework"]').forEach((cb) => {
+    if (cb.value === 'react') {
+      cb.checked = true;
+      cb.disabled = true;
+    } else {
+      cb.checked = false;
+    }
+  });
+}
+
 function getSelectedFrameworks() {
-  const checkboxes = mainHero.querySelectorAll('input[name="framework"]:checked');
-  return Array.from(checkboxes).map((cb) => cb.value);
+  return ['react'];
 }
 
 function isFigmaUrl(text) {
@@ -1913,7 +1939,7 @@ async function startConversion(skipDuplicateCheck) {
   // Sync URL to panel for "convert another" (frameworks stay on hero inputs)
   figmaUrlInput.value = figmaUrl;
   if (frameworks.length === 0) {
-    showError('Please select at least one framework.');
+    showError('Please select React (other frameworks are available on PRO).');
     return;
   }
 
@@ -6472,7 +6498,7 @@ const ONBOARDING_STEPS = [
     welcome: true,
     icon: null, // illustration replaces the icon on the welcome step
     title: 'Welcome to Nester Compose',
-    desc: 'Convert any Figma design into production-ready React, Vue, Svelte, Angular, or Solid code — in seconds.',
+    desc: 'Convert any Figma design into production-ready React code — Vue, Svelte, Angular, and Solid are available on PRO.',
     nextLabel: 'Take the tour →',
     skipLabel: 'Skip for now',
   },
@@ -6496,7 +6522,7 @@ const ONBOARDING_STEPS = [
     position: 'top',
     icon: '⚡',
     title: 'Pick your frameworks',
-    desc: 'Select one or more output targets. We generate all of them simultaneously — React, Vue, Svelte, Angular, or Solid.',
+    desc: 'React is included for everyone. Choose PRO to unlock Vue, Svelte, Angular, and Solid — contact NesterLabs from the chip.',
   },
   {
     target: '#hero-convert-btn',
@@ -6510,7 +6536,7 @@ const ONBOARDING_STEPS = [
     done: true,
     icon: '🎉',
     title: "You're ready to ship!",
-    desc: 'Convert any Figma design into production-ready components. Live preview, multi-framework code, and AI refinement — all in one place.',
+    desc: 'Convert any Figma design into production-ready components. Live preview, React output, and AI refinement — with more frameworks on PRO.',
     nextLabel: 'Start converting →',
     skipLabel: null,
   },

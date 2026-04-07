@@ -1348,6 +1348,7 @@ html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill:focus {
   flex-wrap: wrap;
   gap: 8px;
   width: 100%;
+  overflow: visible;
 }
 
 .hero__prompt-label {
@@ -1359,9 +1360,10 @@ html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill:focus {
 .hero__prompt-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
   min-width: 0;
+  overflow: visible;
 }
 
 .chip--prompt {
@@ -1394,6 +1396,79 @@ html:not([data-theme="light"]) .hero__prompt-input:-webkit-autofill:focus {
   background: var(--accent-hover);
   box-shadow: 0 4px 16px rgba(239, 49, 57, 0.5);
   transform: translateY(-1px);
+}
+
+/* React is locked on — disabled checkbox but same visual weight as selected */
+.chip-label--framework-locked {
+  cursor: default;
+}
+
+.chip-label--framework-locked input[type="checkbox"]:disabled + .chip--prompt {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 2px 12px rgba(239, 49, 57, 0.4);
+  opacity: 1;
+  cursor: default;
+}
+
+.chip-label--framework-locked:hover input:disabled + .chip--prompt {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  transform: none;
+  box-shadow: 0 2px 12px rgba(239, 49, 57, 0.45);
+}
+
+/* PRO frameworks: corner tag (notification-style), not inline in the pill */
+.chip-label--framework-pro {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Corner PRO pill: same visual as workspace search `.workspace-search__pro-badge` (accent + white PRO) */
+.framework-pro-tag.workspace-search__pro-badge {
+  position: absolute;
+  top: -10px;
+  right: -8px;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* Hide PRO tag until hover/focus on hover-capable desktop; touch keeps it visible */
+@media (hover: hover) and (pointer: fine) {
+  .framework-pro-tag.workspace-search__pro-badge {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  .chip-label--framework-pro:hover .framework-pro-tag.workspace-search__pro-badge,
+  .chip-label--framework-pro:focus-within .framework-pro-tag.workspace-search__pro-badge {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .framework-pro-tag.workspace-search__pro-badge {
+    transition: opacity 0.15s ease;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .framework-pro-tag.workspace-search__pro-badge {
+      transform: none;
+      opacity: 0;
+    }
+
+    .chip-label--framework-pro:hover .framework-pro-tag.workspace-search__pro-badge,
+    .chip-label--framework-pro:focus-within .framework-pro-tag.workspace-search__pro-badge {
+      opacity: 1;
+    }
+  }
 }
 
 .hero__template-btn {

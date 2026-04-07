@@ -20,6 +20,7 @@ import { createLLMProvider } from '../llm/index.js';
 import { config } from '../config.js';
 import { wireIntoStarter } from '../template/wire-into-starter.js';
 import { injectCSS } from '../compile/inject-css.js';
+import { stripAllDataVeIds } from '../compile/strip-ve-ids.js';
 import rateLimit from 'express-rate-limit';
 import { attachUser, requireAuth, requireAuthOrFree, incrementFreeTierUsage, incrementAuthUsage, incrementIPUsage, isAuthEnabled, getFingerprint, verifySignedFingerprint, FINGERPRINT_COOKIE } from './auth/index.js';
 import { authRoutes } from './auth/index.js';
@@ -781,12 +782,12 @@ app.post('/api/convert', expensiveLimiter as any, requireAuthOrFree as any, (req
           }
         }
 
-        // Send framework outputs for code display
+        // Send framework outputs for code display — strip data-ve-id (preview-only attribute)
         sendEvent('complete', {
           sessionId,
           componentName: result.componentName,
           frameworks: selectedFrameworks,
-          frameworkOutputs: result.frameworkOutputs,
+          frameworkOutputs: stripAllDataVeIds(result.frameworkOutputs),
           mitosisSource: result.mitosisSource,
           elementMap: result.elementMap,
           templateWired,
@@ -1139,7 +1140,7 @@ app.post('/api/hero-chat', requireAuthOrFree as any, async (req: any, res: any) 
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requireSessionOwner as any, (req: any, res: any) => {
-  const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits } = req.body;
+  const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits, tagName: reqTagName, textContent: reqTextContent } = req.body;
   const refineUserId = req.user?.sub || (req as any)._fingerprint || 'anon';
   const refineIp = req.ip || req.connection?.remoteAddress || '?';
   log.info('refine', `sessionId=${sessionId} userRequest="${(userRequest || '').substring(0, 100)}" dataVeId=${dataVeId || 'none'} visualEdits=${visualEdits ? 'yes' : 'no'} user=${refineUserId} ip=${refineIp}`);
@@ -1272,6 +1273,16 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
       variantLabel: variantLabel || null,
       variantProps: variantProps || null,
     };
+  } else if (!dataVeId && (variantLabel || reqTagName) && userRequest) {
+    // Floating prompt with element/variant context but no data-ve-id
+    effectivePrompt = userRequest.trim();
+    resolvedSelectedElement = {
+      dataVeId: null,
+      tagName: reqTagName || null,
+      textContent: reqTextContent || null,
+      variantLabel: variantLabel || null,
+      variantProps: variantProps || null,
+    };
   } else {
     // Regular chat — raw user request
     effectivePrompt = userRequest.trim();
@@ -1281,7 +1292,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   // For plain chat messages (not visual edits or element-targeted prompts),
   // classify intent and skip the full refinement pipeline for conversational
   // messages like greetings, affirmations, or meta-questions.
-  const intent = (!visualEdits && !dataVeId && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
+  const intent = (!visualEdits && !dataVeId && !variantLabel && !reqTagName && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
   log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 500)}"`);
   if (resolvedSelectedElement) {
     log.info('refine', `Resolved element — dataVeId: ${resolvedSelectedElement.dataVeId}, tag: <${resolvedSelectedElement.tagName}>, text: "${(resolvedSelectedElement.textContent || '').substring(0, 50)}", variant: ${resolvedSelectedElement.variantLabel || 'none'}`);
@@ -1478,7 +1489,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
       }
 
       const completePayload: any = {
-        frameworkOutputs: session.result.frameworkOutputs,
+        frameworkOutputs: stripAllDataVeIds(session.result.frameworkOutputs),
         mitosisSource: session.result.mitosisSource,
         elementMap: session.result.elementMap,
       };
@@ -1562,8 +1573,9 @@ app.get('/api/download/:sessionId', requireAuth as any, requireSessionOwner as a
     name: `${result.componentName}/${result.componentName}.lite.tsx`,
   });
 
-  // Add framework outputs
-  for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+  // Add framework outputs — strip data-ve-id (preview-only attribute)
+  const cleanOutputsForZip = stripAllDataVeIds(result.frameworkOutputs);
+  for (const [fw, code] of Object.entries(cleanOutputsForZip)) {
     if (code && !code.startsWith('// Error')) {
       const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
       archive.append(code, {
@@ -1864,8 +1876,9 @@ app.get('/api/session/:sessionId/push-files', requireSessionOwner as any, (req: 
 
     // Chart components are inlined into the main React JSX — no separate files needed.
 
-    // Framework outputs
-    for (const [fw, code] of Object.entries(result.frameworkOutputs)) {
+    // Framework outputs — strip data-ve-id (preview-only attribute)
+    const cleanOutputsForListing = stripAllDataVeIds(result.frameworkOutputs);
+    for (const [fw, code] of Object.entries(cleanOutputsForListing)) {
       if (code && !code.startsWith('// Error')) {
         const ext = FRAMEWORK_EXTENSIONS[fw as Framework] ?? '.tsx';
         files.push({

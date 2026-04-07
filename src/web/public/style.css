@@ -3501,7 +3501,6 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
 /* When progress is expanded, it takes priority — chat shrinks */
 .progress-collapsible.visible:not(.collapsed) ~ .chat-messages {
   flex: 0 0 auto;
-  max-height: 30%;
 }
 
 .chat-messages::-webkit-scrollbar {

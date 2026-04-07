@@ -748,6 +748,11 @@
             <div class="preview-header" id="preview-header" style="display: none;">
               <span class="preview-live-badge" id="preview-live-badge" style="display: none;">Live</span>
               <span class="preview-status" id="preview-status"></span>
+              <div class="preview-zoom-controls">
+                <button type="button" class="preview-zoom-btn" id="preview-zoom-out" title="Zoom out">-</button>
+                <button type="button" class="preview-zoom-btn" id="preview-zoom-reset" title="Reset zoom">100%</button>
+                <button type="button" class="preview-zoom-btn" id="preview-zoom-in" title="Zoom in">+</button>
+              </div>
               <button type="button" class="preview-reload" id="preview-reload" aria-label="Reload preview"
                 style="display: none;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -770,8 +775,12 @@
               <span class="preview-loading-spinner"></span>
               <span class="preview-loading-text" id="preview-loading-text">Starting preview...</span>
             </div>
-            <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin"
-              style="display: none;"></iframe>
+            <div class="preview-outer">
+              <div class="preview-inner" id="preview-inner">
+                <iframe class="preview-frame" id="preview-frame" src="about:blank"
+                  sandbox="allow-scripts allow-same-origin" style="display: none;"></iframe>
+              </div>
+            </div>
 
             <!-- Floating AI Prompt (Glassmorphism) -->
             <div class="ve-floating-prompt" id="ve-floating-prompt" style="display: none;">

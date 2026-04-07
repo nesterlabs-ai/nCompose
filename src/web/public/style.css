@@ -1853,10 +1853,6 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
   min-height: 0;
 }
 
-#view-preview {
-  padding: 0;
-}
-
 /* ── Preview Empty State ── */
 .preview-empty {
   flex: 1;
@@ -1882,9 +1878,27 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
 
 /* ── Preview Header (Live badge, reload) ── */
 #view-preview {
+  padding: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.preview-outer {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+  background: #fff;
+  min-height: 0;
+}
+
+.preview-inner {
+  transform-origin: top left;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .preview-header {
@@ -1958,6 +1972,29 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
   border: none;
   background: #fff;
   min-height: 400px;
+}
+
+.preview-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.preview-zoom-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--code-block-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.preview-zoom-btn:hover {
+  color: var(--text);
+  border-color: var(--border-light);
+  background: var(--code-block-header-bg);
 }
 
 /* ── Form Elements ── */

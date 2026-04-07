@@ -223,6 +223,15 @@ All other variants MUST remain exactly as they are — do not modify their text,
   } else if (hasDataVeId) {
     elementContextBlock += `
 CRITICAL: Apply the requested change ONLY to THIS specific element (data-ve-id="${selectedElement.dataVeId}"). Do NOT modify any other elements in the component. Every other element must remain exactly as-is.`;
+  } else if (selectedElement?.tagName && !hasDataVeId) {
+    // Element selected via floating prompt but no data-ve-id available (e.g. page designs)
+    const displayText = selectedElement.textContent || '';
+    elementContextBlock += `
+
+IMPORTANT - Element targeting: The user selected a specific element in the preview.
+- Tag: <${selectedElement.tagName}>
+${displayText ? `- Current text: "${displayText}"` : ''}
+CRITICAL: Apply the requested change ONLY to this <${selectedElement.tagName}>${displayText ? ` element containing "${displayText}"` : ' element'}. Do NOT modify any other elements in the component. Every other element must remain exactly as-is.`;
   }
 
   // ── Refinement Logging: Element Selection & Prompt ──

@@ -1140,7 +1140,7 @@ app.post('/api/hero-chat', requireAuthOrFree as any, async (req: any, res: any) 
  * Streams progress via Server-Sent Events, then sends updated code.
  */
 app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requireSessionOwner as any, (req: any, res: any) => {
-  const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits } = req.body;
+  const { sessionId, userRequest, dataVeId, variantLabel, variantProps, visualEdits, tagName: reqTagName, textContent: reqTextContent } = req.body;
   const refineUserId = req.user?.sub || (req as any)._fingerprint || 'anon';
   const refineIp = req.ip || req.connection?.remoteAddress || '?';
   log.info('refine', `sessionId=${sessionId} userRequest="${(userRequest || '').substring(0, 100)}" dataVeId=${dataVeId || 'none'} visualEdits=${visualEdits ? 'yes' : 'no'} user=${refineUserId} ip=${refineIp}`);
@@ -1273,6 +1273,16 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
       variantLabel: variantLabel || null,
       variantProps: variantProps || null,
     };
+  } else if (!dataVeId && (variantLabel || reqTagName) && userRequest) {
+    // Floating prompt with element/variant context but no data-ve-id
+    effectivePrompt = userRequest.trim();
+    resolvedSelectedElement = {
+      dataVeId: null,
+      tagName: reqTagName || null,
+      textContent: reqTextContent || null,
+      variantLabel: variantLabel || null,
+      variantProps: variantProps || null,
+    };
   } else {
     // Regular chat — raw user request
     effectivePrompt = userRequest.trim();
@@ -1282,7 +1292,7 @@ app.post('/api/refine', expensiveLimiter as any, requireAuthOrFree as any, requi
   // For plain chat messages (not visual edits or element-targeted prompts),
   // classify intent and skip the full refinement pipeline for conversational
   // messages like greetings, affirmations, or meta-questions.
-  const intent = (!visualEdits && !dataVeId && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
+  const intent = (!visualEdits && !dataVeId && !variantLabel && !reqTagName && userRequest) ? classifyMessageIntent(userRequest.trim()) : null;
   log.info('refine', `intent=${intent || 'code_change (default)'} effectivePrompt="${effectivePrompt.substring(0, 500)}"`);
   if (resolvedSelectedElement) {
     log.info('refine', `Resolved element — dataVeId: ${resolvedSelectedElement.dataVeId}, tag: <${resolvedSelectedElement.tagName}>, text: "${(resolvedSelectedElement.textContent || '').substring(0, 50)}", variant: ${resolvedSelectedElement.variantLabel || 'none'}`);

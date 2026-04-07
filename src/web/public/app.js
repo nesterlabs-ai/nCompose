@@ -89,6 +89,20 @@ const commandPaletteOverlay = document.getElementById('command-palette-overlay')
 const commandPaletteInput = document.getElementById('command-palette-input');
 const commandPaletteResults = document.getElementById('command-palette-results');
 const commandPaletteHint = document.getElementById('command-palette-hint');
+const workspaceSearchInput = document.getElementById('workspace-search-input');
+const workspaceSearchHint = document.getElementById('workspace-search-hint');
+const workspaceSearchResults = document.getElementById('workspace-search-results');
+const workspaceSearchCase = document.getElementById('workspace-search-case');
+const workspaceSearchWhole = document.getElementById('workspace-search-whole');
+const workspaceSearchRegex = document.getElementById('workspace-search-regex');
+const workspaceSearchRefresh = document.getElementById('workspace-search-refresh');
+const workspaceSearchClear = document.getElementById('workspace-search-clear');
+const workspaceSearchCollapseAll = document.getElementById('workspace-search-collapse-all');
+const workspaceSearchCopyAll = document.getElementById('workspace-search-copy-all');
+const explorerTabFiles = document.getElementById('explorer-tab-files');
+const explorerTabSearch = document.getElementById('explorer-tab-search');
+const explorerPanelFiles = document.getElementById('explorer-panel-files');
+const explorerPanelSearch = document.getElementById('explorer-panel-search');
 
 // Hero
 const mainHero = document.getElementById('main-hero');
@@ -101,6 +115,9 @@ const heroError = document.getElementById('hero-error');
 const heroForm = document.getElementById('hero-form');
 const heroAttachBtn = document.getElementById('hero-attach-btn');
 const heroFileUpload = document.getElementById('hero-file-upload');
+
+/** Vue, Svelte, Angular, Solid are PRO-only in the UI; conversion uses React for all users. */
+const PRO_FRAMEWORKS = new Set(['vue', 'svelte', 'angular', 'solid']);
 
 // Left panel
 const figmaUrlInput = document.getElementById('figma-url');
@@ -152,13 +169,10 @@ function replacePreviewIframe(url) {
   }
 }
 const downloadBtn = document.getElementById('download-btn');
-const codeExplorer = document.getElementById('code-explorer');
 const explorerBody = document.getElementById('explorer-body');
 const explorerFiles = document.getElementById('explorer-files');
-const codeViewModeEl = document.getElementById('code-view-mode');
 const explorerSectionTitle = document.getElementById('explorer-section-title');
 const editorTabs = document.getElementById('editor-tabs');
-const explorerToggle = document.getElementById('explorer-toggle');
 const codeEditBtn = document.getElementById('code-edit-btn');
 const codeSaveBtn = document.getElementById('code-save-btn');
 const codeCopyBtn = document.getElementById('code-copy-btn');
@@ -288,8 +302,12 @@ let webContainerDevProcess = null;
 let webContainerPreviewUrl = null;
 let webContainerLastWritten = {};
 let webContainerSyncEnabled = false;
-let codeViewMode = 'generated'; // 'generated' | 'wired'
+let codeViewMode = 'generated'; // 'generated' | 'wired' (wired = full Vite tree when template is wired)
 let wiredAppFiles = {}; // path -> content (when template was wired)
+/** True when the session uses a wired template and app files are loaded — explorer shows project tree, not generated file list. */
+function isWiredCodeView() {
+  return templateWired && wiredAppFiles && Object.keys(wiredAppFiles).length > 0;
+}
 let generatedTabsData = [];
 let templateWired = false;
 let tabsNeedRefresh = false;
@@ -396,7 +414,7 @@ function loadExplorerIconConfig() {
       if (data.fileIcons && typeof data.fileIcons === 'object') {
         explorerIconConfig.fileIcons = { ...DEFAULT_EXPLORER_ICON_CONFIG.fileIcons, ...data.fileIcons };
       }
-      if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) buildExplorer();
+      if (isWiredCodeView()) buildExplorer();
     })
     .catch(() => { });
 }
@@ -810,11 +828,9 @@ function restoreProject(projectId) {
   // Set URL input
   figmaUrlInput.value = project.figmaUrl || '';
 
-  // Sync framework checkboxes (hero only; panel URL bar has no duplicate chips)
+  // Sync framework checkboxes (hero only; non-React targets are PRO-only in UI)
   const frameworks = project.frameworks || [];
-  mainHero.querySelectorAll('input[name="framework"]').forEach(cb => {
-    cb.checked = frameworks.includes(cb.value);
-  });
+  syncHeroFrameworkCheckboxesFromProject(frameworks);
 
   // Hide progress, clear empty state
   if (progressCollapsible) progressCollapsible.style.display = 'none';
@@ -832,16 +848,10 @@ function restoreProject(projectId) {
   buildTabs(fakeData);
   generatedTabsData = tabsData.map(t => ({ ...t }));
 
-  // Restore templateWired state and code view mode toggle
+  // Restore templateWired state (wired sessions use project tree only — no Components/generated toggle)
   templateWired = Boolean(project.templateWired);
-  if (templateWired && codeViewModeEl) {
-    codeViewModeEl.style.display = 'flex';
-  } else if (codeViewModeEl) {
-    codeViewModeEl.style.display = 'none';
-  }
 
-  // Restore saved UI state: openFiles, activeFile, codeViewMode
-  const savedCodeViewMode = project.codeViewMode || 'generated';
+  // Restore saved UI state: openFiles, activeFile
   const savedOpenFiles = (project.openFiles || []).filter(k => tabsData.some(t => t.key === k));
   const savedActiveFile = (project.activeFile && savedOpenFiles.includes(project.activeFile))
     ? project.activeFile
@@ -885,19 +895,15 @@ function restoreProject(projectId) {
       .then(res => {
         if (res && res.files) {
           wiredAppFiles = res.files;
-          // If saved code view was 'wired', switch now that files are loaded
-          if (savedCodeViewMode === 'wired') {
+          if (Object.keys(wiredAppFiles).length > 0) {
             switchCodeViewMode('wired');
           }
         } else {
-          // Wired files unavailable, hide toggle
           templateWired = false;
-          if (codeViewModeEl) codeViewModeEl.style.display = 'none';
         }
       })
       .catch(() => {
         templateWired = false;
-        if (codeViewModeEl) codeViewModeEl.style.display = 'none';
       });
   }
 
@@ -1622,6 +1628,21 @@ heroForm?.addEventListener('submit', (e) => {
   startConversion();
 });
 
+function initProFrameworkChipHandlers() {
+  mainHero.querySelectorAll('input[name="framework"]').forEach((input) => {
+    if (!PRO_FRAMEWORKS.has(input.value)) return;
+    input.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        showContactNesterLabsModal('pro');
+      },
+      true,
+    );
+  });
+}
+initProFrameworkChipHandlers();
+
 // Attach button opens file picker (for future file upload support)
 heroAttachBtn?.addEventListener('click', () => heroFileUpload?.click());
 
@@ -1719,9 +1740,19 @@ function getActiveUrlInput() {
   return mainHero.classList.contains('hidden') ? figmaUrlInput : heroFigmaUrlInput;
 }
 
+function syncHeroFrameworkCheckboxesFromProject(_projectFrameworks) {
+  mainHero.querySelectorAll('input[name="framework"]').forEach((cb) => {
+    if (cb.value === 'react') {
+      cb.checked = true;
+      cb.disabled = true;
+    } else {
+      cb.checked = false;
+    }
+  });
+}
+
 function getSelectedFrameworks() {
-  const checkboxes = mainHero.querySelectorAll('input[name="framework"]:checked');
-  return Array.from(checkboxes).map((cb) => cb.value);
+  return ['react'];
 }
 
 function isFigmaUrl(text) {
@@ -1908,7 +1939,7 @@ async function startConversion(skipDuplicateCheck) {
   // Sync URL to panel for "convert another" (frameworks stay on hero inputs)
   figmaUrlInput.value = figmaUrl;
   if (frameworks.length === 0) {
-    showError('Please select at least one framework.');
+    showError('Please select React (other frameworks are available on PRO).');
     return;
   }
 
@@ -1939,7 +1970,7 @@ async function startConversion(skipDuplicateCheck) {
   codeViewMode = 'generated';
   templateWired = false;
   wiredExplorerExpanded = new Set(['src', 'public']);
-  if (codeViewModeEl) codeViewModeEl.style.display = 'none';
+  setExplorerSidebarTab('files');
   updateCodeActionsState();
 
   // Reset chat state and project tracking
@@ -3087,9 +3118,8 @@ function handleComplete(data) {
   buildTabs(data);
   generatedTabsData = tabsData.map((t) => ({ ...t }));
 
-  // When template was wired, show toggle and fetch wired app files, then auto-switch to Project view
-  if (templateWired && codeViewModeEl) {
-    codeViewModeEl.style.display = 'flex';
+  // When template was wired, fetch app files and show project tree (no separate Components view)
+  if (templateWired) {
     apiFetch(`/api/session/${currentSessionId}/wired-app-files`)
       .then((r) => (r.ok ? r.json() : { files: {} }))
       .then((res) => {
@@ -3099,8 +3129,6 @@ function handleComplete(data) {
         }
       })
       .catch(() => { });
-  } else if (codeViewModeEl) {
-    codeViewModeEl.style.display = 'none';
   }
 
   // Show download and push buttons
@@ -3198,7 +3226,7 @@ function buildCompletionTitle() {
 }
 
 /**
- * Extra tabs in "Components" (generated) view for shadcn/ui sources — keys `shadcn:<name>`.
+ * Extra tabs in generated (non-wired) view for shadcn/ui sources — keys `shadcn:<name>`.
  * Preview + refine apply edits here; without these, users only see Mitosis + framework outputs.
  */
 function appendGeneratedShadcnTabs(tabs) {
@@ -3227,7 +3255,7 @@ function appendGeneratedShadcnTabs(tabs) {
 }
 
 function generatedTabLabel(tab) {
-  if (codeViewMode === 'wired') return tab.key;
+  if (isWiredCodeView()) return tab.key;
   return tab.explorerName || `${currentComponentName || 'Component'}${tab.ext || ''}`;
 }
 
@@ -3817,10 +3845,10 @@ function handleRefineComplete(data) {
     }
   }
 
-  // Rebuild tabs so shadcn/ui sources appear in Components view and wired tree stays current
-  if (codeViewMode === 'generated') {
+  // Rebuild tabs: generated list (Mitosis + frameworks + shadcn tabs) vs full wired tree
+  if (!isWiredCodeView()) {
     tabsData = appendGeneratedShadcnTabs(tabsData);
-  } else if (codeViewMode === 'wired' && wiredAppFiles && Object.keys(wiredAppFiles).length > 0) {
+  } else if (wiredAppFiles && Object.keys(wiredAppFiles).length > 0) {
     const paths = Object.keys(wiredAppFiles).sort();
     tabsData = paths.map((path) => ({
       key: path,
@@ -3850,7 +3878,7 @@ function handleRefineComplete(data) {
 
   if (isVisualEditBatch) {
     switchMode('code');
-    if (codeViewMode === 'wired' && currentShadcnComponentName) {
+    if (isWiredCodeView() && currentShadcnComponentName) {
       const p = `src/components/ui/${currentShadcnComponentName}.tsx`;
       if (tabsData.some((t) => t.key === p)) openFile(p);
       else if (tabsData.some((t) => t.key === 'react')) openFile('react');
@@ -4234,7 +4262,7 @@ function renderWiredExplorerTree(container, node, folderPath = '') {
 
 function buildExplorer() {
   explorerFiles.innerHTML = '';
-  if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) {
+  if (isWiredCodeView()) {
     const paths = Object.keys(wiredAppFiles).sort();
     const tree = pathsToTree(paths);
     renderWiredExplorerTree(explorerFiles, tree);
@@ -4321,18 +4349,18 @@ function setEditMode(editing) {
 
 function updateCodeActionsState() {
   const hasCode = activeFile && tabsData.length > 0;
-  const canEdit = hasCode && codeViewMode === 'generated';
+  const canEdit = hasCode && !isWiredCodeView();
   codeEditBtn.disabled = !canEdit;
   codeSaveBtn.disabled = !canEdit;
   codeCopyBtn.disabled = !hasCode;
   if (!hasCode) {
     setEditMode(false);
-  } else if (codeViewMode === 'wired' && isEditMode) {
+  } else if (isWiredCodeView() && isEditMode) {
     setEditMode(false);
   }
 }
 
-function openFile(key) {
+function openFile(key, reveal) {
   const tab = tabsData.find((t) => t.key === key);
   if (!tab) return;
 
@@ -4358,6 +4386,19 @@ function openFile(key) {
     monaco.editor.setModelLanguage(monacoEditor.getModel(), getMonacoLanguage(tab.ext));
     // Mitosis .lite.tsx uses non-standard syntax; framework outputs use standard syntax
     setMonacoValidation(key !== 'mitosis');
+    if (reveal && typeof reveal.lineNumber === 'number' && reveal.lineNumber >= 1) {
+      requestAnimationFrame(() => {
+        if (!monacoEditor) return;
+        const model = monacoEditor.getModel();
+        if (!model) return;
+        const line = Math.min(reveal.lineNumber, model.getLineCount());
+        const maxCol = model.getLineMaxColumn(line);
+        const col = Math.min(Math.max(1, reveal.column || 1), maxCol);
+        monacoEditor.setPosition({ lineNumber: line, column: col });
+        monacoEditor.revealLineInCenter(line);
+        monacoEditor.focus();
+      });
+    }
   }
 
   layoutMonaco();
@@ -4417,7 +4458,7 @@ function buildTabs(data) {
   openFiles = firstKey ? [firstKey] : [];
   activeFile = firstKey;
 
-  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Components';
+  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Generated files';
   buildExplorer();
   buildEditorTabs();
 
@@ -4441,11 +4482,8 @@ function switchCodeViewMode(mode) {
   if (currentProjectId) {
     updateProjectField(currentProjectId, { codeViewMode: mode });
   }
-  document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.mode === mode);
-  });
   if (explorerSectionTitle) {
-    explorerSectionTitle.textContent = mode === 'wired' ? 'Project' : 'Components';
+    explorerSectionTitle.textContent = mode === 'wired' ? 'Project' : 'Generated files';
   }
   if (mode === 'wired') {
     const paths = Object.keys(wiredAppFiles).sort();
@@ -4471,20 +4509,6 @@ function switchCodeViewMode(mode) {
   updateCodeActionsState();
   layoutMonaco();
 }
-
-// ── Explorer Toggle ──
-explorerToggle.addEventListener('click', () => {
-  codeExplorer.classList.toggle('collapsed');
-  requestAnimationFrame(layoutMonaco);
-});
-
-// ── Code view mode (Components | Project) ──
-document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const mode = btn.dataset.mode;
-    if (mode === 'generated' || mode === 'wired') switchCodeViewMode(mode);
-  });
-});
 
 // ── Edit ──
 codeEditBtn.addEventListener('click', () => {
@@ -5478,6 +5502,396 @@ function initCommandPalette() {
   });
 }
 
+const MAX_GLOBAL_SEARCH_RESULTS = 200;
+const MAX_GLOBAL_SEARCH_PER_FILE = 45;
+let globalSearchSelected = 0;
+let globalSearchFlat = [];
+let globalSearchDebounce = null;
+let workspaceSearchLastError = null;
+let workspaceSearchHistory = [];
+let workspaceSearchHistoryIdx = -1;
+
+function escapeRegExpStr(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Minimal glob → RegExp for paths (forward slashes). Supports * and **. */
+function globPatternToRegExp(pattern) {
+  const norm = pattern.trim().replace(/\\/g, '/');
+  if (!norm) return /^$/;
+  let out = '';
+  for (let i = 0; i < norm.length; i++) {
+    const c = norm[i];
+    if (c === '*' && norm[i + 1] === '*') {
+      out += '.*';
+      i++;
+    } else if (c === '*') {
+      out += '[^/]*';
+    } else if (c === '?') {
+      out += '[^/]';
+    } else if ('.+()[]^${}|\\'.includes(c)) {
+      out += `\\${c}`;
+    } else {
+      out += c;
+    }
+  }
+  return new RegExp(`^${out}$`);
+}
+
+function pathAllowedByGlobs(filePath, includeStr, excludeStr) {
+  const norm = filePath.replace(/\\/g, '/');
+  const includeParts = (includeStr || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (includeParts.length > 0) {
+    const ok = includeParts.some((pat) => {
+      try {
+        return globPatternToRegExp(pat).test(norm);
+      } catch {
+        return false;
+      }
+    });
+    if (!ok) return false;
+  }
+  const excludeParts = (excludeStr || '').split(',').map((s) => s.trim()).filter(Boolean);
+  for (const pat of excludeParts) {
+    try {
+      if (globPatternToRegExp(pat).test(norm)) return false;
+    } catch {
+      /* ignore invalid exclude */
+    }
+  }
+  return true;
+}
+
+function findMatchInLine(line, query, opts) {
+  const { caseSensitive, wholeWord, useRegex } = opts;
+  if (!query) return null;
+  if (useRegex) {
+    try {
+      const flags = caseSensitive ? 'g' : 'gi';
+      const re = new RegExp(query, flags);
+      const m = re.exec(line);
+      if (!m) return null;
+      return { index: m.index, length: m[0].length };
+    } catch {
+      return null;
+    }
+  }
+  if (wholeWord) {
+    const re = new RegExp(`\\b${escapeRegExpStr(query)}\\b`, caseSensitive ? '' : 'i');
+    const m = re.exec(line);
+    if (!m) return null;
+    return { index: m.index, length: m[0].length };
+  }
+  if (caseSensitive) {
+    const idx = line.indexOf(query);
+    if (idx === -1) return null;
+    return { index: idx, length: query.length };
+  }
+  const lower = line.toLowerCase();
+  const qLower = query.toLowerCase();
+  const idx = lower.indexOf(qLower);
+  if (idx === -1) return null;
+  return { index: idx, length: query.length };
+}
+
+function updateWorkspaceSearchHint() {
+  if (!workspaceSearchHint) return;
+  const mod = /Mac|iPhone|iPod|iPad/i.test(navigator.platform) ? '⌘' : 'Ctrl';
+  let extra = '';
+  if (workspaceSearchLastError) extra = workspaceSearchLastError;
+  else extra = `${mod}+Shift+F · Enter · Esc`;
+  workspaceSearchHint.textContent = extra;
+}
+
+function isWorkspaceSearchTabActive() {
+  return explorerTabSearch?.classList.contains('active');
+}
+
+function setExplorerSidebarTab(which) {
+  const isSearch = which === 'search';
+  explorerTabFiles?.classList.toggle('active', !isSearch);
+  explorerTabSearch?.classList.toggle('active', isSearch);
+  explorerTabFiles?.setAttribute('aria-selected', isSearch ? 'false' : 'true');
+  explorerTabSearch?.setAttribute('aria-selected', isSearch ? 'true' : 'false');
+  if (explorerPanelFiles) explorerPanelFiles.hidden = isSearch;
+  if (explorerPanelSearch) explorerPanelSearch.hidden = !isSearch;
+}
+
+function searchProjectFiles(query) {
+  workspaceSearchLastError = null;
+  const q = query.trim();
+  if (!q || !tabsData.length) return [];
+  const caseSensitive = workspaceSearchCase?.getAttribute('aria-pressed') === 'true';
+  const wholeWord =
+    workspaceSearchWhole?.getAttribute('aria-pressed') === 'true' &&
+    workspaceSearchRegex?.getAttribute('aria-pressed') !== 'true';
+  const useRegex = workspaceSearchRegex?.getAttribute('aria-pressed') === 'true';
+  const includeStr = '';
+  const excludeStr = '';
+
+  if (useRegex) {
+    try {
+      new RegExp(q, caseSensitive ? '' : 'i');
+    } catch {
+      workspaceSearchLastError = 'Invalid regular expression';
+      return [];
+    }
+  }
+
+  const opts = { caseSensitive, wholeWord, useRegex };
+  const out = [];
+  for (const tab of tabsData) {
+    if (out.length >= MAX_GLOBAL_SEARCH_RESULTS) break;
+    const path = tab.key;
+    if (!pathAllowedByGlobs(path, includeStr, excludeStr)) continue;
+    const text = tab.code || '';
+    const lines = text.split(/\r?\n/);
+    let hitsInFile = 0;
+    for (let i = 0; i < lines.length && out.length < MAX_GLOBAL_SEARCH_RESULTS; i++) {
+      if (hitsInFile >= MAX_GLOBAL_SEARCH_PER_FILE) break;
+      const line = lines[i];
+      const match = findMatchInLine(line, q, opts);
+      if (match) {
+        hitsInFile++;
+        const preview = line.length > 220 ? `${line.slice(0, 217)}…` : line;
+        out.push({
+          key: path,
+          lineNumber: i + 1,
+          column: match.index + 1,
+          preview,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function renderWorkspaceSearchResults() {
+  if (!workspaceSearchResults) return;
+  updateWorkspaceSearchHint();
+  if (globalSearchFlat.length === 0) {
+    const q = workspaceSearchInput?.value?.trim() ?? '';
+    if (workspaceSearchLastError) {
+      workspaceSearchResults.innerHTML = `<div class="workspace-search__empty" role="status">${escapeHtml(workspaceSearchLastError)}</div>`;
+    } else if (q) {
+      workspaceSearchResults.innerHTML = '<div class="workspace-search__empty" role="status">No matches</div>';
+    } else {
+      workspaceSearchResults.innerHTML = '';
+    }
+    return;
+  }
+  const order = [];
+  const seen = new Set();
+  for (const r of globalSearchFlat) {
+    if (!seen.has(r.key)) {
+      seen.add(r.key);
+      order.push(r.key);
+    }
+  }
+  const parts = [];
+  let flatIdx = 0;
+  for (const fileKey of order) {
+    const matches = globalSearchFlat.filter((x) => x.key === fileKey);
+    parts.push('<div class="workspace-search__group">');
+    parts.push(
+      `<button type="button" class="workspace-search__file-head" aria-expanded="true">
+      <span class="workspace-search__file-chevron" aria-hidden="true">▼</span>
+      <span class="workspace-search__file-path">${escapeHtml(fileKey)}</span>
+      <span class="workspace-search__file-count">${matches.length}</span>
+    </button>`,
+    );
+    for (const r of matches) {
+      const sel = flatIdx === globalSearchSelected ? ' workspace-search__match--selected' : '';
+      parts.push(
+        `<button type="button" class="workspace-search__match${sel}" role="option" data-index="${flatIdx}" aria-selected="${flatIdx === globalSearchSelected}">
+        <div class="workspace-search__match-line">Line ${r.lineNumber}</div>
+        <div class="workspace-search__match-preview">${escapeHtml(r.preview)}</div>
+      </button>`,
+      );
+      flatIdx++;
+    }
+    parts.push('</div>');
+  }
+  workspaceSearchResults.innerHTML = parts.join('');
+  workspaceSearchResults.querySelectorAll('.workspace-search__file-head').forEach((head) => {
+    head.addEventListener('click', (e) => {
+      e.preventDefault();
+      const g = head.closest('.workspace-search__group');
+      if (!g) return;
+      const collapsed = g.classList.toggle('workspace-search__group--collapsed');
+      head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+  });
+  workspaceSearchResults.querySelectorAll('.workspace-search__match').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.index, 10);
+      runWorkspaceSearchIndex(idx);
+    });
+  });
+  workspaceSearchResults.querySelector('.workspace-search__match--selected')?.scrollIntoView({ block: 'nearest' });
+}
+
+function collapseAllWorkspaceSearchGroups() {
+  workspaceSearchResults?.querySelectorAll('.workspace-search__group').forEach((g) => {
+    g.classList.add('workspace-search__group--collapsed');
+    const head = g.querySelector('.workspace-search__file-head');
+    head?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function copyAllWorkspaceSearchResults() {
+  if (!globalSearchFlat.length) return;
+  const text = globalSearchFlat.map((r) => `${r.key}:${r.lineNumber}: ${r.preview}`).join('\n');
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+}
+
+function rememberSearchQuery(raw) {
+  const t = raw.trim();
+  if (!t) return;
+  workspaceSearchHistory = [t, ...workspaceSearchHistory.filter((x) => x !== t)].slice(0, 20);
+  workspaceSearchHistoryIdx = -1;
+}
+
+function refreshWorkspaceSearch() {
+  const q = workspaceSearchInput?.value ?? '';
+  globalSearchFlat = searchProjectFiles(q);
+  globalSearchSelected = Math.min(globalSearchSelected, Math.max(0, globalSearchFlat.length - 1));
+  if (q.trim() && globalSearchFlat.length > 0) rememberSearchQuery(q);
+  renderWorkspaceSearchResults();
+}
+
+function runWorkspaceSearchIndex(index) {
+  const r = globalSearchFlat[index];
+  if (!r) return;
+  setExplorerSidebarTab('files');
+  switchMode('code');
+  openFile(r.key, { lineNumber: r.lineNumber, column: r.column });
+}
+
+function openWorkspaceSearch() {
+  if (!workspaceSearchInput || !tabsData.length) return;
+  switchMode('code');
+  setExplorerSidebarTab('search');
+  globalSearchSelected = 0;
+  workspaceSearchLastError = null;
+  refreshWorkspaceSearch();
+  requestAnimationFrame(() => {
+    workspaceSearchInput.focus();
+    workspaceSearchInput.select?.();
+  });
+}
+
+function toggleWorkspaceSearch() {
+  if (!tabsData.length) return;
+  if (isWorkspaceSearchTabActive()) {
+    setExplorerSidebarTab('files');
+  } else {
+    openWorkspaceSearch();
+  }
+}
+
+function initGlobalSearch() {
+  updateWorkspaceSearchHint();
+  explorerTabFiles?.addEventListener('click', () => setExplorerSidebarTab('files'));
+  explorerTabSearch?.addEventListener('click', () => {
+    if (!tabsData.length) return;
+    openWorkspaceSearch();
+  });
+  workspaceSearchClear?.addEventListener('click', () => {
+    if (workspaceSearchInput) workspaceSearchInput.value = '';
+    globalSearchSelected = 0;
+    globalSearchFlat = [];
+    workspaceSearchLastError = null;
+    refreshWorkspaceSearch();
+    workspaceSearchInput?.focus();
+  });
+  workspaceSearchRefresh?.addEventListener('click', () => refreshWorkspaceSearch());
+  workspaceSearchCollapseAll?.addEventListener('click', () => collapseAllWorkspaceSearchGroups());
+  workspaceSearchCopyAll?.addEventListener('click', () => copyAllWorkspaceSearchResults());
+  function openWorkspaceSearchProUpgrade() {
+    showContactNesterLabsModal('pro');
+  }
+  document.getElementById('workspace-search-replace-all')?.addEventListener('click', openWorkspaceSearchProUpgrade);
+  document.getElementById('workspace-search-preserve-btn')?.addEventListener('click', openWorkspaceSearchProUpgrade);
+  document.getElementById('workspace-search-pro-upgrade')?.addEventListener('click', openWorkspaceSearchProUpgrade);
+  function bindToggle(el, onChange) {
+    el?.addEventListener('click', () => {
+      const next = el.getAttribute('aria-pressed') !== 'true';
+      el.setAttribute('aria-pressed', next ? 'true' : 'false');
+      if (el === workspaceSearchRegex && next) {
+        workspaceSearchWhole?.setAttribute('aria-pressed', 'false');
+      }
+      if (el === workspaceSearchWhole && next) {
+        workspaceSearchRegex?.setAttribute('aria-pressed', 'false');
+      }
+      onChange?.();
+    });
+  }
+  bindToggle(workspaceSearchCase, () => {
+    globalSearchSelected = 0;
+    refreshWorkspaceSearch();
+  });
+  bindToggle(workspaceSearchWhole, () => {
+    globalSearchSelected = 0;
+    refreshWorkspaceSearch();
+  });
+  bindToggle(workspaceSearchRegex, () => {
+    globalSearchSelected = 0;
+    refreshWorkspaceSearch();
+  });
+  workspaceSearchInput?.addEventListener('input', () => {
+    workspaceSearchHistoryIdx = -1;
+    globalSearchSelected = 0;
+    clearTimeout(globalSearchDebounce);
+    globalSearchDebounce = setTimeout(() => refreshWorkspaceSearch(), 120);
+  });
+  workspaceSearchInput?.addEventListener('keydown', (e) => {
+    if (!isWorkspaceSearchTabActive()) return;
+    if (e.key === 'ArrowDown') {
+      if (globalSearchFlat.length > 0) {
+        e.preventDefault();
+        globalSearchSelected = (globalSearchSelected + 1) % globalSearchFlat.length;
+        renderWorkspaceSearchResults();
+      }
+    } else if (e.key === 'ArrowUp') {
+      if (globalSearchFlat.length > 0) {
+        e.preventDefault();
+        globalSearchSelected =
+          (globalSearchSelected - 1 + globalSearchFlat.length) % globalSearchFlat.length;
+        renderWorkspaceSearchResults();
+      } else if (workspaceSearchHistory.length) {
+        e.preventDefault();
+        workspaceSearchHistoryIdx = Math.min(workspaceSearchHistoryIdx + 1, workspaceSearchHistory.length - 1);
+        workspaceSearchInput.value = workspaceSearchHistory[workspaceSearchHistoryIdx];
+        refreshWorkspaceSearch();
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (globalSearchFlat.length === 0) return;
+      runWorkspaceSearchIndex(globalSearchSelected);
+    }
+  });
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key === 'Escape' && isWorkspaceSearchTabActive() && viewCode?.style.display !== 'none') {
+        e.preventDefault();
+        setExplorerSidebarTab('files');
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        if (!tabsData.length) return;
+        e.preventDefault();
+        if (isCommandPaletteOpen()) closeCommandPalette();
+        toggleWorkspaceSearch();
+      }
+    },
+    true,
+  );
+}
+
 // ── Auth: Cognito Integration ──
 
 function authHeaders() {
@@ -5799,9 +6213,34 @@ function initProfileModal() {
 
 
 
-function showContactNesterLabsModal() {
+/** Contact modal copy: limit = quota exhausted; pro = upgrade interest (frameworks, workspace PRO, etc.) */
+const CONTACT_NESTERLABS_VARIANTS = {
+  limit: {
+    title: 'Conversion Limit Reached',
+    heading: "You've used all 20 conversions",
+    subtext:
+      "To unlock more conversions, get in touch with NesterLabs and we'll set you up with an extended plan.",
+  },
+  pro: {
+    title: 'Nester Compose PRO',
+    heading: 'Unlock advanced features',
+    subtext:
+      'Multi-framework export, workspace bulk replace, and other PRO features are available through NesterLabs. Contact us to learn about plans.',
+  },
+};
+
+function showContactNesterLabsModal(variant = 'limit') {
   const overlay = document.getElementById('contact-nesterlabs-overlay');
   if (!overlay) return;
+  const key = variant === 'pro' ? 'pro' : 'limit';
+  const config = CONTACT_NESTERLABS_VARIANTS[key];
+  const titleEl = document.getElementById('contact-dialog-title-text');
+  const headingEl = document.getElementById('contact-dialog-heading');
+  const subtextEl = document.getElementById('contact-dialog-subtext');
+  if (titleEl) titleEl.textContent = config.title;
+  if (headingEl) headingEl.textContent = config.heading;
+  if (subtextEl) subtextEl.textContent = config.subtext;
+  overlay.dataset.contactVariant = key;
   overlay.setAttribute('aria-hidden', 'false');
   overlay.classList.add('visible');
 }
@@ -6084,7 +6523,7 @@ const ONBOARDING_STEPS = [
     welcome: true,
     icon: null, // illustration replaces the icon on the welcome step
     title: 'Welcome to Nester Compose',
-    desc: 'Convert any Figma design into production-ready React, Vue, Svelte, Angular, or Solid code — in seconds.',
+    desc: 'Convert any Figma design into production-ready React code — Vue, Svelte, Angular, and Solid are available on PRO.',
     nextLabel: 'Take the tour →',
     skipLabel: 'Skip for now',
   },
@@ -6108,7 +6547,7 @@ const ONBOARDING_STEPS = [
     position: 'top',
     icon: '⚡',
     title: 'Pick your frameworks',
-    desc: 'Select one or more output targets. We generate all of them simultaneously — React, Vue, Svelte, Angular, or Solid.',
+    desc: 'React is included for everyone. Choose PRO to unlock Vue, Svelte, Angular, and Solid — contact NesterLabs from the chip.',
   },
   {
     target: '#hero-convert-btn',
@@ -6122,7 +6561,7 @@ const ONBOARDING_STEPS = [
     done: true,
     icon: '🎉',
     title: "You're ready to ship!",
-    desc: 'Convert any Figma design into production-ready components. Live preview, multi-framework code, and AI refinement — all in one place.',
+    desc: 'Convert any Figma design into production-ready components. Live preview, React output, and AI refinement — with more frameworks on PRO.',
     nextLabel: 'Start converting →',
     skipLabel: null,
   },
@@ -6584,6 +7023,7 @@ loadExplorerIconConfig();
 updateCodeActionsState();
 renderProjectList();
 initCommandPalette();
+initGlobalSearch();
 const _authReady = initAuth();
 
 // Show hero on load, hide split (split has no .visible = hidden by default)

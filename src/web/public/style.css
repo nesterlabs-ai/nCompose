@@ -2355,36 +2355,6 @@ html:not([data-theme="light"]) .hero__prompt-send .spinner {
   margin-bottom: 8px;
 }
 
-.code-view-mode {
-  display: flex;
-  gap: 2px;
-  padding: 6px 10px 4px;
-  margin-bottom: 2px;
-}
-
-.code-view-mode-btn {
-  flex: 1;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.code-view-mode-btn:hover {
-  color: var(--text);
-  background: var(--bg-hover);
-}
-
-.code-view-mode-btn.active {
-  background: var(--accent);
-  color: var(--accent-fg, #fff);
-  border-color: var(--accent);
-}
-
 .explorer-section-title {
   font-size: 10px;
   font-weight: 600;

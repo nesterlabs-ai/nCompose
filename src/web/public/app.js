@@ -155,7 +155,6 @@ const downloadBtn = document.getElementById('download-btn');
 const codeExplorer = document.getElementById('code-explorer');
 const explorerBody = document.getElementById('explorer-body');
 const explorerFiles = document.getElementById('explorer-files');
-const codeViewModeEl = document.getElementById('code-view-mode');
 const explorerSectionTitle = document.getElementById('explorer-section-title');
 const editorTabs = document.getElementById('editor-tabs');
 const explorerToggle = document.getElementById('explorer-toggle');
@@ -288,8 +287,12 @@ let webContainerDevProcess = null;
 let webContainerPreviewUrl = null;
 let webContainerLastWritten = {};
 let webContainerSyncEnabled = false;
-let codeViewMode = 'generated'; // 'generated' | 'wired'
+let codeViewMode = 'generated'; // 'generated' | 'wired' (wired = full Vite tree when template is wired)
 let wiredAppFiles = {}; // path -> content (when template was wired)
+/** True when the session uses a wired template and app files are loaded — explorer shows project tree, not generated file list. */
+function isWiredCodeView() {
+  return templateWired && wiredAppFiles && Object.keys(wiredAppFiles).length > 0;
+}
 let generatedTabsData = [];
 let templateWired = false;
 let tabsNeedRefresh = false;
@@ -396,7 +399,7 @@ function loadExplorerIconConfig() {
       if (data.fileIcons && typeof data.fileIcons === 'object') {
         explorerIconConfig.fileIcons = { ...DEFAULT_EXPLORER_ICON_CONFIG.fileIcons, ...data.fileIcons };
       }
-      if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) buildExplorer();
+      if (isWiredCodeView()) buildExplorer();
     })
     .catch(() => { });
 }
@@ -832,16 +835,10 @@ function restoreProject(projectId) {
   buildTabs(fakeData);
   generatedTabsData = tabsData.map(t => ({ ...t }));
 
-  // Restore templateWired state and code view mode toggle
+  // Restore templateWired state (wired sessions use project tree only — no Components/generated toggle)
   templateWired = Boolean(project.templateWired);
-  if (templateWired && codeViewModeEl) {
-    codeViewModeEl.style.display = 'flex';
-  } else if (codeViewModeEl) {
-    codeViewModeEl.style.display = 'none';
-  }
 
-  // Restore saved UI state: openFiles, activeFile, codeViewMode
-  const savedCodeViewMode = project.codeViewMode || 'generated';
+  // Restore saved UI state: openFiles, activeFile
   const savedOpenFiles = (project.openFiles || []).filter(k => tabsData.some(t => t.key === k));
   const savedActiveFile = (project.activeFile && savedOpenFiles.includes(project.activeFile))
     ? project.activeFile
@@ -885,19 +882,15 @@ function restoreProject(projectId) {
       .then(res => {
         if (res && res.files) {
           wiredAppFiles = res.files;
-          // If saved code view was 'wired', switch now that files are loaded
-          if (savedCodeViewMode === 'wired') {
+          if (Object.keys(wiredAppFiles).length > 0) {
             switchCodeViewMode('wired');
           }
         } else {
-          // Wired files unavailable, hide toggle
           templateWired = false;
-          if (codeViewModeEl) codeViewModeEl.style.display = 'none';
         }
       })
       .catch(() => {
         templateWired = false;
-        if (codeViewModeEl) codeViewModeEl.style.display = 'none';
       });
   }
 
@@ -1939,7 +1932,6 @@ async function startConversion(skipDuplicateCheck) {
   codeViewMode = 'generated';
   templateWired = false;
   wiredExplorerExpanded = new Set(['src', 'public']);
-  if (codeViewModeEl) codeViewModeEl.style.display = 'none';
   updateCodeActionsState();
 
   // Reset chat state and project tracking
@@ -3087,9 +3079,8 @@ function handleComplete(data) {
   buildTabs(data);
   generatedTabsData = tabsData.map((t) => ({ ...t }));
 
-  // When template was wired, show toggle and fetch wired app files, then auto-switch to Project view
-  if (templateWired && codeViewModeEl) {
-    codeViewModeEl.style.display = 'flex';
+  // When template was wired, fetch app files and show project tree (no separate Components view)
+  if (templateWired) {
     apiFetch(`/api/session/${currentSessionId}/wired-app-files`)
       .then((r) => (r.ok ? r.json() : { files: {} }))
       .then((res) => {
@@ -3099,8 +3090,6 @@ function handleComplete(data) {
         }
       })
       .catch(() => { });
-  } else if (codeViewModeEl) {
-    codeViewModeEl.style.display = 'none';
   }
 
   // Show download and push buttons
@@ -3198,7 +3187,7 @@ function buildCompletionTitle() {
 }
 
 /**
- * Extra tabs in "Components" (generated) view for shadcn/ui sources — keys `shadcn:<name>`.
+ * Extra tabs in generated (non-wired) view for shadcn/ui sources — keys `shadcn:<name>`.
  * Preview + refine apply edits here; without these, users only see Mitosis + framework outputs.
  */
 function appendGeneratedShadcnTabs(tabs) {
@@ -3227,7 +3216,7 @@ function appendGeneratedShadcnTabs(tabs) {
 }
 
 function generatedTabLabel(tab) {
-  if (codeViewMode === 'wired') return tab.key;
+  if (isWiredCodeView()) return tab.key;
   return tab.explorerName || `${currentComponentName || 'Component'}${tab.ext || ''}`;
 }
 
@@ -3817,10 +3806,10 @@ function handleRefineComplete(data) {
     }
   }
 
-  // Rebuild tabs so shadcn/ui sources appear in Components view and wired tree stays current
-  if (codeViewMode === 'generated') {
+  // Rebuild tabs: generated list (Mitosis + frameworks + shadcn tabs) vs full wired tree
+  if (!isWiredCodeView()) {
     tabsData = appendGeneratedShadcnTabs(tabsData);
-  } else if (codeViewMode === 'wired' && wiredAppFiles && Object.keys(wiredAppFiles).length > 0) {
+  } else if (wiredAppFiles && Object.keys(wiredAppFiles).length > 0) {
     const paths = Object.keys(wiredAppFiles).sort();
     tabsData = paths.map((path) => ({
       key: path,
@@ -3850,7 +3839,7 @@ function handleRefineComplete(data) {
 
   if (isVisualEditBatch) {
     switchMode('code');
-    if (codeViewMode === 'wired' && currentShadcnComponentName) {
+    if (isWiredCodeView() && currentShadcnComponentName) {
       const p = `src/components/ui/${currentShadcnComponentName}.tsx`;
       if (tabsData.some((t) => t.key === p)) openFile(p);
       else if (tabsData.some((t) => t.key === 'react')) openFile('react');
@@ -4234,7 +4223,7 @@ function renderWiredExplorerTree(container, node, folderPath = '') {
 
 function buildExplorer() {
   explorerFiles.innerHTML = '';
-  if (codeViewMode === 'wired' && Object.keys(wiredAppFiles).length > 0) {
+  if (isWiredCodeView()) {
     const paths = Object.keys(wiredAppFiles).sort();
     const tree = pathsToTree(paths);
     renderWiredExplorerTree(explorerFiles, tree);
@@ -4321,13 +4310,13 @@ function setEditMode(editing) {
 
 function updateCodeActionsState() {
   const hasCode = activeFile && tabsData.length > 0;
-  const canEdit = hasCode && codeViewMode === 'generated';
+  const canEdit = hasCode && !isWiredCodeView();
   codeEditBtn.disabled = !canEdit;
   codeSaveBtn.disabled = !canEdit;
   codeCopyBtn.disabled = !hasCode;
   if (!hasCode) {
     setEditMode(false);
-  } else if (codeViewMode === 'wired' && isEditMode) {
+  } else if (isWiredCodeView() && isEditMode) {
     setEditMode(false);
   }
 }
@@ -4417,7 +4406,7 @@ function buildTabs(data) {
   openFiles = firstKey ? [firstKey] : [];
   activeFile = firstKey;
 
-  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Components';
+  if (explorerSectionTitle) explorerSectionTitle.textContent = 'Generated files';
   buildExplorer();
   buildEditorTabs();
 
@@ -4441,11 +4430,8 @@ function switchCodeViewMode(mode) {
   if (currentProjectId) {
     updateProjectField(currentProjectId, { codeViewMode: mode });
   }
-  document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.mode === mode);
-  });
   if (explorerSectionTitle) {
-    explorerSectionTitle.textContent = mode === 'wired' ? 'Project' : 'Components';
+    explorerSectionTitle.textContent = mode === 'wired' ? 'Project' : 'Generated files';
   }
   if (mode === 'wired') {
     const paths = Object.keys(wiredAppFiles).sort();
@@ -4476,14 +4462,6 @@ function switchCodeViewMode(mode) {
 explorerToggle.addEventListener('click', () => {
   codeExplorer.classList.toggle('collapsed');
   requestAnimationFrame(layoutMonaco);
-});
-
-// ── Code view mode (Components | Project) ──
-document.querySelectorAll('.code-view-mode-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const mode = btn.dataset.mode;
-    if (mode === 'generated' || mode === 'wired') switchCodeViewMode(mode);
-  });
 });
 
 // ── Edit ──

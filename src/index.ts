@@ -160,7 +160,7 @@ program
       if (opts.preview) {
         console.log(chalk.bold('\nSetting up preview...\n'));
 
-        // Find preview-app directory (should be sibling to figma-to-mitosis)
+        // Find preview-app directory (should be sibling to package root)
         const projectRoot = join(__dirname, '..');
         const previewAppDir = join(projectRoot, '..', 'preview-app');
 

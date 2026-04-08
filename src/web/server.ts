@@ -1060,7 +1060,7 @@ function buildVisualEditSavePrompt(
 
 // ── Hero Chat (LLM-powered landing page assistant) ────────────────────────
 
-const HERO_CHAT_SYSTEM_PROMPT = `You are the assistant for Nester Compose — a service that converts Figma designs into production-ready code for React, Vue, Svelte, Angular, and Solid.
+const HERO_CHAT_SYSTEM_PROMPT = `You are the assistant for nCompose — a service that converts Figma designs into production-ready code for React, Vue, Svelte, Angular, and Solid.
 
 What you know:
 - Users paste a Figma design URL and select target frameworks

@@ -1,16 +1,48 @@
+# Dependencies
 node_modules/
-dist/
-.env
-.credentials
-.cache/
 
-# Server logs
-logs/
+# Build output
+dist/
 
 # Generated output
 output/
 web_output/
 
+# Environment files
+.env
+.env.local
+.env.*.local
+.credentials
+
+# Secrets and keys
+*.pem
+*.key
+*.p12
+
+# Server logs
+logs/
+*.log
+npm-debug.log*
+
 # Test output
 test/__integration_output__/
 coverage/
+
+# Cache
+.cache/
+.turbo/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+docker-compose.override.yml

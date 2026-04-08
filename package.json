@@ -1,5 +1,5 @@
 {
-  "name": "figma-to-mitosis",
+  "name": "ncompose",
   "version": "0.1.0",
   "description": "Convert Figma designs to import-ready code for React, Vue, Svelte, Angular, and Solid",
   "type": "module",

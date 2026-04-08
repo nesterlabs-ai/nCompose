@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "ncompose": "dist/index.js",
     "figma-to-code": "dist/index.js"
   },
   "scripts": {

@@ -85,7 +85,7 @@ Figma Design URL
 
 The service has two entry points:
 
-### CLI (`figma-to-code convert`)
+### CLI (`ncompose convert`; `figma-to-code` is an alias)
 - Parses command-line arguments (URL, frameworks, LLM provider, output dir)
 - Calls the core pipeline function
 - Writes output files to disk

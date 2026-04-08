@@ -1,6 +1,8 @@
-# NesterCompose — Web App Starter
+# nCompose — Web App Starter
 
 A starter template for building web apps with Vite, React, TypeScript, shadcn/ui, and Tailwind CSS.
+
+This directory ships as part of the [nCompose](https://github.com/nesterlabs-ai/nCompose) repository.
 
 ## Stack
 

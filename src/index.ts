@@ -25,7 +25,7 @@ const __dirname = dirname(__filename);
 const program = new Command();
 
 program
-  .name('figma-to-code')
+  .name('ncompose')
   .description('Convert Figma designs to import-ready code for React, Vue, Svelte, Angular, and Solid')
   .version('0.1.0');
 

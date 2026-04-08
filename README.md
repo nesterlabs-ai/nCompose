@@ -1,6 +1,8 @@
-# figma-to-code
+# nCompose
 
 Convert Figma designs into production-ready, import-ready components for **React**, **Vue**, **Svelte**, **Angular**, and **Solid** — powered by LLM intelligence and the [Mitosis](https://github.com/BuilderIO/mitosis) compiler.
+
+The CLI command is **`ncompose`** (shell commands are lowercase; the product is **nCompose**). The name **`figma-to-code`** is still installed as an alias for backwards compatibility. See [CLI Reference](#cli-reference) below.
 
 Paste a Figma URL, get framework-native code with proper CSS, accessibility, icons, and variant support.
 
@@ -37,8 +39,8 @@ Paste a Figma URL, get framework-native code with proper CSS, accessibility, ico
 ### Installation
 
 ```bash
-git clone https://github.com/AyushSinghal9020/Figma-Design-UI-Automator.git
-cd Figma-Design-UI-Automator
+git clone https://github.com/nesterlabs-ai/nCompose.git
+cd nCompose
 npm install
 ```
 
@@ -178,7 +180,7 @@ output/
 ## CLI Reference
 
 ```
-figma-to-code convert <url> [options]
+ncompose convert <url> [options]
 
 Arguments:
   url                          Figma design URL with node-id parameter
@@ -192,11 +194,13 @@ Options:
   --template                   Wire into starter app with Tailwind
   --preview                    Open preview after conversion
 
-figma-to-code serve [options]
+ncompose serve [options]
 
 Options:
   -p, --port <number>          Server port (default: 3000)
 ```
+
+After `npm run build`, you can also run `npx ncompose …` or `npx figma-to-code …` (same program).
 
 ---
 

@@ -6222,7 +6222,7 @@ const CONTACT_NESTERLABS_VARIANTS = {
       "To unlock more conversions, get in touch with NesterLabs and we'll set you up with an extended plan.",
   },
   pro: {
-    title: 'Nester Compose PRO',
+    title: 'nCompose PRO',
     heading: 'Unlock advanced features',
     subtext:
       'Multi-framework export, workspace bulk replace, and other PRO features are available through NesterLabs. Contact us to learn about plans.',
@@ -6522,7 +6522,7 @@ const ONBOARDING_STEPS = [
     target: null,
     welcome: true,
     icon: null, // illustration replaces the icon on the welcome step
-    title: 'Welcome to Nester Compose',
+    title: 'Welcome to nCompose',
     desc: 'Convert any Figma design into production-ready React code — Vue, Svelte, Angular, and Solid are available on PRO.',
     nextLabel: 'Take the tour →',
     skipLabel: 'Skip for now',

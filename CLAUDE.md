@@ -1,6 +1,6 @@
 # figma-to-code — CLAUDE.md
 
-Read `SERVICE-REFERENCE.txt` for doc pointers. All config defaults are in `src/config.ts`.
+See `docs/WORKFLOW.md` for the end-to-end pipeline walkthrough. All config defaults are in `src/config.ts`.
 
 ---
 

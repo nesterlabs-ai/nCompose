@@ -1,23 +1,28 @@
-# nCompose
+<div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<img width="959" height="299" alt="nCompose-logo" src="https://github.com/user-attachments/assets/e049d030-0ec6-4dfa-a33b-1c72041ef9a1" />
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-007ec6?style=flat-square)](LICENSE)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
-[![npm version](https://img.shields.io/npm/v/ncompose.svg)](https://www.npmjs.com/package/ncompose)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/nesterlabs-ai/nCompose/deploy.yml?branch=main)](https://github.com/nesterlabs-ai/nCompose/actions)
+[![Contributors](https://img.shields.io/github/contributors/nesterlabs-ai/nCompose?style=flat-square)](https://github.com/nesterlabs-ai/nCompose/graphs/contributors)
+[![GitHub stars](https://img.shields.io/github/stars/nesterlabs-ai/nCompose?style=flat-square&logo=github&color=f59e0b)](https://github.com/nesterlabs-ai/nCompose/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/nesterlabs-ai/nCompose?style=flat-square&logo=github&color=6366f1)](https://github.com/nesterlabs-ai/nCompose/forks)
+[![Visit compose.nesterlabs.com](https://img.shields.io/static/v1?label=Visit&message=compose.nesterlabs.com&color=181717&style=flat-square)](https://compose.nesterlabs.com/)
 
 **Convert Figma designs into production-ready UI components for React, Vue, Svelte, Angular, and Solid.**
 
+</div>
+
 nCompose takes a Figma URL and generates framework-native code with proper CSS, accessibility, icons, and variant support. It uses LLM intelligence to interpret design intent and the [Mitosis](https://github.com/BuilderIO/mitosis) compiler to target multiple frameworks from a single intermediate representation.
 
-<!-- TODO: Add a demo GIF or screenshot here -->
-<!-- ![nCompose Demo](docs/assets/demo.gif) -->
+https://github.com/user-attachments/assets/799a7e70-c96c-4b0f-a105-9f46458749b5
 
 ---
 
 ## Features
 
 - **Multi-framework output** — One Figma design generates code for React, Vue, Svelte, Angular, and Solid simultaneously via Mitosis
-- **Variant-aware** — COMPONENT_SETs with multiple variants (size, style, state) produce a single component with props, conditional CSS, and interactive states
+- **Variant-aware** — Component sets with multiple variants (size, style, state) produce a single component with props, conditional CSS, and interactive states
 - **Multi-section pages** — Full page designs (header, hero, features, footer) are split into sections, processed in parallel, and stitched into one component
 - **Chart detection** — Pie, line, bar, and area charts are detected automatically and converted to interactive [Recharts](https://recharts.org/) components
 - **Icon handling** — SVG icons are exported from all variants, deduplicated by position + shape + color, and embedded with proper conditional rendering
@@ -38,7 +43,7 @@ nCompose takes a Figma URL and generates framework-native code with proper CSS, 
 
 - **Node.js** 22+
 - **Figma Personal Access Token** — [Generate here](https://www.figma.com/developers/api#access-tokens)
-- **LLM API Key** — At least one of: Anthropic (Claude), OpenAI (GPT-4o), or DeepSeek
+- **LLM API Key** — At least one of: DeepSeek (recommended) or Anthropic (Claude)
 
 ### Installation
 
@@ -53,7 +58,7 @@ npm install
 **Web UI** (recommended):
 
 ```bash
-npm run dev -- serve
+npm run web
 ```
 
 Open [http://localhost:3000](http://localhost:3000) — paste a Figma URL, select frameworks, and click Convert.
@@ -82,17 +87,14 @@ Arguments:
 Options:
   -f, --frameworks <list>      Comma-separated frameworks: react,vue,svelte,angular,solid
                                (default: react)
-  --llm <provider>             LLM provider: claude, openai, deepseek
+  --llm <provider>             LLM provider: deepseek, claude
                                (default: deepseek)
   -o, --output <dir>           Output directory (default: ./output)
   --template                   Wire into starter app with Tailwind
   --preview                    Open preview after conversion
-
-ncompose serve [options]
-
-Options:
-  -p, --port <number>          Server port (default: 3000)
 ```
+
+The Web UI is not a `ncompose` subcommand — start it from the repo with `npm run web` (see Quick Start). Port defaults to `3000` (override with the `PORT` environment variable).
 
 After `npm run build`, you can also run `npx ncompose` or `npx figma-to-code` (backwards-compatible alias).
 
@@ -102,7 +104,7 @@ The web interface provides a full-featured development experience:
 
 - **Live preview** — WebContainer boots a Vite dev server in the browser with hot reload
 - **Monaco editor** — VS Code's editor with syntax highlighting, multi-tab editing, and save-to-server
-- **Variant grid** — COMPONENT_SET previews show all variant combinations
+- **Variant grid** — Component set previews show all variant combinations
 - **Project sidebar** — Recent projects with thumbnails, click to restore
 - **Visual edit** — Click elements in the preview, then describe changes or edit CSS directly
 - **Chat refinement** — Iteratively refine code by chatting with the LLM
@@ -116,42 +118,22 @@ The web interface provides a full-featured development experience:
 |----------|------|-------|-------------|
 | DeepSeek | `--llm deepseek` (default) | deepseek-chat | `DEEPSEEK_API_KEY` |
 | Anthropic | `--llm claude` | claude-sonnet-4-20250514 | `ANTHROPIC_API_KEY` |
-| OpenAI | `--llm openai` | GPT-4o | `OPENAI_API_KEY` |
+
+> We recommend using DeepSeek for conversions — it offers the best balance of speed, cost, and output quality.
 
 ---
 
 ## How It Works
 
-```
-Figma URL → Figma REST API → Design Data Extraction → Path Detection
-                                                           │
-                     ┌─────────────────────────────────────┼──────────────────┐
-                     │                                     │                  │
-               PATH A                                PATH B             PATH C
-           COMPONENT_SET                          Single Node       Multi-Section
-          (variant-aware)                        (any element)         Page
-                     │                                     │                  │
-                     └─────────────────────────────────────┼──────────────────┘
-                                                           │
-                                                    LLM Generation
-                                                (with retry + validation)
-                                                           │
-                                                  Mitosis .lite.tsx
-                                                           │
-                                            ┌──────────────┼──────────────┐
-                                          React    Vue   Svelte  Angular  Solid
-                                            │              │              │
-                                            └──────────────┼──────────────┘
-                                                           │
-                                                   CSS Injection +
-                                                   Font Resolution
-                                                           │
-                                                     Output Files
-```
+<img width="831" height="1028" alt="final_diagram drawio" src="https://github.com/user-attachments/assets/de6f8bc9-f4ae-49ab-afe1-438b4ca259ce" />
+
+---
+
+### Pipeline Paths
 
 | Input Type | Path | Description |
 |------------|------|-------------|
-| `COMPONENT_SET` | **PATH A** | Parses variant axes, generates deterministic BEM CSS from Figma tokens, scans all variants for icons |
+| Component Set | **PATH A** | Parses variant axes, generates deterministic BEM CSS from Figma tokens, scans all variants for icons |
 | Single node | **PATH B** | Serializes design to CSS-ready YAML, generates class-based component with extracted CSS |
 | Multi-section page | **PATH C** | Detects sections, processes each in parallel, stitches into single page component |
 | Chart/graph | **Chart** | Detects chart patterns, extracts data via LLM, generates Recharts component |

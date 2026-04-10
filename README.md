@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="959" height="299" alt="nCompose-logo" src="https://github.com/user-attachments/assets/e049d030-0ec6-4dfa-a33b-1c72041ef9a1" />
+<img width="959" height="299" alt="nCompose-logo" src="docs/images/ncompose-logo.png" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-007ec6?style=flat-square)](LICENSE)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
@@ -15,7 +15,13 @@
 
 nCompose takes a Figma URL and generates framework-native code with proper CSS, accessibility, icons, and variant support. It uses LLM intelligence to interpret design intent and the [Mitosis](https://github.com/BuilderIO/mitosis) compiler to target multiple frameworks from a single intermediate representation.
 
-https://github.com/user-attachments/assets/799a7e70-c96c-4b0f-a105-9f46458749b5
+
+
+https://github.com/user-attachments/assets/a9d9b98c-9bec-4cdb-96c6-6eec151be67a
+
+
+
+**[nCompose demo — Google Drive](https://drive.google.com/file/d/15WJhQrSjNUvOH_3lEydc64THjj1hziPS/view?usp=sharing)**
 
 ---
 
@@ -125,7 +131,7 @@ The web interface provides a full-featured development experience:
 
 ## How It Works
 
-<img width="831" height="1028" alt="final_diagram drawio" src="https://github.com/user-attachments/assets/de6f8bc9-f4ae-49ab-afe1-438b4ca259ce" />
+<img width="831" height="1028" alt="nCompose pipeline overview" src="docs/images/how-it-works-pipeline.png" />
 
 ---
 

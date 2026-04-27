@@ -449,10 +449,10 @@ app.use((req: any, res: any, next: any) => {
   res.status(403).json({ error: 'Forbidden' });
 });
 
-// ── Security headers ────────────────────────────────────────────────────
-app.use((_req: any, res: any, next: any) => {
+app.use((req: any, res: any, next: any) => {
   // Prevent clickjacking (SAMEORIGIN allows preview iframes within the app)
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  // Re-enable this after resolving Tally.so embedding conflicts if possible.
+  // res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   // Prevent MIME-type sniffing
   res.setHeader('X-Content-Type-Options', 'nosniff');
   // Disable legacy XSS filter (can introduce vulnerabilities in modern browsers)
@@ -525,6 +525,7 @@ const expensiveLimiter = rateLimit({
 app.use((req: any, res: any, next: any) => {
   const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+
   if (isSecure || isLocalhost) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
@@ -1720,6 +1721,7 @@ app.get('/api/config', (_req: any, res: any) => {
   res.json({
     githubPushConfigured: Boolean(config.github.clientId && config.github.clientSecret),
     authEnabled: isAuthEnabled(),
+    tallyFormUrl: config.server.tallyFormUrl,
   });
 });
 

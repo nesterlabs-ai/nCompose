@@ -1,5 +1,5 @@
-// ── FingerprintJS ──
 let visitorFingerprint = null;
+let tallyFormUrl = ''; // Loaded dynamically from server config
 
 async function initFingerprint() {
   try {
@@ -107,6 +107,9 @@ const explorerPanelSearch = document.getElementById('explorer-panel-search');
 // Hero
 const mainHero = document.getElementById('main-hero');
 const mainSplit = document.getElementById('main-split');
+const mainProfile = document.getElementById('profile-view');
+const mainFeedback = document.getElementById('main-feedback');
+const feedbackIframe = document.getElementById('feedback-iframe');
 const heroFigmaUrlInput = document.getElementById('hero-figma-url');
 const heroConvertBtn = document.getElementById('hero-convert-btn');
 const heroSpinner = document.getElementById('hero-spinner');
@@ -739,10 +742,17 @@ function restoreProject(projectId) {
   const project = getProject(projectId);
   if (!project) return;
 
-  // Close profile view if open
-  const profileView = document.getElementById('profile-view');
-  if (profileView && profileView.style.display !== 'none') {
-    profileView.style.display = 'none';
+  // Forcefully hide other main containers
+  if (mainProfile) mainProfile.style.display = 'none';
+  if (mainFeedback) {
+    mainFeedback.style.display = 'none';
+    mainFeedback.classList.add('hidden');
+  }
+  if (mainHero) {
+    mainHero.classList.add('hidden');
+    mainHero.style.display = 'none';
+    mainHero.style.opacity = '0';
+    mainHero.style.visibility = 'hidden';
   }
 
   // Abort in-flight refine stream (interactive, tied to current view).
@@ -761,6 +771,9 @@ function restoreProject(projectId) {
     // Restore split view and progress panel
     mainHero.classList.add('hidden');
     mainSplit.classList.add('visible');
+    mainSplit.style.display = 'flex';
+    mainSplit.style.opacity = '1';
+    mainSplit.style.visibility = 'visible';
     applyChatPanelCollapseFromStorage();
     mainHero.closest('.main')?.classList.add('split-visible');
     figmaUrlInput.value = project.figmaUrl || '';
@@ -815,6 +828,9 @@ function restoreProject(projectId) {
   // Switch to split view
   mainHero.classList.add('hidden');
   mainSplit.classList.add('visible');
+  mainSplit.style.display = 'flex';
+  mainSplit.style.opacity = '1';
+  mainSplit.style.visibility = 'visible';
   applyChatPanelCollapseFromStorage();
   mainHero.closest('.main')?.classList.add('split-visible');
 
@@ -891,19 +907,20 @@ function restoreProject(projectId) {
   // Restore wired app files if template was wired
   if (templateWired) {
     apiFetch(`/api/session/${currentSessionId}/wired-app-files`)
-      .then(r => (r.ok ? r.json() : null))
+      .then(r => {
+        if (!r.ok) throw new Error('Session files expired');
+        return r.json();
+      })
       .then(res => {
-        if (res && res.files) {
+        if (res && res.files && Object.keys(res.files).length > 0) {
           wiredAppFiles = res.files;
-          if (Object.keys(wiredAppFiles).length > 0) {
-            switchCodeViewMode('wired');
-          }
+          switchCodeViewMode('wired');
         } else {
-          templateWired = false;
+          showSessionExpiredInExplorer();
         }
       })
       .catch(() => {
-        templateWired = false;
+        showSessionExpiredInExplorer();
       });
   }
 
@@ -1369,11 +1386,25 @@ function showInlinePreview(project) {
   `;
 
   // Inline shadcn sub-component definitions for offline preview
-  const shadcnDefs = buildClientShadcnInlineDefs(project.shadcnSubComponents);
+  let shadcnDefs = buildClientShadcnInlineDefs(project.shadcnSubComponents);
+  
+  // Add common fallbacks if not defined to prevent ReferenceError: Input is not defined, etc.
+  const commonFallbacks = `
+    if (typeof Input === 'undefined') {
+      var Input = (props) => React.createElement('input', { ...props, style: { border: '1px solid #ccc', padding: '4px 8px', borderRadius: '4px', ...(props.style || {}) } });
+    }
+    if (typeof Button === 'undefined') {
+      var Button = (props) => React.createElement('button', { ...props, style: { padding: '8px 16px', background: '#007bff', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', ...(props.style || {}) } });
+    }
+    if (typeof Label === 'undefined') {
+      var Label = (props) => React.createElement('label', { ...props, style: { fontWeight: 'bold', display: 'block', marginBottom: '4px', ...(props.style || {}) } });
+    }
+  `;
 
   // Build JSX source for manual Babel.transform (with error handling)
   const jsxSource = `const { useState, useEffect, useRef, useCallback, useMemo } = React;${rechartsGlobals}\n` +
     shadcnDefs +
+    commonFallbacks +
     code + '\n' +
     appCode + '\n' +
     `const root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(React.createElement(App));`;
@@ -1424,26 +1455,47 @@ function resetToHero() {
   currentFrameworkOutputs = {};
   chatRefining = false;
 
-  // Always close profile view if open (no matter how resetToHero is called)
-  const profileView = document.getElementById('profile-view');
-  if (profileView) profileView.style.display = 'none';
+  // Force hide other main containers
+  if (mainProfile) mainProfile.style.display = 'none';
+  if (mainFeedback) {
+    mainFeedback.style.display = 'none';
+    mainFeedback.classList.add('hidden');
+  }
+  if (mainSplit) {
+    mainSplit.classList.remove('visible');
+    mainSplit.style.display = 'none';
+  }
 
-  // Switch to hero view
-  mainHero.classList.remove('hidden');
-  mainSplit.classList.remove('visible');
-  mainHero.closest('.main')?.classList.remove('split-visible');
+  // Force show hero view
+  if (mainHero) {
+    mainHero.classList.remove('hidden');
+    mainHero.style.display = 'flex';
+    mainHero.style.opacity = '1';
+    mainHero.style.visibility = 'visible';
+    mainHero.style.pointerEvents = 'auto';
+    mainHero.closest('.main')?.classList.remove('split-visible');
+  }
 
   // Reset inputs
-  heroFigmaUrlInput.value = '';
-  figmaUrlInput.value = '';
-  autoResizeTextarea(heroFigmaUrlInput);
+  if (heroFigmaUrlInput) heroFigmaUrlInput.value = '';
+  if (figmaUrlInput) figmaUrlInput.value = '';
+  if (heroFigmaUrlInput) autoResizeTextarea(heroFigmaUrlInput);
 
   // Reset panels
-  if (chatMessages) { chatMessages.innerHTML = ''; chatMessages.classList.remove('visible'); }
+  if (chatMessages) {
+    chatMessages.innerHTML = '';
+    chatMessages.classList.remove('visible');
+  }
   if (chatInputGroup) chatInputGroup.style.display = 'none';
+  if (urlInputGroup) urlInputGroup.style.display = 'block';
+
+  // Ensure theme toggle is visible (split-visible hides it)
+  document.querySelector('.main')?.classList.remove('split-visible');
+
   if (urlInputGroup) urlInputGroup.style.display = 'block';
   if (emptyState) emptyState.style.display = 'flex';
   if (progressCollapsible) progressCollapsible.style.display = 'none';
+
   switchMode('preview');
   previewEmpty.style.display = 'flex';
   previewFrame.style.display = 'none';
@@ -1453,8 +1505,8 @@ function resetToHero() {
   downloadBtn.style.display = 'none';
   const pushGithubBtn = document.getElementById('push-github-btn');
   if (pushGithubBtn) pushGithubBtn.style.display = 'none';
-  explorerFiles.innerHTML = '';
-  editorTabs.innerHTML = '';
+  if (explorerFiles) explorerFiles.innerHTML = '';
+  if (editorTabs) editorTabs.innerHTML = '';
   activeFile = null;
   openFiles = [];
   tabsData = [];
@@ -1462,6 +1514,13 @@ function resetToHero() {
   setStatus('ready', 'Ready to convert');
   renderProjectList();
   syncSidebarPrimaryNavToShellView();
+
+  // Auto-close sidebar on mobile
+  if (window.innerWidth <= 768) {
+    sidebar?.classList.remove('open');
+    sidebarOverlay?.classList.remove('visible');
+    updateMenuButtonVisibility();
+  }
 }
 
 // ── Framework Extensions Map ──
@@ -1533,7 +1592,7 @@ updateSidebarToggleTitle();
 
 // Sidebar nav item selection (Search opens command palette; All projects has its own handler)
 document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
-  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn' || el.id === 'sidebar-tour-btn') return;
+  if (el.id === 'all-projects-btn' || el.id === 'sidebar-search-btn' || el.id === 'sidebar-tour-btn' || el.id === 'sidebar-feedback-btn' || el.id === 'sidebar-home-btn') return;
   el.addEventListener('click', (e) => {
     e.stopPropagation();
     if (el.id === 'sidebar-profile-btn') {
@@ -1548,10 +1607,12 @@ document.querySelectorAll('.sidebar__nav-item').forEach((el) => {
       }
       return;
     }
-    // Close profile view if open
-    const profileView = document.getElementById('profile-view');
-    if (profileView && profileView.style.display !== 'none') {
-      profileView.style.display = 'none';
+    // Close profile or feedback view if open
+    if (mainProfile && mainProfile.style.display !== 'none') {
+      mainProfile.style.display = 'none';
+    }
+    if (mainFeedback && mainFeedback.style.display !== 'none') {
+      mainFeedback.style.display = 'none';
     }
     // Home button: always reset to hero (hides split view, clears project state)
     if (el.title === 'Home') {
@@ -3934,15 +3995,15 @@ function handleRefineComplete(data) {
       const hasVariantGrid = !!(currentUpdatedShadcnSource && currentComponentPropertyDefs);
       const appTsx = hasVariantGrid
         ? `// refined: ${Date.now()}\n${buildShadcnVariantGridApp(
-            currentComponentName,
-            currentComponentPropertyDefs,
-            currentVariantMetadata,
-          )}`
+          currentComponentName,
+          currentComponentPropertyDefs,
+          currentVariantMetadata,
+        )}`
         : `import ${currentComponentName} from "./components/${currentComponentName}";\n` +
-          `// Refined: ${Date.now()}\n` +
-          `function App() {\n  return (\n    <div className="p-6">\n` +
-          `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
-          `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
+        `// Refined: ${Date.now()}\n` +
+        `function App() {\n  return (\n    <div className="p-6">\n` +
+        `      <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">${currentComponentName} Preview</h2>\n` +
+        `      <${currentComponentName} />\n    </div>\n  );\n}\nexport default App;\n`;
       delete webContainerLastWritten[appTsxPath];
 
       // Include updated shadcn sub-component files so WebContainer serves the latest code
@@ -5406,7 +5467,12 @@ function syncSidebarPrimaryNavToShellView() {
       return;
     }
     const onHero = mainHero && !mainHero.classList.contains('hidden');
-    if (onHero) {
+    const onFeedback = mainFeedback && mainFeedback.style.display !== 'none';
+
+    if (onFeedback) {
+      const fbNav = document.getElementById('sidebar-feedback-btn');
+      if (fbNav) setSidebarPrimaryNavActive(fbNav);
+    } else if (onHero) {
       const homeNav = document.querySelector('.sidebar__nav-item[title="Home"]');
       if (homeNav) setSidebarPrimaryNavActive(homeNav);
     } else {
@@ -5743,7 +5809,7 @@ function copyAllWorkspaceSearchResults() {
   if (!globalSearchFlat.length) return;
   const text = globalSearchFlat.map((r) => `${r.key}:${r.lineNumber}: ${r.preview}`).join('\n');
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => {});
+    navigator.clipboard.writeText(text).catch(() => { });
   }
 }
 
@@ -6130,8 +6196,13 @@ function closeLoginModal() {
 }
 
 function showProfileModal() {
-  const view = document.getElementById('profile-view');
-  if (!view) return;
+  if (!mainProfile) return;
+
+  // Hide all main containers
+  mainHero.style.display = 'none';
+  mainSplit.style.display = 'none';
+  mainFeedback.style.display = 'none';
+  mainProfile.style.display = 'flex';
 
   const avatarEl = document.getElementById('profile-avatar');
   const nameEl = document.getElementById('profile-name');
@@ -6610,7 +6681,7 @@ function stopOnboarding() {
 }
 
 // ── Confetti celebration ─────────────────────────────────────────────────────
-const CONFETTI_COLORS = ['#e5484d','#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#c77dff','#ffa552','#ffffff'];
+const CONFETTI_COLORS = ['#e5484d', '#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff', '#c77dff', '#ffa552', '#ffffff'];
 let _confettiRaf = null;
 let _confettiCanvas = null;
 let _confettiCtx = null;
@@ -7038,11 +7109,66 @@ if (!isOnboardingDone()) {
 }
 
 function launchProductTour() {
+  resetToHero();
   closeProfileModal();
   setTimeout(startOnboarding, 300);
 }
 
 document.getElementById('sidebar-tour-btn')?.addEventListener('click', launchProductTour);
+document.getElementById('sidebar-home-btn')?.addEventListener('click', () => {
+  resetToHero();
+  clearAllSidebarActive();
+  document.getElementById('sidebar-home-btn')?.classList.add('active');
+});
+
+function showFeedbackView() {
+  if (!mainFeedback) return;
+
+  // Force hide other main containers
+  if (mainHero) {
+    mainHero.classList.add('hidden');
+    mainHero.style.display = 'none';
+    mainHero.style.opacity = '0';
+    mainHero.style.visibility = 'hidden';
+    mainHero.style.pointerEvents = 'none';
+  }
+
+  if (mainSplit) {
+    mainSplit.classList.remove('visible');
+    mainSplit.style.display = 'none';
+  }
+
+  if (mainProfile) mainProfile.style.display = 'none';
+
+  // Show feedback container
+  mainFeedback.style.display = 'flex';
+  mainFeedback.classList.remove('hidden');
+
+  // Load the Tally form into the credentialless iframe if not already loaded
+  if (feedbackIframe.src === 'about:blank' || feedbackIframe.src.endsWith('about:blank')) {
+    feedbackIframe.src = tallyFormUrl;
+  }
+
+  // Clear active state of other sidebar items and set feedback to active
+  clearAllSidebarActive();
+  document.getElementById('sidebar-feedback-btn')?.classList.add('active');
+
+  // Close sidebar on mobile
+  if (window.innerWidth <= 768) {
+    sidebar?.classList.remove('open');
+    sidebarOverlay?.classList.remove('visible');
+    updateMenuButtonVisibility();
+  }
+}
+
+function initFeedback() {
+  const btn = document.getElementById('sidebar-feedback-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    showFeedbackView();
+  });
+}
+initFeedback();
 
 // ── Visual Edit ──
 
@@ -7690,3 +7816,14 @@ function initCustomSelects() {
 
 // Initialize custom selects on load
 setTimeout(initCustomSelects, 200);
+
+// Initialize global config from server
+apiFetch('/api/config')
+  .then(r => r.json())
+  .then(cfg => {
+    if (cfg.tallyFormUrl) {
+      tallyFormUrl = cfg.tallyFormUrl;
+      console.log('[config] tallyFormUrl loaded:', tallyFormUrl);
+    }
+  })
+  .catch(err => console.warn('[config] failed to load server config:', err));

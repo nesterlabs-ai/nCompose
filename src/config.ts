@@ -98,6 +98,7 @@ export interface ServerConfig {
   defaultLLM: string;
   defaultDepth: number;
   trustProxy: boolean;
+  tallyFormUrl: string;
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────────
@@ -241,6 +242,7 @@ export const config = {
     defaultLLM: envStr('SERVER_DEFAULT_LLM', 'deepseek'),
     defaultDepth: envInt('SERVER_DEFAULT_DEPTH', 25),
     trustProxy: envBool('TRUST_PROXY', false),
+    tallyFormUrl: envStr('TALLY_FEEDBACK_URL', ''),
   } as ServerConfig,
 
   cli: {
